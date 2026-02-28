@@ -15,7 +15,10 @@ cargo run -- file.bas          # Execute a .bas file
 cargo test                    # Run all tests (unit + integration)
 cargo test --lib              # Run unit tests only
 cargo test --test integration  # Run integration tests only
+cargo test test_hello          # Run a single test by name
 ```
+
+Rust edition 2024 (`Cargo.toml`). Uses `thiserror` for error types, `rustyline` for REPL, `pretty_assertions` for test diffs.
 
 ## Architecture
 
@@ -34,6 +37,7 @@ All hand-written (no parser generators).
 - **`value.rs`** — `Value` enum (Integer, Long, Single, Double, Str). QBasic-style PRINT formatting (leading space for positive numbers). Type coercion ladder: Integer < Long < Single < Double.
 - **`builtins.rs`** — Built-in function registry. Math (ABS, INT, SQR, SIN, etc.), string (LEFT$, MID$, LEN, etc.), conversion (CINT, VAL, STR$, etc.).
 - **`repl.rs`** — Interactive REPL using rustyline. Environment persists across lines.
+- **`error.rs`** — `LexError`, `ParseError`, `RuntimeError` enums via `thiserror`. These are the public error types returned through the pipeline.
 - **`main.rs`** — CLI: no args → REPL, one arg → execute file.
 
 ### Key Design Decisions
@@ -47,6 +51,8 @@ All hand-written (no parser generators).
 ### Test Programs
 
 Integration tests in `tests/programs/*.bas` cover: hello world, arithmetic, variables, FizzBuzz, while loops, do/loops, select case, gosub/return, recursive factorial, string functions, DATA/READ, SUB calls.
+
+To add a new integration test: create a `.bas` file in `tests/programs/`, then add a test function in `tests/integration.rs` using the `run_file()` helper (or `run_bas()` for inline source). The interpreter's `SharedOutput` captures PRINT output for assertion.
 
 ## Status of BASIC Features
 
