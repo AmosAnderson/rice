@@ -1,0 +1,13 @@
+PRINT LEN("Hello")
+PRINT LEFT$("Hello World", 5)
+PRINT RIGHT$("Hello World", 5)
+PRINT MID$("Hello World", 7, 5)
+PRINT UCASE$("hello")
+PRINT LCASE$("HELLO")
+PRINT CHR$(65)
+PRINT ASC("A")
+PRINT STR$(42)
+PRINT VAL("3.14")
+PRINT INSTR("Hello World", "World")
+PRINT SPACE$(5) + "X"
+PRINT STRING$(5, "*")
