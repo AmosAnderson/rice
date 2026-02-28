@@ -103,6 +103,10 @@ impl Parser {
                 self.advance();
                 Ok(Stmt::End)
             }
+            Token::KwSystem => {
+                self.advance();
+                Ok(Stmt::System)
+            }
             Token::KwStop => {
                 self.advance();
                 Ok(Stmt::Stop)
@@ -1698,13 +1702,13 @@ mod tests {
     #[test]
     fn test_operator_precedence() {
         let prog = parse("PRINT 2 + 3 * 4");
-        if let Stmt::Print(ps) = &prog.statements[0].stmt {
-            if let PrintItem::Expr(expr) = &ps.items[0] {
-                // Should be Add(2, Mul(3, 4))
-                assert!(matches!(expr, Expr::BinaryOp { op: BinOp::Add, .. }));
-                if let Expr::BinaryOp { right, .. } = expr {
-                    assert!(matches!(**right, Expr::BinaryOp { op: BinOp::Mul, .. }));
-                }
+        if let Stmt::Print(ps) = &prog.statements[0].stmt
+            && let PrintItem::Expr(expr) = &ps.items[0]
+        {
+            // Should be Add(2, Mul(3, 4))
+            assert!(matches!(expr, Expr::BinaryOp { op: BinOp::Add, .. }));
+            if let Expr::BinaryOp { right, .. } = expr {
+                assert!(matches!(**right, Expr::BinaryOp { op: BinOp::Mul, .. }));
             }
         }
     }

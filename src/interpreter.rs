@@ -269,7 +269,7 @@ impl Interpreter {
             Stmt::ExitDo => Ok(ControlFlow::ExitDo),
             Stmt::ExitSub => Ok(ControlFlow::ExitSub),
             Stmt::ExitFunction => Ok(ControlFlow::ExitFunction(Value::Integer(0))),
-            Stmt::End | Stmt::Stop => Ok(ControlFlow::End),
+            Stmt::End | Stmt::System | Stmt::Stop => Ok(ControlFlow::End),
             Stmt::Rem => Ok(ControlFlow::Normal),
             Stmt::ExprStmt(expr) => {
                 self.eval_expr(expr)?;
@@ -709,6 +709,19 @@ impl Interpreter {
                 if let Some(val) = self.env.borrow().get(&var.name, var.suffix) {
                     Ok(val)
                 } else {
+                    // Some 0-arg builtins are commonly used like variables in BASIC (e.g. DATE$, TIME$).
+                    // Resolve those before default variable auto-initialization.
+                    let builtin_name = match var.suffix {
+                        Some(s) => format!("{}{}", var.name, s.to_char()),
+                        None => var.name.clone(),
+                    };
+                    let is_implicit_builtin = matches!(builtin_name.as_str(), "DATE$" | "TIME$" | "TIMER");
+                    if is_implicit_builtin
+                        && let Some(result) = self.builtins.call(&builtin_name, &[])?
+                    {
+                        return Ok(result);
+                    }
+
                     let default = Value::default_for_suffix(var.suffix);
                     self.env
                         .borrow_mut()

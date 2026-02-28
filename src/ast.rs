@@ -106,6 +106,7 @@ pub enum Stmt {
 
     // Misc
     End,
+    System,
     Stop,
     Rem,
     ExprStmt(Expr),

@@ -313,6 +313,8 @@ impl Lexer {
                 "IS" => Token::KwIs,
                 "END" => Token::KwEnd,
                 "STOP" => Token::KwStop,
+                "SYSTEM" => Token::KwSystem,
+                "QUIT" => Token::KwSystem,
                 "EXIT" => Token::KwExit,
                 "SUB" => Token::KwSub,
                 "FUNCTION" => Token::KwFunction,
@@ -627,6 +629,6 @@ mod tests {
 
     #[test]
     fn test_float() {
-        assert_eq!(tokenize("3.14"), vec![Token::DoubleLiteral(3.14)]);
+        assert_eq!(tokenize("3.14"), vec![Token::DoubleLiteral(314_f64 / 100.0)]);
     }
 }

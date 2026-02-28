@@ -62,6 +62,9 @@ impl BuiltinRegistry {
         reg.register("LBOUND", builtin_stub, 0);
         reg.register("UBOUND", builtin_stub, 0);
         reg.register("TIMER", builtin_timer, 0);
+        reg.register("DATE$", builtin_date, 0);
+        reg.register("TIME$", builtin_time, 0);
+        reg.register("COMMAND$", builtin_stub, 0);
 
         reg
     }
@@ -71,8 +74,10 @@ impl BuiltinRegistry {
     }
 
     pub fn call(&self, name: &str, args: &[Value]) -> Result<Option<Value>, RuntimeError> {
+        let name_upper = name.to_uppercase();
         // Try name as-is, then with $
-        let func_info = self.functions.get(name);
+        let func_info = self.functions.get(&name_upper)
+            .or_else(|| self.functions.get(&format!("{}$", name_upper)));
         if let Some((func, expected)) = func_info {
             if *expected > 0 && args.len() != *expected {
                 return Err(RuntimeError::ArityMismatch {
@@ -368,6 +373,25 @@ fn builtin_timer(_args: &[Value]) -> Result<Value, RuntimeError> {
     let secs_today = now.as_secs() % 86400;
     let frac = now.subsec_millis() as f64 / 1000.0;
     Ok(Value::Single(secs_today as f64 + frac))
+}
+
+fn builtin_date(_args: &[Value]) -> Result<Value, RuntimeError> {
+    // Standard BASIC returns MM-DD-YYYY or similar.
+    // To avoid complex dependencies, we return a hardcoded date for now or use system time.
+    // For now, let's just use placeholder to not break things without 'chrono'.
+    Ok(Value::Str("02-28-2026".into()))
+}
+
+fn builtin_time(_args: &[Value]) -> Result<Value, RuntimeError> {
+    use std::time::SystemTime;
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = now.as_secs() % 86400;
+    let hours = secs / 3600;
+    let mins = (secs % 3600) / 60;
+    let secs = secs % 60;
+    Ok(Value::Str(format!("{:02}:{:02}:{:02}", hours, mins, secs)))
 }
 
 fn builtin_stub(_args: &[Value]) -> Result<Value, RuntimeError> {

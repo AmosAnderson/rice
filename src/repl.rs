@@ -24,7 +24,7 @@ impl Repl {
 
     pub fn run(&mut self) {
         println!("Rice BASIC v0.1.0");
-        println!("Type END or press Ctrl+D to exit.");
+        println!("Type SYSTEM or press Ctrl+D to exit.");
         println!();
 
         let mut editor = DefaultEditor::new().expect("failed to create editor");
@@ -66,7 +66,7 @@ impl Repl {
         let has_end = program
             .statements
             .iter()
-            .any(|s| matches!(s.stmt, crate::ast::Stmt::End));
+            .any(|s| matches!(s.stmt, crate::ast::Stmt::End | crate::ast::Stmt::System));
         self.interpreter.run_program(&program)?;
         Ok(has_end)
     }
