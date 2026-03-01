@@ -282,6 +282,8 @@ fn keyword_name(token: &Token) -> &'static str {
         Token::KwBinary => "BINARY",
         Token::KwRandom => "RANDOM",
         Token::KwLen => "LEN",
+        Token::KwGet => "GET",
+        Token::KwPut => "PUT",
         Token::KwFreefile => "FREEFILE",
         Token::KwLPrint => "LPRINT",
         Token::KwUsing => "USING",
@@ -343,7 +345,7 @@ impl Repl {
     }
 
     pub fn run(&mut self) {
-        println!("Rice BASIC v0.1.0");
+        println!("RICE BASIC v0.9.0");
         println!("Type SYSTEM or press Ctrl+D to exit.");
         println!();
 

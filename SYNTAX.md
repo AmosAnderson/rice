@@ -1,6 +1,6 @@
-# Rice BASIC Language Reference
+# RICE BASIC Language Reference
 
-Rice is a structured BASIC interpreter in the style of QBasic. This document covers the full syntax supported by Rice.
+RICE BASIC is a structured BASIC interpreter in the style of QBasic. This document covers the full syntax supported by RICE BASIC.
 
 ## Running Programs
 
@@ -392,6 +392,146 @@ READ x                   ' x=10 again
 
 ---
 
+## File I/O
+
+### Opening and Closing Files
+
+```basic
+' Open for sequential text output (creates/overwrites)
+OPEN "data.txt" FOR OUTPUT AS #1
+
+' Open for sequential text input (file must exist)
+OPEN "data.txt" FOR INPUT AS #1
+
+' Open for appending to end of file
+OPEN "data.txt" FOR APPEND AS #1
+
+' Open for random access (fixed-length records)
+OPEN "data.dat" FOR RANDOM AS #1 LEN = 64
+
+' Open for binary access (raw bytes)
+OPEN "data.bin" FOR BINARY AS #1
+
+' Close a specific file
+CLOSE #1
+
+' Close multiple files
+CLOSE #1, #2, #3
+
+' Close all open files
+CLOSE
+```
+
+File numbers range from 1 to 255. Use `FREEFILE` to get the next available number:
+
+```basic
+f = FREEFILE
+OPEN "myfile.txt" FOR OUTPUT AS #f
+```
+
+### Writing to Files
+
+**PRINT#** -- writes formatted output (same formatting as PRINT):
+
+```basic
+OPEN "output.txt" FOR OUTPUT AS #1
+PRINT #1, "Hello, World!"
+PRINT #1, x; y; z
+PRINT #1, "Name:"; name$
+CLOSE #1
+```
+
+**WRITE#** -- writes comma-separated values with strings in quotes (CSV-style):
+
+```basic
+OPEN "data.csv" FOR OUTPUT AS #1
+WRITE #1, "Alice", 30, 95.5
+WRITE #1, "Bob", 25, 88.0
+CLOSE #1
+```
+
+This produces:
+```
+"Alice",30,95.5
+"Bob",25,88
+```
+
+### Reading from Files
+
+**LINE INPUT#** -- reads an entire line:
+
+```basic
+OPEN "data.txt" FOR INPUT AS #1
+DO WHILE NOT EOF(1)
+    LINE INPUT #1, x$
+    PRINT x$
+LOOP
+CLOSE #1
+```
+
+**INPUT#** -- reads comma-delimited fields (pairs with WRITE#):
+
+```basic
+OPEN "data.csv" FOR INPUT AS #1
+INPUT #1, name$, age%, score#
+PRINT name$; age%; score#
+CLOSE #1
+```
+
+### Binary and Random Access
+
+**GET** -- reads data from a file:
+
+```basic
+' Read from current position
+GET #1, , var$
+
+' Read from a specific record (1-based, for RANDOM mode)
+GET #1, 5, var$
+```
+
+**PUT** -- writes data to a file:
+
+```basic
+' Write at current position
+PUT #1, , var$
+
+' Write to a specific record
+PUT #1, 5, var$
+```
+
+In RANDOM mode, records are padded to the `LEN` specified in OPEN (default 128 bytes). In BINARY mode, data is read/written at exact byte positions.
+
+### File Functions
+
+| Function     | Description                                    |
+|--------------|------------------------------------------------|
+| `FREEFILE`   | Returns lowest unused file number (1-255)      |
+| `EOF(n)`     | Returns -1 (true) at end of file, 0 otherwise |
+| `LOF(n)`     | Returns file length in bytes                   |
+| `LOC(n)`     | Returns current byte position in file          |
+
+### Complete Example
+
+```basic
+' Write records
+OPEN "people.txt" FOR OUTPUT AS #1
+WRITE #1, "Alice", 30
+WRITE #1, "Bob", 25
+WRITE #1, "Carol", 35
+CLOSE #1
+
+' Read them back
+OPEN "people.txt" FOR INPUT AS #1
+DO WHILE NOT EOF(1)
+    INPUT #1, name$, age%
+    PRINT name$; " is"; age%; "years old"
+LOOP
+CLOSE #1
+```
+
+---
+
 ## Built-in Functions
 
 ### String Functions
@@ -444,10 +584,12 @@ READ x                   ' x=10 again
 | `CSNG(n)`  | SINGLE        |
 | `CDBL(n)`  | DOUBLE        |
 
-### Other Functions
+### Date/Time Functions
 
 | Function  | Description                              |
 |-----------|------------------------------------------|
+| `DATE$`   | Current date as MM-DD-YYYY               |
+| `TIME$`   | Current time as HH:MM:SS                 |
 | `TIMER`   | Seconds elapsed since midnight           |
 
 ---
@@ -471,6 +613,116 @@ Use `:` to put multiple statements on one line:
 
 ```basic
 x = 1 : y = 2 : PRINT x + y
+```
+
+---
+
+## Error Handling
+
+### ON ERROR GOTO
+
+```basic
+ON ERROR GOTO handler       ' Enable error trapping
+ON ERROR GOTO 0             ' Disable error trapping
+
+' ... code that might fail ...
+
+END
+
+handler:
+PRINT "Error"; ERR; "at line"; ERL
+RESUME NEXT                 ' Continue with the next statement
+```
+
+### RESUME
+
+| Form              | Behavior                                       |
+|-------------------|-------------------------------------------------|
+| `RESUME`          | Retry the statement that caused the error        |
+| `RESUME NEXT`     | Skip the failed statement, continue with next    |
+| `RESUME label`    | Jump to the specified label                      |
+
+### ERR and ERL
+
+| Function | Description                                      |
+|----------|--------------------------------------------------|
+| `ERR`    | Error code of the most recent trapped error      |
+| `ERL`    | Source line of the most recent trapped error      |
+
+Common QBasic error codes:
+
+| Code | Error                  |
+|------|------------------------|
+| 3    | RETURN without GOSUB   |
+| 5    | Illegal function call  |
+| 6    | Overflow               |
+| 9    | Subscript out of range |
+| 11   | Division by zero       |
+| 13   | Type mismatch          |
+| 20   | RESUME without error   |
+
+### Example: Safe Division
+
+```basic
+ON ERROR GOTO divErr
+result = a / b
+PRINT result
+END
+
+divErr:
+PRINT "Cannot divide by zero"
+RESUME NEXT
+```
+
+---
+
+## PRINT USING
+
+Format output using a template string. The format string is followed by a semicolon and then the values to format.
+
+```basic
+PRINT USING "format"; value1; value2; ...
+PRINT #n, USING "format"; value1; value2; ...
+```
+
+### Numeric Format Specifiers
+
+| Specifier | Description                                            | Example                           |
+|-----------|--------------------------------------------------------|-----------------------------------|
+| `#`       | Digit placeholder (space-padded, right-aligned)        | `"###"` with 5 → `"  5"`         |
+| `.`       | Decimal point position                                 | `"##.##"` with 1.5 → `" 1.50"`   |
+| `+`       | Show sign (leading or trailing)                        | `"+##"` with 5 → `"+ 5"`         |
+| `-`       | Trailing minus (negative only)                         | `"##-"` with -5 → `" 5-"`        |
+| `$$`      | Floating dollar sign                                   | `"$$##.##"` with 1.5 → `" $1.50"` |
+| `**`      | Fill leading spaces with asterisks                     | `"**##.##"` with 1 → `"***1.00"` |
+| `**$`     | Asterisk fill with floating dollar                     | `"**$##.##"` with 1 → `"**$1.00"` |
+| `,`       | Thousands separator (before decimal point)             | `"#,###"` with 1234 → `"1,234"`  |
+| `^^^^`    | Scientific notation exponent                           | `"##.##^^^^"` with 1234 → `"12.34E+02"` |
+
+### String Format Specifiers
+
+| Specifier   | Description                             | Example                            |
+|-------------|-----------------------------------------|------------------------------------|
+| `!`         | First character only                    | `"!"` with `"Hello"` → `"H"`      |
+| `\ \`       | Fixed-width field (width = chars between `\`)| `"\   \"` with `"Hi"` → `"Hi   "` |
+| `&`         | Entire string as-is                     | `"&"` with `"Hello"` → `"Hello"`  |
+
+### Special Characters
+
+| Character | Description                 |
+|-----------|-----------------------------|
+| `_`       | Next character is literal   |
+
+### Overflow
+
+If a number is too wide for the format field, the output is prefixed with `%`.
+
+### Format Repetition
+
+If there are more values than format fields, the format string repeats automatically:
+
+```basic
+PRINT USING "###"; 1; 2; 3    ' Prints "  1  2  3"
 ```
 
 ---
@@ -572,16 +824,13 @@ END FUNCTION
 
 ## Differences from QBasic
 
-Rice intentionally omits:
+RICE BASIC intentionally omits:
 
 - **Graphics**: No `SCREEN`, `PSET`, `LINE`, `CIRCLE`, `DRAW`, `PAINT`, `PALETTE`, `COLOR` (screen colors)
 - **Sound**: No `SOUND`, `BEEP`, `PLAY`
 - **Screen control**: No `LOCATE` (cursor positioning), `WIDTH`, `VIEW`, `WINDOW`
-- **File I/O**: `OPEN`, `CLOSE`, and related statements are parsed but not yet functional
-- **Error handling**: `ON ERROR GOTO` and `RESUME` are parsed but not yet functional
 - **User-defined types**: `TYPE...END TYPE` is not yet supported
 - **DEFtype**: `DEFINT`, `DEFSNG`, etc. are not yet supported
 - **ON n GOTO/GOSUB**: Computed jumps are not yet supported
-- **PRINT USING**: Formatted output is parsed but not yet functional
 
 All keywords are case-insensitive: `PRINT`, `Print`, and `print` all work.

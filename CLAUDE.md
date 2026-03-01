@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Rice is a structured BASIC interpreter written in Rust (QBasic/FreeBASIC dialect). No graphics or sound support. Supports both interactive REPL and file execution.
+RICE BASIC is a structured BASIC interpreter written in Rust (QBasic/FreeBASIC dialect). No graphics or sound support. Supports both interactive REPL and file execution.
 
 ## Build & Test Commands
 
@@ -32,7 +32,8 @@ All hand-written (no parser generators).
 - **`lexer.rs`** — Hand-written tokenizer. Case-insensitive. Detects line numbers at line start. Recognizes compound keywords (`END IF`, `END SUB`, `LINE INPUT`). Attaches type suffixes to identifiers.
 - **`ast.rs`** — `Stmt` and `Expr` enums. `LabeledStmt` wraps statements with optional line labels. Key types: `PrintStmt`, `IfStmt`, `ForStmt`, `DoLoopStmt`, `SelectCaseStmt`, `SubDef`, `FunctionDef`.
 - **`parser.rs`** — Recursive descent. Expression parsing uses precedence climbing (IMP → EQV → XOR → OR → AND → NOT → comparison → +/- → MOD → \\ → */÷ → unary → ^). `at_stmt_end()` also treats `ELSE` as a terminator for single-line IF support.
-- **`interpreter.rs`** — Tree-walking evaluator. Uses `ControlFlow` enum (Normal, ExitFor, ExitDo, ExitSub, ExitFunction, Goto, Gosub, Return, End) for control flow. `SharedOutput` wrapper enables testable output capture.
+- **`interpreter.rs`** — Tree-walking evaluator. Uses `ControlFlow` enum (Normal, ExitFor, ExitDo, ExitSub, ExitFunction, Goto, Gosub, Return, End, Resume, ResumeNext) for control flow. `SharedOutput` wrapper enables testable output capture. `FileHandle` struct manages open files with `BufReader`/`BufWriter` for text and binary I/O. Error handler state (error_handler, current_error, error_resume_pc) enables ON ERROR GOTO/RESUME. ERR and ERL are resolved as interpreter-state functions.
+- **`format_using.rs`** — PRINT USING format engine. Supports QBasic numeric specifiers (`#`, `.`, `+`, `-`, `$$`, `**`, `**$`, `,`, `^^^^`) and string specifiers (`!`, `\ \`, `&`). Escape with `_`. Overflow prefix `%`.
 - **`environment.rs`** — `Rc<RefCell<Environment>>` scope chain. Variable key = name + suffix (`X%` and `X$` are different variables). GOSUB return stack and label map stored here.
 - **`value.rs`** — `Value` enum (Integer, Long, Single, Double, Str). QBasic-style PRINT formatting (leading space for positive numbers). Type coercion ladder: Integer < Long < Single < Double.
 - **`builtins.rs`** — Built-in function registry. Math (ABS, INT, SQR, SIN, etc.), string (LEFT$, MID$, LEN, etc.), conversion (CINT, VAL, STR$, etc.).
@@ -50,14 +51,12 @@ All hand-written (no parser generators).
 
 ### Test Programs
 
-Integration tests in `tests/programs/*.bas` cover: hello world, arithmetic, variables, FizzBuzz, while loops, do/loops, select case, gosub/return, recursive factorial, string functions, DATA/READ, SUB calls.
+Integration tests in `tests/programs/*.bas` cover: hello world, arithmetic, variables, FizzBuzz, while loops, do/loops, select case, gosub/return, recursive factorial, string functions, DATA/READ, SUB calls, file I/O (text, binary, append, WRITE#/INPUT# round-trip, FREEFILE, EOF, LOF).
 
 To add a new integration test: create a `.bas` file in `tests/programs/`, then add a test function in `tests/integration.rs` using the `run_file()` helper (or `run_bas()` for inline source). The interpreter's `SharedOutput` captures PRINT output for assertion.
 
 ## Status of BASIC Features
 
-**Working**: PRINT, LET, DIM, CONST, INPUT, LINE INPUT, IF/ELSEIF/ELSE, FOR/NEXT, WHILE/WEND, DO/LOOP, SELECT CASE, GOTO, GOSUB/RETURN, EXIT FOR/DO/SUB/FUNCTION, SUB/FUNCTION definitions, CALL, DECLARE, DATA/READ/RESTORE, SWAP, all string/math/conversion builtins, OPTION BASE, REDIM, ERASE.
-
-**Stubbed (parsing works, runtime not implemented)**: File I/O (OPEN/CLOSE/PRINT#/INPUT#), ON ERROR GOTO, PRINT USING, GET/PUT.
+**Working**: PRINT, PRINT USING, LET, DIM, CONST, INPUT, LINE INPUT, IF/ELSEIF/ELSE, FOR/NEXT, WHILE/WEND, DO/LOOP, SELECT CASE, GOTO, GOSUB/RETURN, EXIT FOR/DO/SUB/FUNCTION, SUB/FUNCTION definitions, CALL, DECLARE, DATA/READ/RESTORE, SWAP, all string/math/conversion builtins, ERR/ERL, OPTION BASE, REDIM, ERASE, File I/O (OPEN, CLOSE, PRINT#, WRITE#, INPUT#, LINE INPUT#, GET, PUT), file functions (FREEFILE, EOF, LOF, LOC), ON ERROR GOTO/RESUME.
 
 **Not implemented**: TYPE (user-defined types), DEFtype statements, ON n GOTO/GOSUB, proper array storage (currently uses flattened key hack), SHARED/STATIC/BYVAL semantics, LSET/RSET.

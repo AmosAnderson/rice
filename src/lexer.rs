@@ -341,6 +341,8 @@ impl Lexer {
                 "BINARY" => Token::KwBinary,
                 "RANDOM" => Token::KwRandom,
                 "LEN" => Token::KwLen,
+                "GET" => Token::KwGet,
+                "PUT" => Token::KwPut,
                 "FREEFILE" => Token::KwFreefile,
                 "LPRINT" => Token::KwLPrint,
                 "USING" => Token::KwUsing,

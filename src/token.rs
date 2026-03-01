@@ -150,6 +150,8 @@ pub enum Token {
     KwBinary,
     KwRandom,
     KwLen,
+    KwGet,
+    KwPut,
     KwFreefile,
     KwLPrint,
     KwUsing,

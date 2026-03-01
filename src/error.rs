@@ -54,4 +54,27 @@ pub enum RuntimeError {
     DuplicateDefinition { name: String },
     #[error("NEXT without FOR")]
     NextWithoutFor,
+    #[error("RESUME without error")]
+    ResumeWithoutError,
+}
+
+impl RuntimeError {
+    /// Map a RuntimeError to a QBasic-compatible error code number.
+    pub fn qbasic_error_code(&self) -> i32 {
+        match self {
+            RuntimeError::NextWithoutFor => 1,
+            RuntimeError::DivisionByZero => 11,
+            RuntimeError::TypeMismatch { .. } => 13,
+            RuntimeError::Overflow => 6,
+            RuntimeError::SubscriptOutOfRange => 9,
+            RuntimeError::IllegalFunctionCall { .. } => 5,
+            RuntimeError::ReturnWithoutGosub => 3,
+            RuntimeError::ResumeWithoutError => 20,
+            RuntimeError::UndefinedLabel { .. } => 8,
+            RuntimeError::DuplicateDefinition { .. } => 10,
+            RuntimeError::ArityMismatch { .. } => 5,
+            RuntimeError::UndefinedVariable { .. } => 5,
+            RuntimeError::General { .. } => 5,
+        }
+    }
 }

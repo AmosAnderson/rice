@@ -124,6 +124,9 @@ impl Parser {
             Token::KwRestore => self.parse_restore(),
             Token::KwOpen => self.parse_open(),
             Token::KwClose => self.parse_close(),
+            Token::KwWrite => self.parse_write(),
+            Token::KwGet => self.parse_get_put(true),
+            Token::KwPut => self.parse_get_put(false),
             Token::KwOn => self.parse_on(),
             Token::KwResume => self.parse_resume(),
             Token::KwRandomize => {
@@ -163,17 +166,17 @@ impl Parser {
 
         let mut items = Vec::new();
         let mut trailing = PrintSep::Newline;
+        let mut format = None;
 
         if self.at_stmt_end() {
-            return Ok(Stmt::Print(PrintStmt { items, trailing }));
+            return Ok(Stmt::Print(PrintStmt { format, items, trailing }));
         }
 
         // Check for PRINT USING
         if matches!(self.peek(), Token::KwUsing) {
-            // For now, treat PRINT USING as regular PRINT (simplified)
-            self.advance(); // skip USING
-            let _format = self.parse_expr()?; // skip format string
-            self.expect(Token::Semicolon)?; // skip ;
+            self.advance(); // consume USING
+            format = Some(self.parse_expr()?);
+            self.expect(Token::Semicolon)?; // consume ;
         }
 
         loop {
@@ -223,7 +226,7 @@ impl Parser {
             }
         }
 
-        Ok(Stmt::Print(PrintStmt { items, trailing }))
+        Ok(Stmt::Print(PrintStmt { format, items, trailing }))
     }
 
     fn parse_file_print(&mut self) -> Result<Stmt, ParseError> {
@@ -233,6 +236,14 @@ impl Parser {
 
         let mut items = Vec::new();
         let mut trailing = PrintSep::Newline;
+        let mut format = None;
+
+        // Check for PRINT #n, USING
+        if matches!(self.peek(), Token::KwUsing) {
+            self.advance(); // consume USING
+            format = Some(self.parse_expr()?);
+            self.expect(Token::Semicolon)?; // consume ;
+        }
 
         while !self.at_stmt_end() {
             match self.peek() {
@@ -263,6 +274,7 @@ impl Parser {
 
         Ok(Stmt::PrintFile(FilePrintStmt {
             file_num,
+            format,
             items,
             trailing,
         }))
@@ -1162,6 +1174,65 @@ impl Parser {
             }
         }
         Ok(Stmt::Close(file_nums))
+    }
+
+    fn parse_write(&mut self) -> Result<Stmt, ParseError> {
+        self.advance(); // consume WRITE
+        // WRITE without # is not supported in QBasic file I/O context
+        if !matches!(self.peek(), Token::Hash) {
+            return Err(ParseError::Expected {
+                line: self.current_line(),
+                expected: "#".into(),
+                found: format!("{:?}", self.peek()),
+            });
+        }
+        self.advance(); // consume #
+        let file_num = self.parse_expr()?;
+        self.expect(Token::Comma)?;
+        let mut exprs = vec![self.parse_expr()?];
+        while matches!(self.peek(), Token::Comma) {
+            self.advance();
+            exprs.push(self.parse_expr()?);
+        }
+        Ok(Stmt::WriteFile(FileWriteStmt { file_num, exprs }))
+    }
+
+    fn parse_get_put(&mut self, is_get: bool) -> Result<Stmt, ParseError> {
+        self.advance(); // consume GET/PUT
+        // Expect #
+        if !matches!(self.peek(), Token::Hash) {
+            return Err(ParseError::Expected {
+                line: self.current_line(),
+                expected: "#".into(),
+                found: format!("{:?}", self.peek()),
+            });
+        }
+        self.advance(); // consume #
+        let file_num = self.parse_expr()?;
+
+        let mut record = None;
+        let mut var = None;
+
+        if matches!(self.peek(), Token::Comma) {
+            self.advance();
+            // Record number (optional — may be blank)
+            if !matches!(self.peek(), Token::Comma) && !self.at_stmt_end() {
+                record = Some(self.parse_expr()?);
+            }
+            if matches!(self.peek(), Token::Comma) {
+                self.advance();
+                if !self.at_stmt_end() {
+                    var = Some(self.parse_variable()?);
+                }
+            }
+        }
+
+        Ok(Stmt::GetPut(GetPutStmt {
+            is_get,
+            file_num,
+            record,
+            var,
+        }))
     }
 
     fn parse_on(&mut self) -> Result<Stmt, ParseError> {

@@ -1,6 +1,14 @@
 use std::io::Cursor;
 use rice::interpreter::SharedOutput;
 
+fn run_bas_with_tmpdir(source_template: &str) -> (String, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let dir_path = dir.path().to_str().unwrap().replace('\\', "/");
+    let source = source_template.replace("{DIR}", &dir_path);
+    let output = run_bas(&source);
+    (output, dir)
+}
+
 fn run_bas(source: &str) -> String {
     let output = SharedOutput::new();
     let input = Cursor::new(Vec::<u8>::new());
@@ -10,6 +18,17 @@ fn run_bas(source: &str) -> String {
     );
     interp.run_source(source).unwrap();
     output.into_string()
+}
+
+fn run_bas_may_fail(source: &str) -> (String, Result<(), Box<dyn std::error::Error>>) {
+    let output = SharedOutput::new();
+    let input = Cursor::new(Vec::<u8>::new());
+    let mut interp = rice::interpreter::Interpreter::with_io(
+        Box::new(output.clone()),
+        Box::new(input),
+    );
+    let result = interp.run_source(source);
+    (output.into_string(), result)
 }
 
 fn run_file(path: &str) -> String {
@@ -200,4 +219,363 @@ fn test_date_time() {
     assert_eq!(time.len(), 8);
     assert_eq!(&time[2..3], ":");
     assert_eq!(&time[5..6], ":");
+}
+
+#[test]
+fn test_file_text_io() {
+    let (output, _dir) = run_bas_with_tmpdir(r#"
+OPEN "{DIR}/test.txt" FOR OUTPUT AS #1
+PRINT #1, "Hello, File!"
+PRINT #1, "Second line"
+CLOSE #1
+
+OPEN "{DIR}/test.txt" FOR INPUT AS #1
+LINE INPUT #1, a$
+PRINT a$
+LINE INPUT #1, b$
+PRINT b$
+PRINT EOF(1)
+CLOSE #1
+"#);
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "Hello, File!");
+    assert_eq!(lines[1], "Second line");
+    assert_eq!(lines[2].trim(), "-1"); // EOF should be true
+}
+
+#[test]
+fn test_file_write_read() {
+    let (output, _dir) = run_bas_with_tmpdir(r#"
+OPEN "{DIR}/test.txt" FOR OUTPUT AS #1
+WRITE #1, "Alice", 30
+WRITE #1, "Bob", 25
+CLOSE #1
+
+OPEN "{DIR}/test.txt" FOR INPUT AS #1
+INPUT #1, name1$, age1%
+PRINT name1$; age1%
+INPUT #1, name2$, age2%
+PRINT name2$; age2%
+CLOSE #1
+"#);
+    let lines: Vec<&str> = output.lines().collect();
+    assert!(lines[0].contains("Alice"));
+    assert!(lines[0].contains("30"));
+    assert!(lines[1].contains("Bob"));
+    assert!(lines[1].contains("25"));
+}
+
+#[test]
+fn test_file_append() {
+    let (output, _dir) = run_bas_with_tmpdir(r#"
+OPEN "{DIR}/test.txt" FOR OUTPUT AS #1
+PRINT #1, "Line 1"
+CLOSE #1
+
+OPEN "{DIR}/test.txt" FOR APPEND AS #1
+PRINT #1, "Line 2"
+CLOSE #1
+
+OPEN "{DIR}/test.txt" FOR INPUT AS #1
+LINE INPUT #1, a$
+PRINT a$
+LINE INPUT #1, b$
+PRINT b$
+CLOSE #1
+"#);
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "Line 1");
+    assert_eq!(lines[1], "Line 2");
+}
+
+#[test]
+fn test_file_binary() {
+    let (output, _dir) = run_bas_with_tmpdir(r#"
+msg$ = "HELLO"
+OPEN "{DIR}/test.bin" FOR BINARY AS #1
+PUT #1, 1, msg$
+CLOSE #1
+
+OPEN "{DIR}/test.bin" FOR BINARY AS #1
+GET #1, 1, result$
+PRINT result$
+CLOSE #1
+"#);
+    assert_eq!(output.trim(), "HELLO");
+}
+
+#[test]
+fn test_file_freefile() {
+    let (output, _dir) = run_bas_with_tmpdir(r#"
+PRINT FREEFILE
+OPEN "{DIR}/a.tmp" FOR OUTPUT AS #1
+PRINT FREEFILE
+OPEN "{DIR}/b.tmp" FOR OUTPUT AS #2
+PRINT FREEFILE
+CLOSE #1
+PRINT FREEFILE
+CLOSE #2
+"#);
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0].trim(), "1");
+    assert_eq!(lines[1].trim(), "2");
+    assert_eq!(lines[2].trim(), "3");
+    assert_eq!(lines[3].trim(), "1"); // #1 freed, so FREEFILE returns 1
+}
+
+#[test]
+fn test_file_lof() {
+    let (output, _dir) = run_bas_with_tmpdir(r#"
+OPEN "{DIR}/test.txt" FOR OUTPUT AS #1
+PRINT #1, "Hello"
+CLOSE #1
+
+OPEN "{DIR}/test.txt" FOR INPUT AS #1
+PRINT LOF(1)
+CLOSE #1
+"#);
+    let lof: i64 = output.trim().parse().unwrap();
+    assert!(lof > 0);
+}
+
+#[test]
+fn test_file_eof_loop() {
+    let (output, _dir) = run_bas_with_tmpdir(r#"
+OPEN "{DIR}/test.txt" FOR OUTPUT AS #1
+PRINT #1, "alpha"
+PRINT #1, "beta"
+PRINT #1, "gamma"
+CLOSE #1
+
+OPEN "{DIR}/test.txt" FOR INPUT AS #1
+DO WHILE NOT EOF(1)
+    LINE INPUT #1, x$
+    PRINT x$
+LOOP
+CLOSE #1
+"#);
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "alpha");
+    assert_eq!(lines[1], "beta");
+    assert_eq!(lines[2], "gamma");
+    assert_eq!(lines.len(), 3);
+}
+
+// ==================== ON ERROR GOTO / RESUME tests ====================
+
+#[test]
+fn test_on_error_resume_next() {
+    let output = run_bas(r#"
+ON ERROR GOTO handler
+PRINT 1 / 0
+PRINT "after"
+END
+
+handler:
+RESUME NEXT
+"#);
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "after");
+}
+
+#[test]
+fn test_on_error_goto_0() {
+    // Enable handler, then disable it — error should propagate
+    let (_output, result) = run_bas_may_fail(r#"
+ON ERROR GOTO handler
+ON ERROR GOTO 0
+PRINT 1 / 0
+END
+
+handler:
+RESUME NEXT
+"#);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_on_error_resume_retry() {
+    // RESUME (without NEXT) retries the failing statement.
+    // We set up a variable so the second attempt succeeds.
+    let output = run_bas(r#"
+DIM x AS INTEGER
+x = 0
+ON ERROR GOTO handler
+PRINT 1 / x
+PRINT "done"
+END
+
+handler:
+x = 1
+RESUME
+"#);
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0].trim(), "1");
+    assert_eq!(lines[1], "done");
+}
+
+#[test]
+fn test_on_error_resume_label() {
+    let output = run_bas(r#"
+ON ERROR GOTO handler
+PRINT 1 / 0
+PRINT "should not print"
+END
+
+handler:
+RESUME skip
+
+skip:
+PRINT "skipped to label"
+"#);
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "skipped to label");
+}
+
+#[test]
+fn test_err_erl() {
+    let output = run_bas(r#"
+ON ERROR GOTO handler
+PRINT 1 / 0
+END
+
+handler:
+PRINT "ERR="; ERR
+RESUME NEXT
+"#);
+    let lines: Vec<&str> = output.lines().collect();
+    // ERR for division by zero = 11
+    assert!(lines[0].contains("11"), "expected ERR=11, got: {}", lines[0]);
+}
+
+// ==================== PRINT USING tests ====================
+
+#[test]
+fn test_print_using_digits() {
+    // Note: r####""## raw strings needed because Rust 2024 reserves ## in string literals
+    let output = run_bas(r####"
+PRINT USING "###.##"; 1.5
+PRINT USING "###.##"; 123.456
+PRINT USING "###.##"; -1.5
+"####);
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "  1.50");
+    assert_eq!(lines[1], "123.46");
+    // Negative: sign replaces a space
+    assert_eq!(lines[2], " -1.50");
+}
+
+#[test]
+fn test_print_using_dollar() {
+    let output = run_bas(r####"
+PRINT USING "$$###.##"; 1.5
+PRINT USING "$$###.##"; 123.45
+"####);
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "  $1.50");
+    assert_eq!(lines[1], "$123.45");
+}
+
+#[test]
+fn test_print_using_sign() {
+    let output = run_bas(r####"
+PRINT USING "+###"; 5
+PRINT USING "+###"; -5
+PRINT USING "###-"; 5
+PRINT USING "###-"; -5
+"####);
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "+  5");
+    assert_eq!(lines[1], "-  5");
+    assert_eq!(lines[2], "  5 ");
+    assert_eq!(lines[3], "  5-");
+}
+
+#[test]
+fn test_print_using_asterisk() {
+    let output = run_bas(r####"
+PRINT USING "**###.##"; 1.5
+PRINT USING "**$###.##"; 1.5
+"####);
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "****1.50");
+    assert_eq!(lines[1], "***$1.50");
+}
+
+#[test]
+fn test_print_using_comma() {
+    let output = run_bas(r####"
+PRINT USING "#,###.##"; 1234.56
+"####);
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "1,234.56");
+}
+
+#[test]
+fn test_print_using_scientific() {
+    let output = run_bas(r####"
+PRINT USING "##.##^^^^"; 1234.5
+"####);
+    let lines: Vec<&str> = output.lines().collect();
+    // digits_before=2, so: 12.35E+02
+    assert_eq!(lines[0], "12.35E+02");
+}
+
+#[test]
+fn test_print_using_string() {
+    let output = run_bas(r####"
+PRINT USING "!"; "Hello"
+PRINT USING "\   \"; "Hello"
+PRINT USING "&"; "Hello"
+"####);
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "H");
+    assert_eq!(lines[1], "Hello");
+    assert_eq!(lines[2], "Hello");
+}
+
+#[test]
+fn test_print_using_escape() {
+    let output = run_bas(r####"
+PRINT USING "_###.##"; 1.5
+"####);
+    let lines: Vec<&str> = output.lines().collect();
+    // _ escapes #, so first # is literal, then ##.## is a 2-digit format
+    assert_eq!(lines[0], "# 1.50");
+}
+
+#[test]
+fn test_print_using_overflow() {
+    let output = run_bas(r####"
+PRINT USING "##.##"; 12345.67
+"####);
+    let lines: Vec<&str> = output.lines().collect();
+    // Number too wide for field — % prefix
+    assert!(lines[0].starts_with('%'), "expected overflow prefix %, got: {}", lines[0]);
+}
+
+#[test]
+fn test_print_using_repeat() {
+    let output = run_bas(r####"
+PRINT USING "###"; 1; 2; 3
+"####);
+    let lines: Vec<&str> = output.lines().collect();
+    // Format repeats for each value
+    assert_eq!(lines[0], "  1  2  3");
+}
+
+#[test]
+fn test_print_using_file() {
+    let (output, _dir) = run_bas_with_tmpdir(r####"
+OPEN "{DIR}/test.txt" FOR OUTPUT AS #1
+PRINT #1, USING "###.##"; 3.14
+CLOSE #1
+
+OPEN "{DIR}/test.txt" FOR INPUT AS #1
+LINE INPUT #1, x$
+PRINT x$
+CLOSE #1
+"####);
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "  3.14");
 }

@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::{self, BufRead, Write};
+use std::fs::{File, OpenOptions};
+use std::io::{self, BufRead, BufReader, BufWriter, Read as IoRead, Seek, SeekFrom, Write};
 use std::rc::Rc;
 
 /// Shared output buffer that implements Write.
@@ -50,6 +51,14 @@ enum ControlFlow {
     Gosub(Label),
     Return,
     End,
+    Resume,
+    ResumeNext,
+}
+
+#[derive(Clone, Debug)]
+struct ErrorInfo {
+    err_code: i32,
+    err_line: usize,
 }
 
 #[derive(Clone)]
@@ -66,6 +75,14 @@ struct UserFunction {
     body: Vec<LabeledStmt>,
 }
 
+struct FileHandle {
+    mode: FileMode,
+    reader: Option<BufReader<File>>,
+    writer: Option<BufWriter<File>>,
+    rec_len: i64,
+    eof_flag: bool,
+}
+
 pub struct Interpreter {
     env: EnvRef,
     builtins: BuiltinRegistry,
@@ -76,6 +93,22 @@ pub struct Interpreter {
     data_pos: usize,
     output: Box<dyn Write>,
     input: Box<dyn BufRead>,
+    file_handles: HashMap<i64, FileHandle>,
+    // Error handling state
+    error_handler: Option<Label>,
+    current_error: Option<ErrorInfo>,
+    error_resume_pc: Option<usize>,
+    in_error_handler: bool,
+}
+
+impl Drop for Interpreter {
+    fn drop(&mut self) {
+        for (_, fh) in self.file_handles.drain() {
+            if let Some(mut w) = fh.writer {
+                let _ = w.flush();
+            }
+        }
+    }
 }
 
 impl Default for Interpreter {
@@ -103,6 +136,11 @@ impl Interpreter {
             data_pos: 0,
             output,
             input,
+            file_handles: HashMap::new(),
+            error_handler: None,
+            current_error: None,
+            error_resume_pc: None,
+            in_error_handler: false,
         }
     }
 
@@ -164,7 +202,36 @@ impl Interpreter {
         let mut pc = 0;
         while pc < stmts.len() {
             let ls = &stmts[pc];
-            let cf = self.exec_stmt(&ls.stmt)?;
+            let result = self.exec_stmt(&ls.stmt);
+            let cf = match result {
+                Ok(cf) => cf,
+                Err(err) => {
+                    if let (Some(handler), false) =
+                        (&self.error_handler, self.in_error_handler)
+                    {
+                        // Trap the error
+                        let handler = handler.clone();
+                        self.current_error = Some(ErrorInfo {
+                            err_code: err.qbasic_error_code(),
+                            err_line: ls.line,
+                        });
+                        self.error_resume_pc = Some(pc);
+                        self.in_error_handler = true;
+                        // Resolve handler label and jump
+                        let resolved = self.env.borrow().resolve_label(&handler);
+                        if let Some(idx) = resolved {
+                            pc = idx;
+                            continue;
+                        } else {
+                            return Err(RuntimeError::UndefinedLabel {
+                                label: handler.to_string(),
+                            });
+                        }
+                    } else {
+                        return Err(err);
+                    }
+                }
+            };
             match cf {
                 ControlFlow::Normal => {
                     pc += 1;
@@ -189,6 +256,22 @@ impl Interpreter {
                 ControlFlow::Return => {
                     let return_pc = self.env.borrow_mut().gosub_stack.pop();
                     pc = return_pc.ok_or(RuntimeError::ReturnWithoutGosub)?;
+                }
+                ControlFlow::Resume => {
+                    if let Some(resume_pc) = self.error_resume_pc {
+                        self.in_error_handler = false;
+                        pc = resume_pc;
+                    } else {
+                        return Err(RuntimeError::ResumeWithoutError);
+                    }
+                }
+                ControlFlow::ResumeNext => {
+                    if let Some(resume_pc) = self.error_resume_pc {
+                        self.in_error_handler = false;
+                        pc = resume_pc + 1;
+                    } else {
+                        return Err(RuntimeError::ResumeWithoutError);
+                    }
                 }
                 other => return Ok(other),
             }
@@ -355,18 +438,68 @@ impl Interpreter {
                 self.exec_line_input_file(file_num, var)?;
                 Ok(ControlFlow::Normal)
             }
-            Stmt::GetPut(_) => {
-                // TODO
+            Stmt::GetPut(gp) => {
+                self.exec_get_put(gp)?;
                 Ok(ControlFlow::Normal)
             }
-            Stmt::OnErrorGoto(_) | Stmt::Resume(_) => {
-                // TODO: error handling
+            Stmt::OnErrorGoto(target) => {
+                match target {
+                    Some(label) => {
+                        self.error_handler = Some(label.clone());
+                    }
+                    None => {
+                        // ON ERROR GOTO 0 — disable error handling
+                        self.error_handler = None;
+                        self.current_error = None;
+                        self.error_resume_pc = None;
+                        self.in_error_handler = false;
+                    }
+                }
                 Ok(ControlFlow::Normal)
+            }
+            Stmt::Resume(target) => {
+                match target {
+                    ResumeTarget::Default => {
+                        Ok(ControlFlow::Resume)
+                    }
+                    ResumeTarget::Next => {
+                        Ok(ControlFlow::ResumeNext)
+                    }
+                    ResumeTarget::Label(label) => {
+                        // Clear error state and jump to the label
+                        self.in_error_handler = false;
+                        self.current_error = None;
+                        self.error_resume_pc = None;
+                        Ok(ControlFlow::Goto(label.clone()))
+                    }
+                }
             }
         }
     }
 
     fn exec_print(&mut self, ps: &PrintStmt) -> Result<(), RuntimeError> {
+        // Handle PRINT USING
+        if let Some(ref fmt_expr) = ps.format {
+            let result = self.eval_format_using(fmt_expr, &ps.items)?;
+            write!(self.output, "{}", result).ok();
+            self.print_col += result.len();
+            match ps.trailing {
+                PrintSep::Newline => {
+                    writeln!(self.output).ok();
+                    self.print_col = 0;
+                }
+                PrintSep::Semicolon => {}
+                PrintSep::Comma => {
+                    let next_zone = ((self.print_col / 14) + 1) * 14;
+                    let spaces = next_zone - self.print_col;
+                    write!(self.output, "{}", " ".repeat(spaces)).ok();
+                    self.print_col = next_zone;
+                }
+            }
+            self.output.flush().ok();
+            return Ok(());
+        }
+
         for item in &ps.items {
             match item {
                 PrintItem::Expr(expr) => {
@@ -715,6 +848,11 @@ impl Interpreter {
                         Some(s) => format!("{}{}", var.name, s.to_char()),
                         None => var.name.clone(),
                     };
+                    // ERR and ERL are special interpreter-state functions used without parens
+                    if builtin_name == "ERR" || builtin_name == "ERL" {
+                        return Ok(self.get_error_value(&builtin_name));
+                    }
+
                     let is_implicit_builtin = matches!(builtin_name.as_str(), "DATE$" | "TIME$" | "TIMER");
                     if is_implicit_builtin
                         && let Some(result) = self.builtins.call(&builtin_name, &[])?
@@ -764,6 +902,81 @@ impl Interpreter {
                     Some(s) => format!("{}{}", name, s.to_char()),
                     None => name.clone(),
                 };
+
+                // Stateful functions (need access to interpreter state)
+                match name.as_str() {
+                    "ERR" | "ERL" => {
+                        if !arg_vals.is_empty() {
+                            return Err(RuntimeError::ArityMismatch { expected: 0, got: arg_vals.len() });
+                        }
+                        return Ok(self.get_error_value(name));
+                    }
+                    "FREEFILE" => {
+                        if !arg_vals.is_empty() {
+                            return Err(RuntimeError::ArityMismatch { expected: 0, got: arg_vals.len() });
+                        }
+                        let n = (1..=255i64)
+                            .find(|n| !self.file_handles.contains_key(n))
+                            .unwrap_or(0);
+                        return Ok(Value::Integer(n));
+                    }
+                    "EOF" => {
+                        if arg_vals.len() != 1 {
+                            return Err(RuntimeError::ArityMismatch { expected: 1, got: arg_vals.len() });
+                        }
+                        let fnum = arg_vals[0].to_i64()?;
+                        let fh = self.file_handles.get_mut(&fnum).ok_or_else(|| RuntimeError::General {
+                            msg: format!("file #{fnum} is not open"),
+                        })?;
+                        // Proactively check EOF by peeking
+                        if !fh.eof_flag {
+                            if let Some(reader) = &mut fh.reader {
+                                let buf = reader.fill_buf().unwrap_or(&[]);
+                                if buf.is_empty() {
+                                    fh.eof_flag = true;
+                                }
+                            } else {
+                                fh.eof_flag = true;
+                            }
+                        }
+                        return Ok(Value::Integer(if fh.eof_flag { -1 } else { 0 }));
+                    }
+                    "LOF" => {
+                        if arg_vals.len() != 1 {
+                            return Err(RuntimeError::ArityMismatch { expected: 1, got: arg_vals.len() });
+                        }
+                        let fnum = arg_vals[0].to_i64()?;
+                        let fh = self.file_handles.get(&fnum).ok_or_else(|| RuntimeError::General {
+                            msg: format!("file #{fnum} is not open"),
+                        })?;
+                        let len = if let Some(reader) = &fh.reader {
+                            reader.get_ref().metadata().map(|m| m.len() as i64).unwrap_or(0)
+                        } else if let Some(writer) = &fh.writer {
+                            writer.get_ref().metadata().map(|m| m.len() as i64).unwrap_or(0)
+                        } else {
+                            0
+                        };
+                        return Ok(Value::Integer(len));
+                    }
+                    "LOC" => {
+                        if arg_vals.len() != 1 {
+                            return Err(RuntimeError::ArityMismatch { expected: 1, got: arg_vals.len() });
+                        }
+                        let fnum = arg_vals[0].to_i64()?;
+                        let fh = self.file_handles.get_mut(&fnum).ok_or_else(|| RuntimeError::General {
+                            msg: format!("file #{fnum} is not open"),
+                        })?;
+                        let pos = if let Some(reader) = &mut fh.reader {
+                            reader.stream_position().unwrap_or(0) as i64
+                        } else if let Some(writer) = &mut fh.writer {
+                            writer.stream_position().unwrap_or(0) as i64
+                        } else {
+                            0
+                        };
+                        return Ok(Value::Integer(pos));
+                    }
+                    _ => {}
+                }
 
                 // Try builtin first
                 if let Some(result) = self.builtins.call(&func_name, &arg_vals)? {
@@ -971,34 +1184,460 @@ impl Interpreter {
         }
     }
 
-    // ==================== File I/O stubs ====================
+    fn eval_format_using(&mut self, fmt_expr: &Expr, items: &[PrintItem]) -> Result<String, RuntimeError> {
+        let fmt_str = self.eval_expr(fmt_expr)?.to_string_val()?;
+        let mut vals = Vec::new();
+        for item in items {
+            if let PrintItem::Expr(expr) = item {
+                vals.push(self.eval_expr(expr)?);
+            }
+        }
+        crate::format_using::format_using(&fmt_str, &vals)
+    }
 
-    fn exec_open(&mut self, _open: &OpenStmt) -> Result<(), RuntimeError> {
-        // TODO: implement file I/O
+    fn get_error_value(&self, name: &str) -> Value {
+        match name {
+            "ERR" => Value::Integer(self.current_error.as_ref().map_or(0, |e| e.err_code) as i64),
+            "ERL" => Value::Integer(self.current_error.as_ref().map_or(0, |e| e.err_line) as i64),
+            _ => Value::Integer(0),
+        }
+    }
+
+    // ==================== File I/O ====================
+
+    fn exec_open(&mut self, open: &OpenStmt) -> Result<(), RuntimeError> {
+        let filename = self.eval_expr(&open.filename)?.to_string_val()?;
+        let file_num = self.eval_expr(&open.file_num)?.to_i64()?;
+        let rec_len = if let Some(expr) = &open.rec_len {
+            self.eval_expr(expr)?.to_i64()?
+        } else {
+            128
+        };
+
+        if file_num < 1 || file_num > 255 {
+            return Err(RuntimeError::General {
+                msg: format!("invalid file number: {file_num}"),
+            });
+        }
+        if self.file_handles.contains_key(&file_num) {
+            return Err(RuntimeError::General {
+                msg: format!("file #{file_num} is already open"),
+            });
+        }
+
+        let (reader, writer) = match open.mode {
+            FileMode::Input => {
+                let f = File::open(&filename).map_err(|e| RuntimeError::General {
+                    msg: format!("cannot open '{filename}': {e}"),
+                })?;
+                (Some(BufReader::new(f)), None)
+            }
+            FileMode::Output => {
+                let f = File::create(&filename).map_err(|e| RuntimeError::General {
+                    msg: format!("cannot create '{filename}': {e}"),
+                })?;
+                (None, Some(BufWriter::new(f)))
+            }
+            FileMode::Append => {
+                let f = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&filename)
+                    .map_err(|e| RuntimeError::General {
+                        msg: format!("cannot open '{filename}' for append: {e}"),
+                    })?;
+                (None, Some(BufWriter::new(f)))
+            }
+            FileMode::Random | FileMode::Binary => {
+                let f = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .open(&filename)
+                    .map_err(|e| RuntimeError::General {
+                        msg: format!("cannot open '{filename}': {e}"),
+                    })?;
+                let f2 = f.try_clone().map_err(|e| RuntimeError::General {
+                    msg: format!("cannot clone file handle: {e}"),
+                })?;
+                (Some(BufReader::new(f)), Some(BufWriter::new(f2)))
+            }
+        };
+
+        self.file_handles.insert(file_num, FileHandle {
+            mode: open.mode,
+            reader,
+            writer,
+            rec_len,
+            eof_flag: false,
+        });
+
         Ok(())
     }
 
-    fn exec_close(&mut self, _file_nums: &[Expr]) -> Result<(), RuntimeError> {
+    fn exec_close(&mut self, file_nums: &[Expr]) -> Result<(), RuntimeError> {
+        if file_nums.is_empty() {
+            // Close all
+            for (_, fh) in self.file_handles.drain() {
+                if let Some(mut w) = fh.writer {
+                    let _ = w.flush();
+                }
+            }
+        } else {
+            let nums: Vec<i64> = file_nums
+                .iter()
+                .map(|e| self.eval_expr(e).and_then(|v| v.to_i64()))
+                .collect::<Result<Vec<_>, _>>()?;
+            for n in nums {
+                if let Some(fh) = self.file_handles.remove(&n) {
+                    if let Some(mut w) = fh.writer {
+                        let _ = w.flush();
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
-    fn exec_file_print(&mut self, _pf: &FilePrintStmt) -> Result<(), RuntimeError> {
+    fn exec_file_print(&mut self, pf: &FilePrintStmt) -> Result<(), RuntimeError> {
+        let file_num = self.eval_expr(&pf.file_num)?.to_i64()?;
+
+        // Handle PRINT #n, USING
+        if let Some(ref fmt_expr) = pf.format {
+            let result = self.eval_format_using(fmt_expr, &pf.items)?;
+            let trailing = pf.trailing;
+
+            let fh = self.file_handles.get_mut(&file_num).ok_or_else(|| RuntimeError::General {
+                msg: format!("file #{file_num} is not open"),
+            })?;
+            let writer = fh.writer.as_mut().ok_or_else(|| RuntimeError::General {
+                msg: format!("file #{file_num} is not open for writing"),
+            })?;
+
+            let _ = write!(writer, "{}", result);
+            match trailing {
+                PrintSep::Newline => { let _ = writeln!(writer); }
+                PrintSep::Semicolon => {}
+                PrintSep::Comma => { let _ = write!(writer, "\t"); }
+            }
+            return Ok(());
+        }
+
+        // Evaluate all items first to avoid borrow conflicts
+        let mut parts: Vec<String> = Vec::new();
+        let trailing = pf.trailing;
+        for item in &pf.items {
+            match item {
+                PrintItem::Expr(expr) => {
+                    let val = self.eval_expr(expr)?;
+                    parts.push(val.format_for_print());
+                }
+                PrintItem::Tab(_) | PrintItem::Spc(_) => {
+                    // Simplified: just add a space
+                    parts.push(" ".to_string());
+                }
+                PrintItem::Comma => {
+                    parts.push("\t".to_string());
+                }
+            }
+        }
+
+        let fh = self.file_handles.get_mut(&file_num).ok_or_else(|| RuntimeError::General {
+            msg: format!("file #{file_num} is not open"),
+        })?;
+        let writer = fh.writer.as_mut().ok_or_else(|| RuntimeError::General {
+            msg: format!("file #{file_num} is not open for writing"),
+        })?;
+
+        for part in &parts {
+            let _ = write!(writer, "{}", part);
+        }
+        match trailing {
+            PrintSep::Newline => { let _ = writeln!(writer); }
+            PrintSep::Semicolon => {}
+            PrintSep::Comma => { let _ = write!(writer, "\t"); }
+        }
+
         Ok(())
     }
 
-    fn exec_file_write(&mut self, _wf: &FileWriteStmt) -> Result<(), RuntimeError> {
+    fn exec_file_write(&mut self, wf: &FileWriteStmt) -> Result<(), RuntimeError> {
+        let file_num = self.eval_expr(&wf.file_num)?.to_i64()?;
+
+        // Evaluate all expressions first
+        let vals: Vec<Value> = wf.exprs
+            .iter()
+            .map(|e| self.eval_expr(e))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let fh = self.file_handles.get_mut(&file_num).ok_or_else(|| RuntimeError::General {
+            msg: format!("file #{file_num} is not open"),
+        })?;
+        let writer = fh.writer.as_mut().ok_or_else(|| RuntimeError::General {
+            msg: format!("file #{file_num} is not open for writing"),
+        })?;
+
+        for (i, val) in vals.iter().enumerate() {
+            if i > 0 {
+                let _ = write!(writer, ",");
+            }
+            match val {
+                Value::Str(s) => { let _ = write!(writer, "\"{}\"", s); }
+                _ => { let _ = write!(writer, "{}", val.format_for_write()); }
+            }
+        }
+        let _ = writeln!(writer);
+
         Ok(())
     }
 
-    fn exec_file_input(&mut self, _fi: &FileInputStmt) -> Result<(), RuntimeError> {
+    fn exec_file_input(&mut self, fi: &FileInputStmt) -> Result<(), RuntimeError> {
+        let file_num = self.eval_expr(&fi.file_num)?.to_i64()?;
+
+        // Read fields from file for each variable
+        let mut fields: Vec<String> = Vec::new();
+        {
+            let fh = self.file_handles.get_mut(&file_num).ok_or_else(|| RuntimeError::General {
+                msg: format!("file #{file_num} is not open"),
+            })?;
+            let reader = fh.reader.as_mut().ok_or_else(|| RuntimeError::General {
+                msg: format!("file #{file_num} is not open for reading"),
+            })?;
+
+            for _ in 0..fi.vars.len() {
+                let field = Self::read_next_field(reader)?;
+                if field.is_none() {
+                    fh.eof_flag = true;
+                    break;
+                }
+                fields.push(field.unwrap());
+            }
+
+            // Check if we've reached EOF
+            let buf = reader.fill_buf().unwrap_or(&[]);
+            if buf.is_empty() {
+                fh.eof_flag = true;
+            }
+        }
+
+        for (i, var) in fi.vars.iter().enumerate() {
+            let field = fields.get(i).cloned().unwrap_or_default();
+            let val = if matches!(var.suffix, Some(TypeSuffix::String)) {
+                Value::Str(field)
+            } else if let Ok(n) = field.parse::<i64>() {
+                Value::Integer(n)
+            } else if let Ok(n) = field.parse::<f64>() {
+                Value::Double(n)
+            } else {
+                Value::Str(field)
+            };
+            self.env.borrow_mut().set(&var.name, var.suffix, val);
+        }
+
         Ok(())
+    }
+
+    fn read_next_field(reader: &mut BufReader<File>) -> Result<Option<String>, RuntimeError> {
+        // Skip leading whitespace (spaces, tabs) but not newlines
+        loop {
+            let buf = reader.fill_buf().map_err(|e| RuntimeError::General {
+                msg: format!("file read error: {e}"),
+            })?;
+            if buf.is_empty() {
+                return Ok(None);
+            }
+            let ch = buf[0];
+            match ch {
+                b' ' | b'\t' => { reader.consume(1); }
+                b'\r' | b'\n' => {
+                    reader.consume(1);
+                    if ch == b'\r' {
+                        let buf2 = reader.fill_buf().unwrap_or(&[]);
+                        if !buf2.is_empty() && buf2[0] == b'\n' {
+                            reader.consume(1);
+                        }
+                    }
+                }
+                _ => break,
+            }
+        }
+
+        let buf = reader.fill_buf().map_err(|e| RuntimeError::General {
+            msg: format!("file read error: {e}"),
+        })?;
+        if buf.is_empty() {
+            return Ok(None);
+        }
+
+        // Check for quoted string
+        if buf[0] == b'"' {
+            reader.consume(1); // consume opening quote
+            let mut field = String::new();
+            let mut byte = [0u8; 1];
+            loop {
+                let n = reader.read(&mut byte).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                if byte[0] == b'"' {
+                    break;
+                }
+                field.push(byte[0] as char);
+            }
+            // Consume trailing comma or newline
+            let buf = reader.fill_buf().unwrap_or(&[]);
+            if !buf.is_empty() && (buf[0] == b',' || buf[0] == b'\r' || buf[0] == b'\n') {
+                if buf[0] == b',' {
+                    reader.consume(1);
+                }
+                // newlines consumed at start of next field read
+            }
+            return Ok(Some(field));
+        }
+
+        // Unquoted field: read until comma or newline
+        let mut field = String::new();
+        let mut byte = [0u8; 1];
+        loop {
+            let n = reader.read(&mut byte).unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            if byte[0] == b',' || byte[0] == b'\r' || byte[0] == b'\n' {
+                // Handle \r\n
+                if byte[0] == b'\r' {
+                    let buf = reader.fill_buf().unwrap_or(&[]);
+                    if !buf.is_empty() && buf[0] == b'\n' {
+                        reader.consume(1);
+                    }
+                }
+                break;
+            }
+            field.push(byte[0] as char);
+        }
+
+        Ok(Some(field.trim().to_string()))
     }
 
     fn exec_line_input_file(
         &mut self,
-        _file_num: &Expr,
-        _var: &Variable,
+        file_num_expr: &Expr,
+        var: &Variable,
     ) -> Result<(), RuntimeError> {
+        let file_num = self.eval_expr(file_num_expr)?.to_i64()?;
+
+        let line = {
+            let fh = self.file_handles.get_mut(&file_num).ok_or_else(|| RuntimeError::General {
+                msg: format!("file #{file_num} is not open"),
+            })?;
+            let reader = fh.reader.as_mut().ok_or_else(|| RuntimeError::General {
+                msg: format!("file #{file_num} is not open for reading"),
+            })?;
+
+            let mut line = String::new();
+            let bytes_read = reader.read_line(&mut line).map_err(|e| RuntimeError::General {
+                msg: format!("file read error: {e}"),
+            })?;
+
+            if bytes_read == 0 {
+                fh.eof_flag = true;
+            }
+
+            // Check if more data available
+            let buf = reader.fill_buf().unwrap_or(&[]);
+            if buf.is_empty() {
+                fh.eof_flag = true;
+            }
+
+            line.trim_end_matches('\n')
+                .trim_end_matches('\r')
+                .to_string()
+        };
+
+        self.env
+            .borrow_mut()
+            .set(&var.name, var.suffix, Value::Str(line));
+        Ok(())
+    }
+
+    fn exec_get_put(&mut self, gp: &GetPutStmt) -> Result<(), RuntimeError> {
+        let file_num = self.eval_expr(&gp.file_num)?.to_i64()?;
+        let record = if let Some(expr) = &gp.record {
+            Some(self.eval_expr(expr)?.to_i64()?)
+        } else {
+            None
+        };
+
+        let fh = self.file_handles.get_mut(&file_num).ok_or_else(|| RuntimeError::General {
+            msg: format!("file #{file_num} is not open"),
+        })?;
+
+        let rec_len = fh.rec_len;
+
+        if gp.is_get {
+            // Seek if record specified
+            if let Some(rec) = record {
+                let pos = (rec - 1) * rec_len;
+                if let Some(reader) = &mut fh.reader {
+                    reader.seek(SeekFrom::Start(pos as u64)).map_err(|e| RuntimeError::General {
+                        msg: format!("seek error: {e}"),
+                    })?;
+                }
+            }
+
+            // Read rec_len bytes
+            let reader = fh.reader.as_mut().ok_or_else(|| RuntimeError::General {
+                msg: format!("file #{file_num} is not open for reading"),
+            })?;
+            let mut buf = vec![0u8; rec_len as usize];
+            let bytes_read = reader.read(&mut buf).unwrap_or(0);
+            if bytes_read == 0 {
+                fh.eof_flag = true;
+            }
+            buf.truncate(bytes_read);
+
+            // Trim trailing nulls/spaces for string representation
+            let s = String::from_utf8_lossy(&buf).trim_end_matches('\0').to_string();
+
+            if let Some(var) = &gp.var {
+                self.env.borrow_mut().set(&var.name, var.suffix, Value::Str(s));
+            }
+        } else {
+            // PUT
+            // Seek if record specified
+            if let Some(rec) = record {
+                let pos = (rec - 1) * rec_len;
+                if let Some(writer) = &mut fh.writer {
+                    writer.seek(SeekFrom::Start(pos as u64)).map_err(|e| RuntimeError::General {
+                        msg: format!("seek error: {e}"),
+                    })?;
+                }
+            }
+
+            let writer = fh.writer.as_mut().ok_or_else(|| RuntimeError::General {
+                msg: format!("file #{file_num} is not open for writing"),
+            })?;
+
+            if let Some(var) = &gp.var {
+                let val = self.env.borrow().get(&var.name, var.suffix)
+                    .unwrap_or(Value::Str(String::new()));
+                let s = match val {
+                    Value::Str(s) => s,
+                    other => other.format_for_write(),
+                };
+                let bytes = s.as_bytes();
+                // Pad to rec_len for RANDOM mode
+                if fh.mode == FileMode::Random {
+                    let mut padded = vec![0u8; rec_len as usize];
+                    let copy_len = bytes.len().min(rec_len as usize);
+                    padded[..copy_len].copy_from_slice(&bytes[..copy_len]);
+                    let _ = writer.write_all(&padded);
+                } else {
+                    let _ = writer.write_all(bytes);
+                }
+            }
+        }
+
         Ok(())
     }
 }

@@ -134,6 +134,17 @@ impl Value {
         }
     }
 
+    /// WRITE# formatting: no leading/trailing spaces on numbers, strings get quoted by caller.
+    pub fn format_for_write(&self) -> String {
+        match self {
+            Value::Integer(n) => format!("{n}"),
+            Value::Long(n) => format!("{n}"),
+            Value::Single(n) => format_number_raw(*n),
+            Value::Double(n) => format_number_raw(*n),
+            Value::Str(s) => s.clone(),
+        }
+    }
+
     pub fn is_truthy(&self) -> Result<bool, RuntimeError> {
         match self {
             Value::Integer(n) => Ok(*n != 0),
@@ -144,6 +155,14 @@ impl Value {
                 msg: "cannot use string as boolean".into(),
             }),
         }
+    }
+}
+
+fn format_number_raw(n: f64) -> String {
+    if n == n.trunc() && n.abs() < 1e15 {
+        format!("{}", n as i64)
+    } else {
+        format!("{n}")
     }
 }
 

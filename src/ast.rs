@@ -114,6 +114,7 @@ pub enum Stmt {
 
 #[derive(Debug, Clone)]
 pub struct PrintStmt {
+    pub format: Option<Expr>,
     pub items: Vec<PrintItem>,
     pub trailing: PrintSep,
 }
@@ -253,6 +254,7 @@ pub enum FileMode {
 #[derive(Debug, Clone)]
 pub struct FilePrintStmt {
     pub file_num: Expr,
+    pub format: Option<Expr>,
     pub items: Vec<PrintItem>,
     pub trailing: PrintSep,
 }

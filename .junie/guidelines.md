@@ -1,7 +1,7 @@
-# Junie Guidelines for Rice
+# Junie Guidelines for RICE BASIC
 
 ## Project Overview
-Rice is a QBasic/FreeBASIC dialect BASIC interpreter written in Rust. It supports interactive REPL and file execution. No graphics or sound.
+RICE BASIC is a QBasic/FreeBASIC dialect BASIC interpreter written in Rust. It supports interactive REPL and file execution. No graphics or sound.
 
 ## Build & Test
 - `cargo build` — build the project
