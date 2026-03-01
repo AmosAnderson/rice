@@ -104,6 +104,68 @@ CLOSE #1
 
 File modes: INPUT, OUTPUT, APPEND, RANDOM, BINARY.
 
+## Editor Integration (LSP)
+
+RICE BASIC ships with a language server (`rice-lsp`) that provides diagnostics, completions, hover documentation, and go-to-definition.
+
+Build it with:
+
+```bash
+cargo build --release --bin rice-lsp
+```
+
+The binary will be at `target/release/rice-lsp` (or `rice-lsp.exe` on Windows). It communicates over stdio.
+
+### Helix
+
+Add to `~/.config/helix/languages.toml`:
+
+```toml
+[[language]]
+name = "basic"
+scope = "source.basic"
+file-types = ["bas"]
+language-servers = ["rice-lsp"]
+comment-token = "'"
+indent = { tab-width = 4, unit = "    " }
+
+[language-server.rice-lsp]
+command = "rice-lsp"
+```
+
+If `rice-lsp` is not on your `PATH`, use the full path to the binary:
+
+```toml
+[language-server.rice-lsp]
+command = "/path/to/rice-lsp"
+```
+
+### Zed
+
+Add to your Zed settings (`settings.json`):
+
+```json
+{
+  "lsp": {
+    "rice-lsp": {
+      "binary": {
+        "path": "rice-lsp"
+      }
+    }
+  },
+  "languages": {
+    "BASIC": {
+      "language_servers": ["rice-lsp"]
+    }
+  },
+  "file_types": {
+    "BASIC": ["bas"]
+  }
+}
+```
+
+Replace `"rice-lsp"` in `binary.path` with the full path to the binary if it is not on your `PATH`.
+
 ## Architecture
 
 Classic interpreter pipeline, entirely hand-written (no parser generators):
@@ -144,6 +206,9 @@ Source -> Lexer -> Tokens -> Parser -> AST -> Tree-Walking Interpreter -> Output
 
 - [thiserror](https://crates.io/crates/thiserror) -- error type derivation
 - [rustyline](https://crates.io/crates/rustyline) -- REPL line editing and history
+- [tower-lsp](https://crates.io/crates/tower-lsp) -- LSP server framework
+- [tokio](https://crates.io/crates/tokio) -- async runtime (for LSP)
+- [serde_json](https://crates.io/crates/serde_json) -- JSON serialization (for LSP)
 
 ## License
 
