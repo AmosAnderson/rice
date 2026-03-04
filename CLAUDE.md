@@ -18,7 +18,12 @@ cargo test --test integration  # Run integration tests only
 cargo test test_hello          # Run a single test by name
 ```
 
-Rust edition 2024 (`Cargo.toml`). Uses `thiserror` for error types, `rustyline` for REPL, `pretty_assertions` for test diffs.
+Rust edition 2024 (`Cargo.toml`). Uses `thiserror` for error types, `rustyline` for REPL, `pretty_assertions` for test diffs, `tower-lsp`/`tokio`/`serde_json` for the LSP server.
+
+There is also an LSP binary:
+```bash
+cargo build --bin rice-lsp     # Build the language server (stdio-based)
+```
 
 ## Architecture
 
@@ -48,6 +53,15 @@ All hand-written (no parser generators).
 - **Auto-initialization**: undefined variables auto-initialize to 0 or "" (classic BASIC behavior)
 - **`name(args)` ambiguity**: resolved at runtime — check builtin registry, then user functions, then arrays
 - **GOTO/GOSUB**: label map built during prescan; ControlFlow::Goto bubbles up to exec_block which resolves it
+- **Truth values**: true = `-1`, false = `0` (QBasic convention); do not change
+- **Prescan ordering**: `Interpreter::run_source` pre-scans labels, DATA, SUB/FUNCTION definitions before execution; preserve this ordering
+
+### Code Conventions
+
+- Prefer extending existing files (`parser.rs`, `interpreter.rs`, `value.rs`, `builtins.rs`) over adding new modules/abstractions.
+- Module boundaries are declared in `src/lib.rs`; avoid unnecessary public API churn.
+- All identifiers are normalized to UPPERCASE internally; preserve case-insensitive BASIC behavior.
+- Arrays are currently implemented with flattened keys; avoid broad refactors without targeted tests.
 
 ### Test Programs
 

@@ -37,7 +37,7 @@ impl Highlighter for BasicHelper {
         Cow::Owned(highlight_line(line))
     }
 
-    fn highlight_char(&self, _line: &str, _pos: usize, _forced: bool) -> bool {
+    fn highlight_char(&self, _line: &str, _pos: usize, _forced: rustyline::highlight::CmdKind) -> bool {
         true
     }
 }
