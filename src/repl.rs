@@ -358,8 +358,13 @@ impl Repl {
         let mut depth: i32 = 0;
 
         loop {
-            let prompt = if depth > 0 { ". " } else { "Ok\n" };
-            match editor.readline(prompt) {
+            let input = if depth > 0 {
+                let indent = "    ".repeat(depth as usize);
+                editor.readline_with_initial(". ", (&indent, ""))
+            } else {
+                editor.readline("Ok\n")
+            };
+            match input {
                 Ok(line) => {
                     let trimmed = line.trim();
                     if trimmed.is_empty() {
