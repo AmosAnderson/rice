@@ -1,0 +1,47 @@
+' Test ON n GOTO
+n% = 2
+ON n% GOTO 100, 200, 300
+PRINT "fallthrough"
+GOTO 400
+
+100 PRINT "one"
+GOTO 400
+200 PRINT "two"
+GOTO 400
+300 PRINT "three"
+GOTO 400
+400 REM done
+
+' Test ON n GOTO with out-of-range (0 and 4 fall through)
+n% = 0
+ON n% GOTO 500, 600
+PRINT "zero-fallthrough"
+GOTO 700
+500 PRINT "500"
+GOTO 700
+600 PRINT "600"
+GOTO 700
+700 REM done2
+
+n% = 5
+ON n% GOTO 800, 900
+PRINT "over-fallthrough"
+GOTO 1000
+800 PRINT "800"
+GOTO 1000
+900 PRINT "900"
+GOTO 1000
+1000 REM done3
+
+' Test ON n GOSUB
+ON 1 GOSUB 2000, 3000, 4000
+ON 2 GOSUB 2000, 3000, 4000
+ON 3 GOSUB 2000, 3000, 4000
+END
+
+2000 PRINT "sub1"
+RETURN
+3000 PRINT "sub2"
+RETURN
+4000 PRINT "sub3"
+RETURN

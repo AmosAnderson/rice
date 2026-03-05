@@ -131,15 +131,15 @@ impl Parser {
             Token::KwResume => self.parse_resume(),
             Token::KwRandomize => {
                 self.advance();
-                // RANDOMIZE [TIMER | expr] — just skip for now
-                if !self.at_stmt_end() {
-                    if matches!(self.peek(), Token::KwTimer) {
-                        self.advance();
-                    } else {
-                        let _ = self.parse_expr()?;
-                    }
+                if self.at_stmt_end() {
+                    Ok(Stmt::Randomize(None))
+                } else if matches!(self.peek(), Token::KwTimer) {
+                    self.advance();
+                    Ok(Stmt::Randomize(None))
+                } else {
+                    let expr = self.parse_expr()?;
+                    Ok(Stmt::Randomize(Some(expr)))
                 }
-                Ok(Stmt::Rem) // treat as no-op for now
             }
             Token::KwRem => {
                 self.advance();
@@ -1248,11 +1248,30 @@ impl Parser {
             let label = self.parse_label()?;
             return Ok(Stmt::OnErrorGoto(Some(label)));
         }
-        // ON n GOTO/GOSUB — simplified: parse as expression
-        Err(ParseError::General {
-            line: self.current_line(),
-            msg: "ON...GOTO/GOSUB not yet supported".into(),
-        })
+        // ON n GOTO/GOSUB
+        let expr = self.parse_expr()?;
+        if matches!(self.peek(), Token::KwGoto) {
+            self.advance();
+            let mut labels = vec![self.parse_label()?];
+            while matches!(self.peek(), Token::Comma) {
+                self.advance();
+                labels.push(self.parse_label()?);
+            }
+            Ok(Stmt::OnGoto { expr, labels })
+        } else if matches!(self.peek(), Token::KwGosub) {
+            self.advance();
+            let mut labels = vec![self.parse_label()?];
+            while matches!(self.peek(), Token::Comma) {
+                self.advance();
+                labels.push(self.parse_label()?);
+            }
+            Ok(Stmt::OnGosub { expr, labels })
+        } else {
+            Err(ParseError::General {
+                line: self.current_line(),
+                msg: "expected GOTO or GOSUB after ON expression".into(),
+            })
+        }
     }
 
     fn parse_resume(&mut self) -> Result<Stmt, ParseError> {

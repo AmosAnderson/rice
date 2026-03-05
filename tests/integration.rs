@@ -579,3 +579,28 @@ CLOSE #1
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(lines[0], "  3.14");
 }
+
+#[test]
+fn test_on_goto() {
+    let output = run_file("tests/programs/on_goto.bas");
+    let lines: Vec<&str> = output.lines().collect();
+    // ON 2 GOTO → second label
+    assert_eq!(lines[0].trim(), "two");
+    // ON 0 GOTO → fall through
+    assert_eq!(lines[1].trim(), "zero-fallthrough");
+    // ON 5 GOTO → fall through (out of range)
+    assert_eq!(lines[2].trim(), "over-fallthrough");
+    // ON n GOSUB tests
+    assert_eq!(lines[3].trim(), "sub1");
+    assert_eq!(lines[4].trim(), "sub2");
+    assert_eq!(lines[5].trim(), "sub3");
+}
+
+#[test]
+fn test_randomize() {
+    let output = run_file("tests/programs/randomize.bas");
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "deterministic");
+    assert_eq!(lines[1], "rnd0 ok");
+    assert_eq!(lines[2], "range ok");
+}

@@ -33,7 +33,7 @@ impl BuiltinRegistry {
         reg.register("ATN", builtin_atn, 1);
         reg.register("EXP", builtin_exp, 1);
         reg.register("LOG", builtin_log, 1);
-        reg.register("RND", builtin_rnd, 0);
+        // RND is handled as a stateful function in the interpreter
         reg.register("CINT", builtin_cint, 1);
         reg.register("CLNG", builtin_clng, 1);
         reg.register("CSNG", builtin_csng, 1);
@@ -162,20 +162,6 @@ fn builtin_log(args: &[Value]) -> Result<Value, RuntimeError> {
         });
     }
     Ok(Value::Double(n.ln()))
-}
-
-fn builtin_rnd(args: &[Value]) -> Result<Value, RuntimeError> {
-    // Simple pseudo-random. For proper RND we'd need state.
-    // Use a basic approach: time-based seeding.
-    let _ = args;
-    let t = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos();
-    // Simple LCG-ish transform
-    let r = ((t as u64).wrapping_mul(6364136223846793005).wrapping_add(1) >> 33) as f64
-        / (u32::MAX as f64);
-    Ok(Value::Single(r.fract().abs()))
 }
 
 fn builtin_cint(args: &[Value]) -> Result<Value, RuntimeError> {

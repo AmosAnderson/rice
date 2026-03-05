@@ -99,6 +99,9 @@ pub struct Interpreter {
     current_error: Option<ErrorInfo>,
     error_resume_pc: Option<usize>,
     in_error_handler: bool,
+    // Random number generator state
+    rng_state: u64,
+    last_rnd: f64,
 }
 
 impl Drop for Interpreter {
@@ -141,6 +144,11 @@ impl Interpreter {
             current_error: None,
             error_resume_pc: None,
             in_error_handler: false,
+            rng_state: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64,
+            last_rnd: 0.0,
         }
     }
 
@@ -474,6 +482,34 @@ impl Interpreter {
                     }
                 }
             }
+            Stmt::OnGoto { expr, labels } => {
+                let n = self.eval_expr(expr)?.to_i64()? as usize;
+                if n >= 1 && n <= labels.len() {
+                    Ok(ControlFlow::Goto(labels[n - 1].clone()))
+                } else {
+                    Ok(ControlFlow::Normal)
+                }
+            }
+            Stmt::OnGosub { expr, labels } => {
+                let n = self.eval_expr(expr)?.to_i64()? as usize;
+                if n >= 1 && n <= labels.len() {
+                    Ok(ControlFlow::Gosub(labels[n - 1].clone()))
+                } else {
+                    Ok(ControlFlow::Normal)
+                }
+            }
+            Stmt::Randomize(expr) => {
+                if let Some(e) = expr {
+                    let val = self.eval_expr(e)?;
+                    self.rng_state = val.to_f64()?.to_bits();
+                } else {
+                    self.rng_state = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos() as u64;
+                }
+                Ok(ControlFlow::Normal)
+            }
         }
     }
 
@@ -651,6 +687,7 @@ impl Interpreter {
                 ControlFlow::ExitFor => break,
                 ControlFlow::End => return Ok(ControlFlow::End),
                 ControlFlow::Goto(l) => return Ok(ControlFlow::Goto(l)),
+                ControlFlow::Gosub(l) => return Ok(ControlFlow::Gosub(l)),
                 ControlFlow::ExitSub => return Ok(ControlFlow::ExitSub),
                 ControlFlow::ExitFunction(v) => return Ok(ControlFlow::ExitFunction(v)),
                 _ => {}
@@ -692,6 +729,7 @@ impl Interpreter {
                 ControlFlow::ExitDo => break,
                 ControlFlow::End => return Ok(ControlFlow::End),
                 ControlFlow::Goto(l) => return Ok(ControlFlow::Goto(l)),
+                ControlFlow::Gosub(l) => return Ok(ControlFlow::Gosub(l)),
                 ControlFlow::ExitSub => return Ok(ControlFlow::ExitSub),
                 ControlFlow::ExitFunction(v) => return Ok(ControlFlow::ExitFunction(v)),
                 _ => {}
@@ -717,6 +755,7 @@ impl Interpreter {
                 ControlFlow::ExitDo => break,
                 ControlFlow::End => return Ok(ControlFlow::End),
                 ControlFlow::Goto(l) => return Ok(ControlFlow::Goto(l)),
+                ControlFlow::Gosub(l) => return Ok(ControlFlow::Gosub(l)),
                 ControlFlow::ExitSub => return Ok(ControlFlow::ExitSub),
                 ControlFlow::ExitFunction(v) => return Ok(ControlFlow::ExitFunction(v)),
                 _ => {}
@@ -905,6 +944,28 @@ impl Interpreter {
 
                 // Stateful functions (need access to interpreter state)
                 match name.as_str() {
+                    "RND" => {
+                        // RND with no args or positive arg → next random number
+                        // RND(0) → return last random number
+                        // RND(negative) → reseed with that value, return first number
+                        if arg_vals.len() > 1 {
+                            return Err(RuntimeError::ArityMismatch { expected: 1, got: arg_vals.len() });
+                        }
+                        let arg = if arg_vals.is_empty() { 1.0 } else { arg_vals[0].to_f64()? };
+                        if arg == 0.0 {
+                            return Ok(Value::Single(self.last_rnd as f32 as f64));
+                        }
+                        if arg < 0.0 {
+                            self.rng_state = arg.to_bits();
+                        }
+                        // LCG step
+                        self.rng_state = self.rng_state
+                            .wrapping_mul(6364136223846793005)
+                            .wrapping_add(1442695040888963407);
+                        let r = ((self.rng_state >> 33) as f64) / ((1u64 << 31) as f64);
+                        self.last_rnd = r;
+                        return Ok(Value::Single(r as f32 as f64));
+                    }
                     "ERR" | "ERL" => {
                         if !arg_vals.is_empty() {
                             return Err(RuntimeError::ArityMismatch { expected: 0, got: arg_vals.len() });

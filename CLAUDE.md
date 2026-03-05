@@ -18,12 +18,14 @@ cargo test --test integration  # Run integration tests only
 cargo test test_hello          # Run a single test by name
 ```
 
-Rust edition 2024 (`Cargo.toml`). Uses `thiserror` for error types, `rustyline` for REPL, `pretty_assertions` for test diffs, `tower-lsp`/`tokio`/`serde_json` for the LSP server.
+Rust edition 2024 (`Cargo.toml`). Uses `thiserror` for error types, `rustyline` for REPL, `pretty_assertions` and `tempfile` for tests, `tower-lsp`/`tokio`/`serde_json` for the LSP server.
 
 There is also an LSP binary:
 ```bash
 cargo build --bin rice-lsp     # Build the language server (stdio-based)
 ```
+
+REPL and file execution share interpreter code paths; keep behavior parity between them.
 
 ## Architecture
 
@@ -58,10 +60,12 @@ All hand-written (no parser generators).
 
 ### Code Conventions
 
+- Follow existing Rust style: `snake_case` for functions/fields, `CamelCase` for types/enums. Use `match` and `Result`-based error propagation.
 - Prefer extending existing files (`parser.rs`, `interpreter.rs`, `value.rs`, `builtins.rs`) over adding new modules/abstractions.
 - Module boundaries are declared in `src/lib.rs`; avoid unnecessary public API churn.
 - All identifiers are normalized to UPPERCASE internally; preserve case-insensitive BASIC behavior.
 - Arrays are currently implemented with flattened keys; avoid broad refactors without targeted tests.
+- Builtins are centralized in `builtins.rs`; function resolution order: builtin → user-defined function → array.
 
 ### Test Programs
 

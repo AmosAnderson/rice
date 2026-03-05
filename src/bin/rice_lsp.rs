@@ -324,6 +324,9 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("GET", "Read binary record from file"),
         ("PUT", "Write binary record to file"),
         ("ON ERROR GOTO", "Set error handler"),
+        ("ON GOTO", "Branch to nth label"),
+        ("ON GOSUB", "Call nth subroutine label"),
+        ("RANDOMIZE", "Seed the random number generator"),
         ("RESUME", "Resume after error"),
         ("RESUME NEXT", "Resume at next statement after error"),
         ("REM", "Comment"),
@@ -488,6 +491,9 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ("READ", "```basic\nREAD var[, var...]\n```\nReads values from DATA statements into variables."),
         ("SWAP", "```basic\nSWAP var1, var2\n```\nExchanges the values of two variables."),
         ("ON ERROR GOTO", "```basic\nON ERROR GOTO label\n```\nSets up an error handler. `ON ERROR GOTO 0` disables error trapping."),
+        ("ON GOTO", "```basic\nON expr GOTO label1, label2, ...\n```\nBranches to the nth label based on the value of expr. Falls through if out of range."),
+        ("ON GOSUB", "```basic\nON expr GOSUB label1, label2, ...\n```\nCalls the nth subroutine label based on the value of expr. Falls through if out of range."),
+        ("RANDOMIZE", "```basic\nRANDOMIZE [seed | TIMER]\n```\nSeeds the random number generator. Use a fixed seed for reproducible sequences."),
         ("RESUME", "```basic\nRESUME [NEXT | label]\n```\nContinues execution after an error handler."),
     ])
 });

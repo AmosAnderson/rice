@@ -102,7 +102,12 @@ pub enum Stmt {
 
     // Error handling
     OnErrorGoto(Option<Label>),
+    OnGoto { expr: Expr, labels: Vec<Label> },
+    OnGosub { expr: Expr, labels: Vec<Label> },
     Resume(ResumeTarget),
+
+    // Random
+    Randomize(Option<Expr>),
 
     // Misc
     End,
