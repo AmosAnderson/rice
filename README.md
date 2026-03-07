@@ -59,22 +59,25 @@ RICE BASIC implements a broad subset of QBasic:
 
 ### Statements
 
-- **Output**: PRINT, PRINT USING
+- **Output**: PRINT, PRINT USING, WRITE
 - **Input**: INPUT, LINE INPUT
-- **Variables**: LET, DIM, CONST, SWAP, OPTION BASE, REDIM, ERASE
-- **Control flow**: IF/ELSEIF/ELSE/END IF, FOR/NEXT, WHILE/WEND, DO/LOOP, SELECT CASE, GOTO, GOSUB/RETURN, EXIT FOR/DO/SUB/FUNCTION, ON ERROR GOTO/RESUME, END, STOP, SYSTEM
-- **Procedures**: SUB/END SUB, FUNCTION/END FUNCTION, CALL, DECLARE
+- **Variables**: LET, DIM, CONST, SWAP, OPTION BASE, REDIM, ERASE, SHARED, STATIC, DEFINT/DEFLNG/DEFSNG/DEFDBL/DEFSTR, CLEAR
+- **Control flow**: IF/ELSEIF/ELSE/END IF, FOR/NEXT, WHILE/WEND, DO/LOOP, SELECT CASE, GOTO, GOSUB/RETURN, ON n GOTO/GOSUB, EXIT FOR/DO/SUB/FUNCTION, ON ERROR GOTO/RESUME, END, STOP, SYSTEM, SLEEP
+- **Procedures**: SUB/END SUB, FUNCTION/END FUNCTION, DEF FN, CALL, DECLARE
 - **Data**: DATA, READ, RESTORE
+- **String mutation**: MID$ (assignment), LSET, RSET
 - **File I/O**: OPEN, CLOSE, PRINT#, WRITE#, INPUT#, LINE INPUT#, GET, PUT
+- **File system**: NAME...AS, KILL, MKDIR, RMDIR, CHDIR
+- **System**: SHELL
 
 ### Built-in Functions
 
 - **String**: LEN, LEFT$, RIGHT$, MID$, INSTR, UCASE$, LCASE$, LTRIM$, RTRIM$, SPACE$, STRING$, CHR$, ASC, STR$, VAL, HEX$, OCT$
 - **Math**: ABS, SGN, INT, FIX, SQR, EXP, LOG, SIN, COS, TAN, ATN, RND
-- **Conversion**: CINT, CLNG, CSNG, CDBL
+- **Conversion**: CINT, CLNG, CSNG, CDBL, MKI$, MKL$, MKS$, MKD$, CVI, CVL, CVS, CVD
 - **File**: FREEFILE, EOF, LOF, LOC
 - **Error handling**: ERR, ERL
-- **Other**: TIMER, DATE$, TIME$, RANDOMIZE
+- **System**: ENVIRON$, TIMER, DATE$, TIME$, RANDOMIZE
 
 ### File I/O
 
@@ -195,12 +198,10 @@ Source -> Lexer -> Tokens -> Parser -> AST -> Tree-Walking Interpreter -> Output
 
 - Graphics (SCREEN, PSET, LINE, CIRCLE, etc.)
 - Sound (SOUND, BEEP, PLAY)
-- Screen control (LOCATE, WIDTH, COLOR)
+- Screen control (LOCATE, WIDTH, COLOR, INKEY$)
 - User-defined types (TYPE...END TYPE)
-- DEFtype statements (DEFINT, DEFSNG, etc.)
-- ON n GOTO/GOSUB (computed jumps)
-- SHARED/STATIC/BYVAL parameter semantics
-- LSET/RSET
+- CHAIN/COMMON (multi-module programs)
+- DEF SEG/PEEK/POKE (memory access)
 
 ## Dependencies
 
