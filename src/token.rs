@@ -185,4 +185,27 @@ pub enum Token {
     KwRandomize,
     KwTimer,
     KwSystem,
+
+    // Phase 1: new keywords
+    KwSleep,
+    KwClear,
+    KwName,
+    KwKill,
+    KwMkdir,
+    KwRmdir,
+    KwChdir,
+    KwShell,
+
+    // Phase 2: string mutation
+    KwLset,
+    KwRset,
+
+    // Phase 4: DEFtype and DEF FN
+    KwDef,
+    KwEndDef,
+    KwDefInt,
+    KwDefLng,
+    KwDefSng,
+    KwDefDbl,
+    KwDefStr,
 }

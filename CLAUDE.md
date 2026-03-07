@@ -75,6 +75,6 @@ To add a new integration test: create a `.bas` file in `tests/programs/`, then a
 
 ## Status of BASIC Features
 
-**Working**: PRINT, PRINT USING, LET, DIM, CONST, INPUT, LINE INPUT, IF/ELSEIF/ELSE, FOR/NEXT, WHILE/WEND, DO/LOOP, SELECT CASE, GOTO, GOSUB/RETURN, EXIT FOR/DO/SUB/FUNCTION, SUB/FUNCTION definitions, CALL, DECLARE, DATA/READ/RESTORE, SWAP, all string/math/conversion builtins, ERR/ERL, OPTION BASE, REDIM, ERASE, File I/O (OPEN, CLOSE, PRINT#, WRITE#, INPUT#, LINE INPUT#, GET, PUT), file functions (FREEFILE, EOF, LOF, LOC), ON ERROR GOTO/RESUME.
+**Working**: PRINT, PRINT USING, LET, DIM, CONST, INPUT, LINE INPUT, IF/ELSEIF/ELSE, FOR/NEXT, WHILE/WEND, DO/LOOP, SELECT CASE, GOTO, GOSUB/RETURN, EXIT FOR/DO/SUB/FUNCTION, SUB/FUNCTION definitions, CALL, DECLARE, DATA/READ/RESTORE, SWAP, all string/math/conversion builtins, ERR/ERL, OPTION BASE, REDIM, ERASE, File I/O (OPEN, CLOSE, PRINT#, WRITE#, INPUT#, LINE INPUT#, GET, PUT), file functions (FREEFILE, EOF, LOF, LOC), ON ERROR GOTO/RESUME, ON n GOTO/GOSUB, RANDOMIZE/RND, WRITE (console), SLEEP, CLEAR, NAME/KILL/MKDIR/RMDIR/CHDIR, SHELL, ENVIRON$, MID$ (statement form), LSET/RSET, SHARED, STATIC, DEFtype (DEFINT/DEFLNG/DEFSNG/DEFDBL/DEFSTR), DEF FN, MKI$/MKL$/MKS$/MKD$/CVI/CVL/CVS/CVD.
 
-**Not implemented**: TYPE (user-defined types), DEFtype statements, ON n GOTO/GOSUB, proper array storage (currently uses flattened key hack), SHARED/STATIC/BYVAL semantics, LSET/RSET.
+**Not implemented**: TYPE (user-defined types), proper array storage (currently uses flattened key hack), BYVAL semantics, FIELD (random-access file fields), SEEK statement/function, LBOUND/UBOUND (stubs only).

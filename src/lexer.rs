@@ -365,6 +365,22 @@ impl Lexer {
                 "STRING" => Token::KwString,
                 "RANDOMIZE" => Token::KwRandomize,
                 "TIMER" => Token::KwTimer,
+                "SLEEP" => Token::KwSleep,
+                "CLEAR" => Token::KwClear,
+                "NAME" => Token::KwName,
+                "KILL" => Token::KwKill,
+                "MKDIR" => Token::KwMkdir,
+                "RMDIR" => Token::KwRmdir,
+                "CHDIR" => Token::KwChdir,
+                "SHELL" => Token::KwShell,
+                "LSET" => Token::KwLset,
+                "RSET" => Token::KwRset,
+                "DEF" => Token::KwDef,
+                "DEFINT" => Token::KwDefInt,
+                "DEFLNG" => Token::KwDefLng,
+                "DEFSNG" => Token::KwDefSng,
+                "DEFDBL" => Token::KwDefDbl,
+                "DEFSTR" => Token::KwDefStr,
                 _ => Token::Identifier { name: word, suffix },
             }
         } else {
@@ -404,6 +420,10 @@ impl Lexer {
                         "TYPE" => {
                             self.consume_word();
                             return Some(Token::KwEndType);
+                        }
+                        "DEF" => {
+                            self.consume_word();
+                            return Some(Token::KwEndDef);
                         }
                         _ => {}
                     }

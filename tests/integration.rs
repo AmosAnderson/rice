@@ -604,3 +604,145 @@ fn test_randomize() {
     assert_eq!(lines[1], "rnd0 ok");
     assert_eq!(lines[2], "range ok");
 }
+
+// ==================== Phase 1-4 new feature tests ====================
+
+#[test]
+fn test_write_stmt() {
+    let output = run_file("tests/programs/write_stmt.bas");
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "1,2,3");
+    assert_eq!(lines[1], "\"hello\",42,\"world\"");
+    assert_eq!(lines[2], "");
+}
+
+#[test]
+fn test_clear() {
+    let output = run_file("tests/programs/clear_test.bas");
+    let lines: Vec<&str> = output.lines().collect();
+    // After CLEAR, x should auto-init to 0 and y$ to ""
+    assert_eq!(lines[0].trim(), "0");
+    assert_eq!(lines[1].trim(), "");
+}
+
+#[test]
+fn test_mid_assign() {
+    let output = run_file("tests/programs/mid_assign.bas");
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "Hello BASIC");
+    assert_eq!(lines[1], "12ABCD7890");
+    assert_eq!(lines[2], "HiXXXXXXXX");
+}
+
+#[test]
+fn test_lset_rset() {
+    let output = run_file("tests/programs/lset_rset.bas");
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "|Hello     |");
+    assert_eq!(lines[1], "|        Hi|");
+    assert_eq!(lines[2], "|ABCDE|");
+}
+
+#[test]
+fn test_shared() {
+    let output = run_file("tests/programs/shared_test.bas");
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0].trim(), "20");
+}
+
+#[test]
+fn test_static_var() {
+    let output = run_file("tests/programs/static_test.bas");
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0].trim(), "1");
+    assert_eq!(lines[1].trim(), "2");
+    assert_eq!(lines[2].trim(), "3");
+}
+
+#[test]
+fn test_static_sub() {
+    let output = run_file("tests/programs/static_sub.bas");
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0].trim(), "5");
+    assert_eq!(lines[1].trim(), "10");
+    assert_eq!(lines[2].trim(), "15");
+}
+
+#[test]
+fn test_deftype() {
+    let output = run_file("tests/programs/deftype.bas");
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0].trim(), "2"); // 7 \ 3 = 2 (integer div)
+}
+
+#[test]
+fn test_def_fn() {
+    let output = run_file("tests/programs/def_fn.bas");
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0].trim(), "25");  // FNSquare(5)
+    assert_eq!(lines[1].trim(), "27");  // FNCube(3)
+    assert_eq!(lines[2].trim(), "24");  // FNSquare(4) + FNCube(2) = 16 + 8
+}
+
+#[test]
+fn test_environ() {
+    // Test ENVIRON$ function returns a non-empty value for a known env var
+    let output = run_bas(r#"
+        x$ = ENVIRON$("PATH")
+        IF LEN(x$) > 0 THEN
+            PRINT "has path"
+        ELSE
+            PRINT "no path"
+        END IF
+        y$ = ENVIRON$("NONEXISTENT_VAR_12345")
+        PRINT LEN(y$)
+    "#);
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "has path");
+    assert_eq!(lines[1].trim(), "0");
+}
+
+#[test]
+fn test_file_ops() {
+    let (output, _dir) = run_bas_with_tmpdir(r#"
+        MKDIR "{DIR}/testsubdir"
+        OPEN "{DIR}/testsubdir/test.txt" FOR OUTPUT AS #1
+        PRINT #1, "hello"
+        CLOSE #1
+        NAME "{DIR}/testsubdir/test.txt" AS "{DIR}/testsubdir/renamed.txt"
+        OPEN "{DIR}/testsubdir/renamed.txt" FOR INPUT AS #1
+        LINE INPUT #1, x$
+        CLOSE #1
+        PRINT x$
+        KILL "{DIR}/testsubdir/renamed.txt"
+        RMDIR "{DIR}/testsubdir"
+        PRINT "done"
+    "#);
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "hello");
+    assert_eq!(lines[1], "done");
+}
+
+#[test]
+fn test_sleep() {
+    // Just make sure SLEEP 0 parses and runs without error
+    let output = run_bas("SLEEP 0\nPRINT \"ok\"");
+    assert_eq!(output.trim(), "ok");
+}
+
+#[test]
+fn test_binary_conversion() {
+    let output = run_bas(r#"
+        a$ = MKI$(1000)
+        PRINT LEN(a$)
+        PRINT CVI(a$)
+        b$ = MKL$(123456)
+        PRINT LEN(b$)
+        PRINT CVL(b$)
+    "#);
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0].trim(), "2");
+    assert_eq!(lines[1].trim(), "1000");
+    assert_eq!(lines[2].trim(), "4");
+    assert_eq!(lines[3].trim(), "123456");
+}

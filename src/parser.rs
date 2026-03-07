@@ -145,6 +145,58 @@ impl Parser {
                 self.advance();
                 Ok(Stmt::Rem)
             }
+            // Phase 1
+            Token::KwSleep => {
+                self.advance();
+                if self.at_stmt_end() {
+                    Ok(Stmt::Sleep(None))
+                } else {
+                    Ok(Stmt::Sleep(Some(self.parse_expr()?)))
+                }
+            }
+            Token::KwClear => {
+                self.advance();
+                // Ignore optional numeric arguments for compat
+                while !self.at_stmt_end() {
+                    self.advance();
+                }
+                Ok(Stmt::Clear)
+            }
+            Token::KwName => self.parse_name(),
+            Token::KwKill => {
+                self.advance();
+                Ok(Stmt::Kill(self.parse_expr()?))
+            }
+            Token::KwMkdir => {
+                self.advance();
+                Ok(Stmt::Mkdir(self.parse_expr()?))
+            }
+            Token::KwRmdir => {
+                self.advance();
+                Ok(Stmt::Rmdir(self.parse_expr()?))
+            }
+            Token::KwChdir => {
+                self.advance();
+                Ok(Stmt::Chdir(self.parse_expr()?))
+            }
+            Token::KwShell => {
+                self.advance();
+                if self.at_stmt_end() {
+                    Ok(Stmt::Shell(None))
+                } else {
+                    Ok(Stmt::Shell(Some(self.parse_expr()?)))
+                }
+            }
+            // Phase 2
+            Token::KwLset => self.parse_lset_rset(true),
+            Token::KwRset => self.parse_lset_rset(false),
+            // Phase 3
+            Token::KwShared => self.parse_shared(),
+            Token::KwStatic => self.parse_static(),
+            // Phase 4
+            Token::KwDefInt | Token::KwDefLng | Token::KwDefSng |
+            Token::KwDefDbl | Token::KwDefStr => self.parse_deftype(),
+            Token::KwDef => self.parse_def_fn(),
             Token::Identifier { .. } => self.parse_assignment_or_call(),
             _ => {
                 let tok = self.peek().clone();
@@ -294,6 +346,11 @@ impl Parser {
             let expr = self.parse_expr()?;
             return Ok(Stmt::ExprStmt(expr));
         };
+
+        // MID$ statement: MID$(var$, start[, len]) = replacement$
+        if name == "MID" && suffix == Some(TypeSuffix::String) && self.peek_at(1) == Some(&Token::LeftParen) {
+            return self.parse_mid_assign();
+        }
 
         self.advance();
 
@@ -795,7 +852,13 @@ impl Parser {
         self.advance(); // consume SUB
         let (name, _) = self.expect_identifier()?;
 
-        let is_static = false; // TODO
+        // Check for SUB name STATIC
+        let is_static = if matches!(self.peek(), Token::KwStatic) {
+            self.advance();
+            true
+        } else {
+            false
+        };
 
         let params = if matches!(self.peek(), Token::LeftParen) {
             self.advance();
@@ -822,7 +885,13 @@ impl Parser {
         self.advance(); // consume FUNCTION
         let (name, suffix) = self.expect_identifier()?;
 
-        let is_static = false; // TODO
+        // Check for FUNCTION name STATIC
+        let is_static = if matches!(self.peek(), Token::KwStatic) {
+            self.advance();
+            true
+        } else {
+            false
+        };
 
         let params = if matches!(self.peek(), Token::LeftParen) {
             self.advance();
@@ -1178,13 +1247,17 @@ impl Parser {
 
     fn parse_write(&mut self) -> Result<Stmt, ParseError> {
         self.advance(); // consume WRITE
-        // WRITE without # is not supported in QBasic file I/O context
+        // WRITE without # is console WRITE
         if !matches!(self.peek(), Token::Hash) {
-            return Err(ParseError::Expected {
-                line: self.current_line(),
-                expected: "#".into(),
-                found: format!("{:?}", self.peek()),
-            });
+            let mut exprs = Vec::new();
+            if !self.at_stmt_end() {
+                exprs.push(self.parse_expr()?);
+                while matches!(self.peek(), Token::Comma) {
+                    self.advance();
+                    exprs.push(self.parse_expr()?);
+                }
+            }
+            return Ok(Stmt::Write(exprs));
         }
         self.advance(); // consume #
         let file_num = self.parse_expr()?;
@@ -1285,6 +1358,141 @@ impl Parser {
         }
         let label = self.parse_label()?;
         Ok(Stmt::Resume(ResumeTarget::Label(label)))
+    }
+
+    // ==================== Phase 1-4 new statement parsers ====================
+
+    fn parse_name(&mut self) -> Result<Stmt, ParseError> {
+        self.advance(); // consume NAME
+        let old = self.parse_expr()?;
+        self.expect(Token::KwAs)?;
+        let new = self.parse_expr()?;
+        Ok(Stmt::Name { old, new })
+    }
+
+    fn parse_lset_rset(&mut self, is_lset: bool) -> Result<Stmt, ParseError> {
+        self.advance(); // consume LSET/RSET
+        let var = self.parse_variable()?;
+        self.expect(Token::Equal)?;
+        let expr = self.parse_expr()?;
+        if is_lset {
+            Ok(Stmt::Lset { var, expr })
+        } else {
+            Ok(Stmt::Rset { var, expr })
+        }
+    }
+
+    fn parse_mid_assign(&mut self) -> Result<Stmt, ParseError> {
+        self.advance(); // consume MID$
+        self.expect(Token::LeftParen)?;
+        let var = self.parse_variable()?;
+        self.expect(Token::Comma)?;
+        let start = self.parse_expr()?;
+        let length = if matches!(self.peek(), Token::Comma) {
+            self.advance();
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+        self.expect(Token::RightParen)?;
+        self.expect(Token::Equal)?;
+        let replacement = self.parse_expr()?;
+        Ok(Stmt::MidAssign { var, start, length, replacement })
+    }
+
+    fn parse_shared(&mut self) -> Result<Stmt, ParseError> {
+        self.advance(); // consume SHARED
+        let mut vars = vec![self.parse_variable()?];
+        while matches!(self.peek(), Token::Comma) {
+            self.advance();
+            vars.push(self.parse_variable()?);
+        }
+        Ok(Stmt::Shared(vars))
+    }
+
+    fn parse_static(&mut self) -> Result<Stmt, ParseError> {
+        self.advance(); // consume STATIC
+        let mut decls = vec![self.parse_dim_decl()?];
+        while matches!(self.peek(), Token::Comma) {
+            self.advance();
+            decls.push(self.parse_dim_decl()?);
+        }
+        Ok(Stmt::Static(decls))
+    }
+
+    fn parse_deftype(&mut self) -> Result<Stmt, ParseError> {
+        let typ = match self.peek().clone() {
+            Token::KwDefInt => BasicType::Integer,
+            Token::KwDefLng => BasicType::Long,
+            Token::KwDefSng => BasicType::Single,
+            Token::KwDefDbl => BasicType::Double,
+            Token::KwDefStr => BasicType::String,
+            _ => unreachable!(),
+        };
+        self.advance();
+
+        let mut ranges = Vec::new();
+        loop {
+            let (start_name, _) = self.expect_identifier()?;
+            let start_ch = start_name.chars().next().unwrap();
+            let end_ch = if matches!(self.peek(), Token::Minus) {
+                self.advance();
+                let (end_name, _) = self.expect_identifier()?;
+                end_name.chars().next().unwrap()
+            } else {
+                start_ch
+            };
+            ranges.push((start_ch, end_ch));
+            if !matches!(self.peek(), Token::Comma) {
+                break;
+            }
+            self.advance();
+        }
+        Ok(Stmt::DefType { typ, ranges })
+    }
+
+    fn parse_def_fn(&mut self) -> Result<Stmt, ParseError> {
+        self.advance(); // consume DEF
+
+        // Expect identifier starting with FN
+        let (name, _) = self.expect_identifier()?;
+        if !name.starts_with("FN") || name.len() < 3 {
+            return Err(ParseError::Expected {
+                line: self.current_line(),
+                expected: "FN function name (e.g. FNSquare)".into(),
+                found: name,
+            });
+        }
+
+        let params = if matches!(self.peek(), Token::LeftParen) {
+            self.advance();
+            let p = self.parse_param_list()?;
+            self.expect(Token::RightParen)?;
+            p
+        } else {
+            Vec::new()
+        };
+
+        if matches!(self.peek(), Token::Equal) {
+            // Single-line: DEF FNname(args) = expr
+            self.advance();
+            let expr = self.parse_expr()?;
+            Ok(Stmt::DefFn {
+                name,
+                params,
+                body: DefFnBody::SingleLine(expr),
+            })
+        } else {
+            // Multi-line: DEF FNname(args) ... END DEF
+            self.skip_newlines();
+            let body = self.parse_body_until(&[Token::KwEndDef])?;
+            self.expect(Token::KwEndDef)?;
+            Ok(Stmt::DefFn {
+                name,
+                params,
+                body: DefFnBody::MultiLine(body),
+            })
+        }
     }
 
     // ==================== Expression parsing ====================

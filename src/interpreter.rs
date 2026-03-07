@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Read as IoRead, Seek, SeekFrom, Write};
 use std::rc::Rc;
@@ -65,6 +65,7 @@ struct ErrorInfo {
 struct UserSub {
     params: Vec<Param>,
     body: Vec<LabeledStmt>,
+    is_static: bool,
 }
 
 #[derive(Clone)]
@@ -73,6 +74,14 @@ struct UserFunction {
     suffix: Option<TypeSuffix>,
     params: Vec<Param>,
     body: Vec<LabeledStmt>,
+    is_static: bool,
+}
+
+#[derive(Clone)]
+struct DefFnDef {
+    name: String,
+    params: Vec<Param>,
+    body: DefFnBody,
 }
 
 struct FileHandle {
@@ -88,6 +97,7 @@ pub struct Interpreter {
     builtins: BuiltinRegistry,
     subs: HashMap<String, UserSub>,
     functions: HashMap<String, UserFunction>,
+    def_fns: HashMap<String, DefFnDef>,
     print_col: usize,
     data_values: Vec<DataItem>,
     data_pos: usize,
@@ -102,6 +112,11 @@ pub struct Interpreter {
     // Random number generator state
     rng_state: u64,
     last_rnd: f64,
+    // Phase 3: STATIC variable persistence
+    static_vars: HashMap<String, HashMap<String, Value>>,
+    current_static_vars: HashSet<String>,
+    // Phase 4: DEFtype map (A=0 .. Z=25)
+    deftype_map: [Option<BasicType>; 26],
 }
 
 impl Drop for Interpreter {
@@ -134,6 +149,7 @@ impl Interpreter {
             builtins: BuiltinRegistry::new(),
             subs: HashMap::new(),
             functions: HashMap::new(),
+            def_fns: HashMap::new(),
             print_col: 0,
             data_values: Vec::new(),
             data_pos: 0,
@@ -149,6 +165,9 @@ impl Interpreter {
                 .unwrap_or_default()
                 .as_nanos() as u64,
             last_rnd: 0.0,
+            static_vars: HashMap::new(),
+            current_static_vars: HashSet::new(),
+            deftype_map: [None; 26],
         }
     }
 
@@ -183,6 +202,7 @@ impl Interpreter {
                         UserSub {
                             params: sub.params.clone(),
                             body: sub.body.clone(),
+                            is_static: sub.is_static,
                         },
                     );
                 }
@@ -198,6 +218,17 @@ impl Interpreter {
                             suffix: func.suffix,
                             params: func.params.clone(),
                             body: func.body.clone(),
+                            is_static: func.is_static,
+                        },
+                    );
+                }
+                Stmt::DefFn { name, params, body } => {
+                    self.def_fns.insert(
+                        name.clone(),
+                        DefFnDef {
+                            name: name.clone(),
+                            params: params.clone(),
+                            body: body.clone(),
                         },
                     );
                 }
@@ -510,6 +541,214 @@ impl Interpreter {
                 }
                 Ok(ControlFlow::Normal)
             }
+
+            // Phase 1: WRITE (console)
+            Stmt::Write(exprs) => {
+                for (i, expr) in exprs.iter().enumerate() {
+                    if i > 0 {
+                        write!(self.output, ",").ok();
+                    }
+                    let val = self.eval_expr(expr)?;
+                    match &val {
+                        Value::Str(s) => write!(self.output, "\"{}\"", s).ok(),
+                        Value::Integer(n) => write!(self.output, "{}", n).ok(),
+                        Value::Long(n) => write!(self.output, "{}", n).ok(),
+                        Value::Single(n) => {
+                            if *n == (*n as i64) as f64 && n.abs() < 1e15 {
+                                write!(self.output, "{}", *n as i64).ok()
+                            } else {
+                                write!(self.output, "{}", n).ok()
+                            }
+                        }
+                        Value::Double(n) => {
+                            if *n == (*n as i64) as f64 && n.abs() < 1e15 {
+                                write!(self.output, "{}", *n as i64).ok()
+                            } else {
+                                write!(self.output, "{}", n).ok()
+                            }
+                        }
+                    };
+                }
+                writeln!(self.output).ok();
+                self.print_col = 0;
+                Ok(ControlFlow::Normal)
+            }
+
+            // Phase 1: SLEEP
+            Stmt::Sleep(expr) => {
+                if let Some(e) = expr {
+                    let secs = self.eval_expr(e)?.to_i64()?;
+                    if secs > 0 {
+                        std::thread::sleep(std::time::Duration::from_secs(secs as u64));
+                    }
+                }
+                Ok(ControlFlow::Normal)
+            }
+
+            // Phase 1: CLEAR
+            Stmt::Clear => {
+                self.env.borrow_mut().clear_vars();
+                self.data_pos = 0;
+                Ok(ControlFlow::Normal)
+            }
+
+            // Phase 1: NAME old AS new
+            Stmt::Name { old, new } => {
+                let old_path = self.eval_expr(old)?.to_string_val()?;
+                let new_path = self.eval_expr(new)?.to_string_val()?;
+                std::fs::rename(&old_path, &new_path).map_err(|e| RuntimeError::General {
+                    msg: format!("NAME error: {}", e),
+                })?;
+                Ok(ControlFlow::Normal)
+            }
+
+            // Phase 1: KILL
+            Stmt::Kill(expr) => {
+                let path = self.eval_expr(expr)?.to_string_val()?;
+                std::fs::remove_file(&path).map_err(|e| RuntimeError::General {
+                    msg: format!("KILL error: {}", e),
+                })?;
+                Ok(ControlFlow::Normal)
+            }
+
+            // Phase 1: MKDIR
+            Stmt::Mkdir(expr) => {
+                let path = self.eval_expr(expr)?.to_string_val()?;
+                std::fs::create_dir(&path).map_err(|e| RuntimeError::General {
+                    msg: format!("MKDIR error: {}", e),
+                })?;
+                Ok(ControlFlow::Normal)
+            }
+
+            // Phase 1: RMDIR
+            Stmt::Rmdir(expr) => {
+                let path = self.eval_expr(expr)?.to_string_val()?;
+                std::fs::remove_dir(&path).map_err(|e| RuntimeError::General {
+                    msg: format!("RMDIR error: {}", e),
+                })?;
+                Ok(ControlFlow::Normal)
+            }
+
+            // Phase 1: CHDIR
+            Stmt::Chdir(expr) => {
+                let path = self.eval_expr(expr)?.to_string_val()?;
+                std::env::set_current_dir(&path).map_err(|e| RuntimeError::General {
+                    msg: format!("CHDIR error: {}", e),
+                })?;
+                Ok(ControlFlow::Normal)
+            }
+
+            // Phase 1: SHELL
+            Stmt::Shell(expr) => {
+                if let Some(e) = expr {
+                    let cmd = self.eval_expr(e)?.to_string_val()?;
+                    #[cfg(target_os = "windows")]
+                    let result = std::process::Command::new("cmd").args(["/c", &cmd]).status();
+                    #[cfg(not(target_os = "windows"))]
+                    let result = std::process::Command::new("sh").args(["-c", &cmd]).status();
+                    result.map_err(|e| RuntimeError::General {
+                        msg: format!("SHELL error: {}", e),
+                    })?;
+                }
+                Ok(ControlFlow::Normal)
+            }
+
+            // Phase 2: MID$ assignment
+            Stmt::MidAssign { var, start, length, replacement } => {
+                let current = self.env.borrow().get(&var.name, var.suffix)
+                    .unwrap_or(Value::Str(String::new()))
+                    .to_string_val()?;
+                let start_pos = (self.eval_expr(start)?.to_i64()? - 1).max(0) as usize;
+                let repl = self.eval_expr(replacement)?.to_string_val()?;
+                let max_len = if let Some(len_expr) = length {
+                    self.eval_expr(len_expr)?.to_i64()? as usize
+                } else {
+                    current.len().saturating_sub(start_pos)
+                };
+                // Cannot extend string; replacement is truncated
+                let avail = current.len().saturating_sub(start_pos);
+                let replace_len = max_len.min(avail).min(repl.len());
+                let mut chars: Vec<char> = current.chars().collect();
+                let repl_chars: Vec<char> = repl.chars().collect();
+                for i in 0..replace_len {
+                    if start_pos + i < chars.len() {
+                        chars[start_pos + i] = repl_chars[i];
+                    }
+                }
+                let result: String = chars.into_iter().collect();
+                self.env.borrow_mut().set(&var.name, var.suffix, Value::Str(result));
+                Ok(ControlFlow::Normal)
+            }
+
+            // Phase 2: LSET
+            Stmt::Lset { var, expr } => {
+                let current = self.env.borrow().get(&var.name, var.suffix)
+                    .unwrap_or(Value::Str(String::new()))
+                    .to_string_val()?;
+                let target_len = current.len();
+                let new_val = self.eval_expr(expr)?.to_string_val()?;
+                let result = if new_val.len() >= target_len {
+                    new_val[..target_len].to_string()
+                } else {
+                    format!("{:<width$}", new_val, width = target_len)
+                };
+                self.env.borrow_mut().set(&var.name, var.suffix, Value::Str(result));
+                Ok(ControlFlow::Normal)
+            }
+
+            // Phase 2: RSET
+            Stmt::Rset { var, expr } => {
+                let current = self.env.borrow().get(&var.name, var.suffix)
+                    .unwrap_or(Value::Str(String::new()))
+                    .to_string_val()?;
+                let target_len = current.len();
+                let new_val = self.eval_expr(expr)?.to_string_val()?;
+                let result = if new_val.len() >= target_len {
+                    new_val[..target_len].to_string()
+                } else {
+                    format!("{:>width$}", new_val, width = target_len)
+                };
+                self.env.borrow_mut().set(&var.name, var.suffix, Value::Str(result));
+                Ok(ControlFlow::Normal)
+            }
+
+            // Phase 3: SHARED
+            Stmt::Shared(vars) => {
+                for var in vars {
+                    let key = Environment::var_key(&var.name, var.suffix);
+                    self.env.borrow_mut().shared_vars.insert(key);
+                }
+                Ok(ControlFlow::Normal)
+            }
+
+            // Phase 3: STATIC (variable declarations handled in exec_sub_call)
+            Stmt::Static(decls) => {
+                // Mark variables as static and initialize with defaults if not already loaded
+                for decl in decls {
+                    let key = Environment::var_key(&decl.name, decl.suffix);
+                    if self.env.borrow().get(&decl.name, decl.suffix).is_none() {
+                        let default = Value::default_for(Self::resolve_decl_type(decl));
+                        self.env.borrow_mut().set(&decl.name, decl.suffix, default);
+                    }
+                    self.current_static_vars.insert(key);
+                }
+                Ok(ControlFlow::Normal)
+            }
+
+            // Phase 4: DEFtype
+            Stmt::DefType { typ, ranges } => {
+                for &(start, end) in ranges {
+                    let s = (start as u8 - b'A') as usize;
+                    let e = (end as u8 - b'A') as usize;
+                    for i in s..=e.min(25) {
+                        self.deftype_map[i] = Some(*typ);
+                    }
+                }
+                Ok(ControlFlow::Normal)
+            }
+
+            // Phase 4: DEF FN (collected during prescan)
+            Stmt::DefFn { .. } => Ok(ControlFlow::Normal),
         }
     }
 
@@ -853,10 +1092,42 @@ impl Interpreter {
                     .set(&param.name, param.suffix, val.clone());
             }
 
+            // Load static variables
+            if let Some(saved) = self.static_vars.get(name) {
+                for (key, val) in saved {
+                    child_env.borrow_mut().vars_mut().insert(key.clone(), val.clone());
+                }
+            }
+
             let prev_env = self.env.clone();
-            self.env = child_env;
+            let prev_static = std::mem::take(&mut self.current_static_vars);
+            if sub.is_static {
+                // Mark all locals as static — we'll capture them after execution
+            }
+            self.env = child_env.clone();
             let result = self.exec_block(&sub.body);
             self.env = prev_env;
+
+            // Save static variables
+            if sub.is_static {
+                // Save all non-param local variables
+                let param_keys: HashSet<String> = sub.params.iter()
+                    .map(|p| Environment::var_key(&p.name, p.suffix))
+                    .collect();
+                let locals: HashMap<String, Value> = child_env.borrow().var_entries()
+                    .filter(|(k, _)| !param_keys.contains(k.as_str()))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                self.static_vars.insert(name.to_string(), locals);
+            } else if !self.current_static_vars.is_empty() {
+                let saved = self.static_vars.entry(name.to_string()).or_default();
+                for key in &self.current_static_vars {
+                    if let Some(val) = child_env.borrow().vars_ref().get(key) {
+                        saved.insert(key.clone(), val.clone());
+                    }
+                }
+            }
+            self.current_static_vars = prev_static;
 
             match result? {
                 ControlFlow::End => Ok(ControlFlow::End),
@@ -899,7 +1170,7 @@ impl Interpreter {
                         return Ok(result);
                     }
 
-                    let default = Value::default_for_suffix(var.suffix);
+                    let default = self.default_for_var(&var.name, var.suffix);
                     self.env
                         .borrow_mut()
                         .set(&var.name, var.suffix, default.clone());
@@ -1048,6 +1319,12 @@ impl Interpreter {
                     return Ok(result);
                 }
 
+                // Try DEF FN function
+                let def_fn = self.def_fns.get(&func_name).or_else(|| self.def_fns.get(name)).cloned();
+                if let Some(def_fn) = def_fn {
+                    return self.call_def_fn(&def_fn, &arg_vals);
+                }
+
                 // Try user-defined function
                 let func = self.functions.get(&func_name).or_else(|| self.functions.get(name)).cloned();
                 if let Some(func) = func {
@@ -1083,6 +1360,17 @@ impl Interpreter {
                 .set(&param.name, param.suffix, val.clone());
         }
 
+        // Load static variables
+        let func_key = match func.suffix {
+            Some(s) => format!("{}{}", func.name, s.to_char()),
+            None => func.name.clone(),
+        };
+        if let Some(saved) = self.static_vars.get(&func_key) {
+            for (key, val) in saved {
+                child_env.borrow_mut().vars_mut().insert(key.clone(), val.clone());
+            }
+        }
+
         // Initialize function return variable
         let return_default = Value::default_for_suffix(func.suffix);
         child_env
@@ -1090,9 +1378,31 @@ impl Interpreter {
             .set(&func.name, func.suffix, return_default);
 
         let prev_env = self.env.clone();
+        let prev_static = std::mem::take(&mut self.current_static_vars);
         self.env = child_env.clone();
         let result = self.exec_block(&func.body);
         self.env = prev_env;
+
+        // Save static variables
+        if func.is_static {
+            let param_keys: HashSet<String> = func.params.iter()
+                .map(|p| Environment::var_key(&p.name, p.suffix))
+                .collect();
+            let ret_key = Environment::var_key(&func.name, func.suffix);
+            let locals: HashMap<String, Value> = child_env.borrow().var_entries()
+                .filter(|(k, _)| !param_keys.contains(k.as_str()) && *k != &ret_key)
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            self.static_vars.insert(func_key, locals);
+        } else if !self.current_static_vars.is_empty() {
+            let saved = self.static_vars.entry(func_key).or_default();
+            for key in &self.current_static_vars {
+                if let Some(val) = child_env.borrow().vars_ref().get(key) {
+                    saved.insert(key.clone(), val.clone());
+                }
+            }
+        }
+        self.current_static_vars = prev_static;
 
         match result? {
             ControlFlow::ExitFunction(v) => Ok(v),
@@ -1102,6 +1412,62 @@ impl Interpreter {
                     .borrow()
                     .get(&func.name, func.suffix)
                     .unwrap_or(Value::Integer(0)))
+            }
+        }
+    }
+
+    fn call_def_fn(
+        &mut self,
+        def_fn: &DefFnDef,
+        args: &[Value],
+    ) -> Result<Value, RuntimeError> {
+        if args.len() != def_fn.params.len() {
+            return Err(RuntimeError::ArityMismatch {
+                expected: def_fn.params.len(),
+                got: args.len(),
+            });
+        }
+
+        match &def_fn.body {
+            DefFnBody::SingleLine(expr) => {
+                // DEF FN shares the current scope — bind params temporarily
+                let mut old_vals: Vec<(String, Option<TypeSuffix>, Option<Value>)> = Vec::new();
+                for (param, val) in def_fn.params.iter().zip(args.iter()) {
+                    let old = self.env.borrow().get(&param.name, param.suffix);
+                    old_vals.push((param.name.clone(), param.suffix, old));
+                    self.env.borrow_mut().set(&param.name, param.suffix, val.clone());
+                }
+                let result = self.eval_expr(expr);
+                // Restore old values
+                for (name, suffix, old) in old_vals {
+                    match old {
+                        Some(v) => self.env.borrow_mut().set(&name, suffix, v),
+                        None => {
+                            let key = Environment::var_key(&name, suffix);
+                            self.env.borrow_mut().vars_mut().remove(&key);
+                        }
+                    }
+                }
+                result
+            }
+            DefFnBody::MultiLine(body) => {
+                // Multi-line DEF FN: execute body, return value from function name variable
+                let child_env = Environment::new_child(self.env.clone());
+                for (param, val) in def_fn.params.iter().zip(args.iter()) {
+                    child_env.borrow_mut().set(&param.name, param.suffix, val.clone());
+                }
+                // Initialize return variable
+                child_env.borrow_mut().set(&def_fn.name, None, Value::Double(0.0));
+
+                let prev_env = self.env.clone();
+                self.env = child_env.clone();
+                let result = self.exec_block(body);
+                self.env = prev_env;
+
+                match result? {
+                    ControlFlow::ExitFunction(v) => Ok(v),
+                    _ => Ok(child_env.borrow().get(&def_fn.name, None).unwrap_or(Value::Double(0.0))),
+                }
             }
         }
     }
@@ -1229,6 +1595,23 @@ impl Interpreter {
         } else {
             BasicType::Single
         }
+    }
+
+    /// Return the default value for a variable considering DEFtype map
+    fn default_for_var(&self, name: &str, suffix: Option<TypeSuffix>) -> Value {
+        if suffix.is_some() {
+            return Value::default_for_suffix(suffix);
+        }
+        // Check DEFtype map based on first letter
+        if let Some(first_char) = name.chars().next() {
+            if first_char.is_ascii_alphabetic() {
+                let idx = (first_char.to_ascii_uppercase() as u8 - b'A') as usize;
+                if let Some(basic_type) = self.deftype_map[idx] {
+                    return Value::default_for(basic_type);
+                }
+            }
+        }
+        Value::default_for_suffix(None)
     }
 
     /// Build a flattened key for array element access (temporary hack until

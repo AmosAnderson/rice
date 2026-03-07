@@ -65,6 +65,17 @@ impl BuiltinRegistry {
         reg.register("DATE$", builtin_date, 0);
         reg.register("TIME$", builtin_time, 0);
         reg.register("COMMAND$", builtin_stub, 0);
+        reg.register("ENVIRON$", builtin_environ, 1);
+
+        // Binary conversion
+        reg.register("MKI$", builtin_mki, 1);
+        reg.register("MKL$", builtin_mkl, 1);
+        reg.register("MKS$", builtin_mks, 1);
+        reg.register("MKD$", builtin_mkd, 1);
+        reg.register("CVI", builtin_cvi, 1);
+        reg.register("CVL", builtin_cvl, 1);
+        reg.register("CVS", builtin_cvs, 1);
+        reg.register("CVD", builtin_cvd, 1);
 
         reg
     }
@@ -184,7 +195,7 @@ fn builtin_cdbl(args: &[Value]) -> Result<Value, RuntimeError> {
 
 fn builtin_len(args: &[Value]) -> Result<Value, RuntimeError> {
     match &args[0] {
-        Value::Str(s) => Ok(Value::Integer(s.len() as i64)),
+        Value::Str(s) => Ok(Value::Integer(s.chars().count() as i64)),
         _ => Err(RuntimeError::TypeMismatch {
             msg: "LEN expects a string".into(),
         }),
@@ -382,4 +393,93 @@ fn builtin_time(_args: &[Value]) -> Result<Value, RuntimeError> {
 
 fn builtin_stub(_args: &[Value]) -> Result<Value, RuntimeError> {
     Ok(Value::Integer(0))
+}
+
+fn builtin_environ(args: &[Value]) -> Result<Value, RuntimeError> {
+    let name = args[0].to_string_val()?;
+    let val = std::env::var(&name).unwrap_or_default();
+    Ok(Value::Str(val))
+}
+
+// Binary conversion functions (MKI$/MKL$/MKS$/MKD$ and CVI/CVL/CVS/CVD)
+
+/// Convert bytes to a string where each byte becomes a char (latin-1 style)
+fn bytes_to_basic_string(bytes: &[u8]) -> String {
+    bytes.iter().map(|&b| b as char).collect()
+}
+
+/// Convert a BASIC binary string back to bytes
+fn basic_string_to_bytes(s: &str) -> Vec<u8> {
+    s.chars().map(|c| c as u8).collect()
+}
+
+fn builtin_mki(args: &[Value]) -> Result<Value, RuntimeError> {
+    let n = args[0].to_i64()? as i16;
+    Ok(Value::Str(bytes_to_basic_string(&n.to_le_bytes())))
+}
+
+fn builtin_mkl(args: &[Value]) -> Result<Value, RuntimeError> {
+    let n = args[0].to_i64()? as i32;
+    Ok(Value::Str(bytes_to_basic_string(&n.to_le_bytes())))
+}
+
+fn builtin_mks(args: &[Value]) -> Result<Value, RuntimeError> {
+    let n = args[0].to_f64()? as f32;
+    Ok(Value::Str(bytes_to_basic_string(&n.to_le_bytes())))
+}
+
+fn builtin_mkd(args: &[Value]) -> Result<Value, RuntimeError> {
+    let n = args[0].to_f64()?;
+    Ok(Value::Str(bytes_to_basic_string(&n.to_le_bytes())))
+}
+
+fn builtin_cvi(args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = args[0].to_string_val()?;
+    let bytes = basic_string_to_bytes(&s);
+    if bytes.len() < 2 {
+        return Err(RuntimeError::IllegalFunctionCall {
+            msg: "CVI requires a 2-byte string".into(),
+        });
+    }
+    let n = i16::from_le_bytes([bytes[0], bytes[1]]);
+    Ok(Value::Integer(n as i64))
+}
+
+fn builtin_cvl(args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = args[0].to_string_val()?;
+    let bytes = basic_string_to_bytes(&s);
+    if bytes.len() < 4 {
+        return Err(RuntimeError::IllegalFunctionCall {
+            msg: "CVL requires a 4-byte string".into(),
+        });
+    }
+    let n = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    Ok(Value::Long(n as i64))
+}
+
+fn builtin_cvs(args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = args[0].to_string_val()?;
+    let bytes = basic_string_to_bytes(&s);
+    if bytes.len() < 4 {
+        return Err(RuntimeError::IllegalFunctionCall {
+            msg: "CVS requires a 4-byte string".into(),
+        });
+    }
+    let n = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    Ok(Value::Single(n as f64))
+}
+
+fn builtin_cvd(args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = args[0].to_string_val()?;
+    let bytes = basic_string_to_bytes(&s);
+    if bytes.len() < 8 {
+        return Err(RuntimeError::IllegalFunctionCall {
+            msg: "CVD requires an 8-byte string".into(),
+        });
+    }
+    let n = f64::from_le_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3],
+        bytes[4], bytes[5], bytes[6], bytes[7],
+    ]);
+    Ok(Value::Double(n))
 }

@@ -109,12 +109,42 @@ pub enum Stmt {
     // Random
     Randomize(Option<Expr>),
 
+    // Phase 1: new statements
+    Write(Vec<Expr>),
+    Sleep(Option<Expr>),
+    Clear,
+    Name { old: Expr, new: Expr },
+    Kill(Expr),
+    Mkdir(Expr),
+    Rmdir(Expr),
+    Chdir(Expr),
+    Shell(Option<Expr>),
+
+    // Phase 2: string mutation
+    MidAssign { var: Variable, start: Expr, length: Option<Expr>, replacement: Expr },
+    Lset { var: Variable, expr: Expr },
+    Rset { var: Variable, expr: Expr },
+
+    // Phase 3: scope
+    Shared(Vec<Variable>),
+    Static(Vec<DimDecl>),
+
+    // Phase 4: DEFtype and DEF FN
+    DefType { typ: BasicType, ranges: Vec<(char, char)> },
+    DefFn { name: String, params: Vec<Param>, body: DefFnBody },
+
     // Misc
     End,
     System,
     Stop,
     Rem,
     ExprStmt(Expr),
+}
+
+#[derive(Debug, Clone)]
+pub enum DefFnBody {
+    SingleLine(Expr),
+    MultiLine(Vec<LabeledStmt>),
 }
 
 #[derive(Debug, Clone)]

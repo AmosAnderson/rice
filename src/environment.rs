@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::ast::Label;
@@ -17,6 +17,7 @@ pub struct Environment {
     labels: HashMap<String, usize>,
     pub gosub_stack: Vec<usize>,
     pub option_base: i32,
+    pub shared_vars: HashSet<String>,
 }
 
 impl Environment {
@@ -28,6 +29,7 @@ impl Environment {
             labels: HashMap::new(),
             gosub_stack: Vec::new(),
             option_base: 0,
+            shared_vars: HashSet::new(),
         }))
     }
 
@@ -39,6 +41,7 @@ impl Environment {
             labels: HashMap::new(),
             gosub_stack: Vec::new(),
             option_base: 0,
+            shared_vars: HashSet::new(),
         }))
     }
 
@@ -46,6 +49,12 @@ impl Environment {
         let key = Self::var_key(name, suffix);
         if let Some(v) = self.constants.get(&key) {
             return Some(v.clone());
+        }
+        // If variable is shared, read from root
+        if self.shared_vars.contains(&key) {
+            if let Some(parent) = &self.parent {
+                return Self::get_from_root(parent, &key);
+            }
         }
         if let Some(v) = self.vars.get(&key) {
             return Some(v.clone());
@@ -61,6 +70,13 @@ impl Environment {
         // Don't overwrite constants
         if self.constants.contains_key(&key) {
             return; // Silently ignore; caller should check
+        }
+        // If variable is shared, write to root
+        if self.shared_vars.contains(&key) {
+            if let Some(parent) = &self.parent {
+                Self::set_in_root(parent, &key, value);
+                return;
+            }
         }
         self.vars.insert(key, value);
     }
@@ -82,10 +98,51 @@ impl Environment {
         self.labels.get(&label.to_string()).copied()
     }
 
-    fn var_key(name: &str, suffix: Option<TypeSuffix>) -> String {
+    pub fn clear_vars(&mut self) {
+        self.vars.clear();
+    }
+
+    pub fn var_keys(&self) -> Vec<String> {
+        self.vars.keys().cloned().collect()
+    }
+
+    pub fn vars_mut(&mut self) -> &mut HashMap<String, Value> {
+        &mut self.vars
+    }
+
+    pub fn vars_ref(&self) -> &HashMap<String, Value> {
+        &self.vars
+    }
+
+    pub fn var_entries(&self) -> impl Iterator<Item = (&String, &Value)> {
+        self.vars.iter()
+    }
+
+    pub fn var_key(name: &str, suffix: Option<TypeSuffix>) -> String {
         match suffix {
             Some(s) => format!("{}{}", name, s.to_char()),
             None => name.to_string(),
+        }
+    }
+
+    fn get_from_root(env: &EnvRef, key: &str) -> Option<Value> {
+        let e = env.borrow();
+        if let Some(parent) = &e.parent {
+            Self::get_from_root(parent, key)
+        } else {
+            e.vars.get(key).cloned()
+        }
+    }
+
+    fn set_in_root(env: &EnvRef, key: &str, value: Value) {
+        let mut e = env.borrow_mut();
+        if e.parent.is_none() {
+            // This is root
+            e.vars.insert(key.to_string(), value);
+        } else {
+            let parent = e.parent.clone().unwrap();
+            drop(e);
+            Self::set_in_root(&parent, key, value);
         }
     }
 }

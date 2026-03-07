@@ -1,8 +1,8 @@
-DECLARE SUB Greet(name AS STRING)
+DECLARE SUB Greet(nm AS STRING)
 
 CALL Greet("World")
 Greet "BASIC"
 
-SUB Greet(name AS STRING)
-    PRINT "Hello, " + name + "!"
+SUB Greet(nm AS STRING)
+    PRINT "Hello, " + nm + "!"
 END SUB
