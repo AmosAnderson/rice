@@ -133,12 +133,22 @@ pub enum Stmt {
     DefType { typ: BasicType, ranges: Vec<(char, char)> },
     DefFn { name: String, params: Vec<Param>, body: DefFnBody },
 
+    // User-defined types
+    TypeDef { name: String, fields: Vec<TypeField> },
+    MemberAssign { target: Expr, value: Expr },
+
     // Misc
     End,
     System,
     Stop,
     Rem,
     ExprStmt(Expr),
+}
+
+#[derive(Debug, Clone)]
+pub struct TypeField {
+    pub name: String,
+    pub field_type: BasicType,
 }
 
 #[derive(Debug, Clone)]
@@ -349,6 +359,10 @@ pub enum Expr {
         args: Vec<Expr>,
     },
     Paren(Box<Expr>),
+    MemberAccess {
+        object: Box<Expr>,
+        field: String,
+    },
 }
 
 #[derive(Debug, Clone)]

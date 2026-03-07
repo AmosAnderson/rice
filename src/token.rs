@@ -89,6 +89,7 @@ pub enum Token {
     Comma,
     Semicolon,
     Hash, // # for file numbers
+    Dot,  // . for member access
 
     // Keywords
     KwPrint,

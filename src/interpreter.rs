@@ -117,6 +117,8 @@ pub struct Interpreter {
     current_static_vars: HashSet<String>,
     // Phase 4: DEFtype map (A=0 .. Z=25)
     deftype_map: [Option<BasicType>; 26],
+    type_defs: HashMap<String, Vec<crate::ast::TypeField>>,
+    array_type_map: HashMap<String, String>,
 }
 
 impl Drop for Interpreter {
@@ -167,7 +169,9 @@ impl Interpreter {
             last_rnd: 0.0,
             static_vars: HashMap::new(),
             current_static_vars: HashSet::new(),
-            deftype_map: [None; 26],
+            deftype_map: std::array::from_fn(|_| None),
+            type_defs: HashMap::new(),
+            array_type_map: HashMap::new(),
         }
     }
 
@@ -231,6 +235,9 @@ impl Interpreter {
                             body: body.clone(),
                         },
                     );
+                }
+                Stmt::TypeDef { name, fields } => {
+                    self.type_defs.insert(name.clone(), fields.clone());
                 }
                 // Recurse into nested blocks to find labels and DATA
                 Stmt::If(if_stmt) => {
@@ -373,8 +380,19 @@ impl Interpreter {
             }
             Stmt::Dim(decls) => {
                 for decl in decls {
-                    let default = Value::default_for(Self::resolve_decl_type(decl));
-                    self.env.borrow_mut().set(&decl.name, decl.suffix, default);
+                    let resolved = Self::resolve_decl_type(decl);
+                    if let BasicType::UserDefined(ref type_name) = resolved {
+                        if decl.dimensions.is_some() {
+                            // Array of TYPE: register for lazy auto-init
+                            self.array_type_map.insert(decl.name.clone(), type_name.clone());
+                        } else {
+                            let record = self.create_default_record(type_name)?;
+                            self.env.borrow_mut().set(&decl.name, decl.suffix, record);
+                        }
+                    } else {
+                        let default = Value::default_for(resolved);
+                        self.env.borrow_mut().set(&decl.name, decl.suffix, default);
+                    }
                 }
                 Ok(ControlFlow::Normal)
             }
@@ -610,6 +628,9 @@ impl Interpreter {
                                 write!(self.output, "{}", n).ok()
                             }
                         }
+                        Value::Record { type_name, .. } => {
+                            write!(self.output, "[{}]", type_name).ok()
+                        }
                     };
                 }
                 writeln!(self.output).ok();
@@ -797,7 +818,7 @@ impl Interpreter {
                     let s = (start as u8 - b'A') as usize;
                     let e = (end as u8 - b'A') as usize;
                     for i in s..=e.min(25) {
-                        self.deftype_map[i] = Some(*typ);
+                        self.deftype_map[i] = Some(typ.clone());
                     }
                 }
                 Ok(ControlFlow::Normal)
@@ -805,6 +826,15 @@ impl Interpreter {
 
             // Phase 4: DEF FN (collected during prescan)
             Stmt::DefFn { .. } => Ok(ControlFlow::Normal),
+
+            // User-defined types (collected during prescan)
+            Stmt::TypeDef { .. } => Ok(ControlFlow::Normal),
+
+            Stmt::MemberAssign { target, value } => {
+                let new_val = self.eval_expr(value)?;
+                self.set_member_value(target, new_val)?;
+                Ok(ControlFlow::Normal)
+            }
         }
     }
 
@@ -1244,9 +1274,7 @@ impl Interpreter {
                     .collect::<Result<Vec<_>, _>>()?;
                 // Simplified array lookup using flattened key
                 let key = Self::array_key(name, *suffix, &idx_vals);
-                Ok(self.env.borrow().get(&key, None).unwrap_or_else(|| {
-                    Value::default_for_suffix(*suffix)
-                }))
+                self.get_or_init_array_element(name, *suffix, &key)
             }
             Expr::BinaryOp { left, op, right } => {
                 let lval = self.eval_expr(left)?;
@@ -1387,11 +1415,30 @@ impl Interpreter {
                     return self.call_user_function(&func, &arg_vals);
                 }
 
-                Err(RuntimeError::General {
-                    msg: format!("undefined function: {func_name}"),
-                })
+                // Fall through to array access
+                let idx_vals: Vec<i64> = arg_vals
+                    .iter()
+                    .map(|v| v.to_i64())
+                    .collect::<Result<Vec<_>, _>>()?;
+                let key = Self::array_key(name, *suffix, &idx_vals);
+                self.get_or_init_array_element(name, *suffix, &key)
             }
             Expr::Paren(inner) => self.eval_expr(inner),
+            Expr::MemberAccess { object, field } => {
+                let obj_val = self.eval_expr(object)?;
+                match obj_val {
+                    Value::Record { fields, .. } => {
+                        fields.get(field.as_str()).cloned().ok_or_else(|| {
+                            RuntimeError::General {
+                                msg: format!("field '{}' not found in type", field),
+                            }
+                        })
+                    }
+                    _ => Err(RuntimeError::TypeMismatch {
+                        msg: "member access on non-record value".into(),
+                    }),
+                }
+            }
         }
     }
 
@@ -1641,13 +1688,13 @@ impl Interpreter {
             BasicType::Long => Value::Long(n as i64),
             BasicType::Single => Value::Single(n),
             BasicType::Double => Value::Double(n),
-            BasicType::String => unreachable!("make_numeric called with String type"),
+            _ => unreachable!("make_numeric called with non-numeric type"),
         })
     }
 
     fn resolve_decl_type(decl: &DimDecl) -> BasicType {
-        if let Some(t) = decl.as_type {
-            t
+        if let Some(ref t) = decl.as_type {
+            t.clone()
         } else if let Some(s) = decl.suffix {
             s.to_basic_type()
         } else {
@@ -1664,8 +1711,8 @@ impl Interpreter {
         if let Some(first_char) = name.chars().next() {
             if first_char.is_ascii_alphabetic() {
                 let idx = (first_char.to_ascii_uppercase() as u8 - b'A') as usize;
-                if let Some(basic_type) = self.deftype_map[idx] {
-                    return Value::default_for(basic_type);
+                if let Some(ref basic_type) = self.deftype_map[idx] {
+                    return Value::default_for(basic_type.clone());
                 }
             }
         }
@@ -1684,6 +1731,171 @@ impl Interpreter {
             Some(s) => format!("{}{}_{}", name, s.to_char(), idx_part),
             None => format!("{}_{}", name, idx_part),
         }
+    }
+
+    fn get_or_init_array_element(
+        &mut self,
+        name: &str,
+        suffix: Option<TypeSuffix>,
+        key: &str,
+    ) -> Result<Value, RuntimeError> {
+        if let Some(v) = self.env.borrow().get(key, None) {
+            return Ok(v);
+        }
+        if let Some(type_name) = self.array_type_map.get(name).cloned() {
+            let record = self.create_default_record(&type_name)?;
+            self.env.borrow_mut().set(key, None, record.clone());
+            Ok(record)
+        } else {
+            Ok(Value::default_for_suffix(suffix))
+        }
+    }
+
+    fn create_default_record(&self, type_name: &str) -> Result<Value, RuntimeError> {
+        let field_specs: Vec<(String, BasicType)> = self
+            .type_defs
+            .get(type_name)
+            .ok_or_else(|| RuntimeError::General {
+                msg: format!("undefined type: {}", type_name),
+            })?
+            .iter()
+            .map(|f| (f.name.clone(), f.field_type.clone()))
+            .collect();
+        let mut fields = HashMap::new();
+        for (name, field_type) in field_specs {
+            let val = match &field_type {
+                BasicType::UserDefined(nested) => self.create_default_record(nested)?,
+                other => Value::default_for(other.clone()),
+            };
+            fields.insert(name, val);
+        }
+        Ok(Value::Record {
+            type_name: type_name.to_string(),
+            fields,
+        })
+    }
+
+    fn set_member_value(&mut self, target: &Expr, new_val: Value) -> Result<(), RuntimeError> {
+        // Collect the member access path: walk MemberAccess chain to find root + field path
+        let mut path = Vec::new();
+        let mut current = target;
+        while let Expr::MemberAccess { object, field } = current {
+            path.push(field.clone());
+            current = object;
+        }
+        path.reverse();
+
+        // `current` is now the root expression (Variable or ArrayIndex)
+        // `path` is the list of field names to traverse
+
+        // Read the root value
+        let root_key = match current {
+            Expr::Variable(var) => Environment::var_key(&var.name, var.suffix),
+            Expr::ArrayIndex { name, suffix, indices } => {
+                let idx_vals: Vec<i64> = indices
+                    .iter()
+                    .map(|e| self.eval_expr(e).and_then(|v| v.to_i64()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Self::array_key(name, *suffix, &idx_vals)
+            }
+            _ => {
+                return Err(RuntimeError::General {
+                    msg: "invalid member assignment target".into(),
+                });
+            }
+        };
+
+        // Get or auto-init the root value
+        let mut root_val = if let Some(v) = self.env.borrow().get(&root_key, None) {
+            v
+        } else if let Expr::ArrayIndex { name, suffix, .. } = current {
+            self.get_or_init_array_element(name, *suffix, &root_key)?
+        } else {
+            return Err(RuntimeError::General {
+                msg: "variable not initialized".into(),
+            });
+        };
+
+        // Navigate to the innermost record and set the field
+        Self::set_nested_field(&mut root_val, &path, new_val, &self.type_defs)?;
+
+        // Write back
+        if let Expr::Variable(var) = current {
+            self.env.borrow_mut().set(&var.name, var.suffix, root_val);
+        } else {
+            self.env.borrow_mut().set(&root_key, None, root_val);
+        }
+        Ok(())
+    }
+
+    fn set_nested_field(
+        val: &mut Value,
+        path: &[String],
+        new_val: Value,
+        type_defs: &HashMap<String, Vec<crate::ast::TypeField>>,
+    ) -> Result<(), RuntimeError> {
+        if path.is_empty() {
+            return Ok(());
+        }
+        if let Value::Record { fields, type_name } = val {
+            let field_name = &path[0];
+            if path.len() == 1 {
+                match fields.get_mut(field_name) {
+                    Some(existing) => {
+                        let coerced = Self::coerce_for_field_static(type_defs, type_name, field_name, new_val)?;
+                        *existing = coerced;
+                    }
+                    None => {
+                        return Err(RuntimeError::General {
+                            msg: format!("field '{}' not found in type {}", field_name, type_name),
+                        });
+                    }
+                }
+            } else {
+                match fields.get_mut(field_name) {
+                    Some(inner) => Self::set_nested_field(inner, &path[1..], new_val, type_defs)?,
+                    None => {
+                        return Err(RuntimeError::General {
+                            msg: format!("field '{}' not found in type {}", field_name, type_name),
+                        });
+                    }
+                }
+            }
+            Ok(())
+        } else {
+            Err(RuntimeError::TypeMismatch {
+                msg: "member access on non-record value".into(),
+            })
+        }
+    }
+
+    fn coerce_for_field_static(
+        type_defs: &HashMap<String, Vec<crate::ast::TypeField>>,
+        type_name: &str,
+        field_name: &str,
+        val: Value,
+    ) -> Result<Value, RuntimeError> {
+        if let Some(fields_def) = type_defs.get(type_name) {
+            for f in fields_def {
+                if f.name == field_name {
+                    if let BasicType::FixedString(n) = f.field_type {
+                        let s = val.to_string_val()?;
+                        let char_count = s.chars().count();
+                        if char_count > n {
+                            let byte_end = s.char_indices().nth(n).map(|(i, _)| i).unwrap_or(s.len());
+                            return Ok(Value::Str(s[..byte_end].to_string()));
+                        } else if char_count < n {
+                            let mut padded = s;
+                            padded.push_str(&" ".repeat(n - char_count));
+                            return Ok(Value::Str(padded));
+                        }
+                        return Ok(Value::Str(s));
+                    }
+                    break;
+                }
+            }
+        }
+        Ok(val)
     }
 
     fn eval_format_using(&mut self, fmt_expr: &Expr, items: &[PrintItem]) -> Result<String, RuntimeError> {

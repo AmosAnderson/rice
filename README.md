@@ -61,7 +61,7 @@ RICE BASIC implements a broad subset of QBasic:
 
 - **Output**: PRINT, PRINT USING, WRITE
 - **Input**: INPUT, LINE INPUT
-- **Variables**: LET, DIM, CONST, SWAP, OPTION BASE, REDIM, ERASE, SHARED, STATIC, DEFINT/DEFLNG/DEFSNG/DEFDBL/DEFSTR, CLEAR
+- **Variables**: LET, DIM, CONST, SWAP, OPTION BASE, REDIM, ERASE, SHARED, STATIC, DEFINT/DEFLNG/DEFSNG/DEFDBL/DEFSTR, CLEAR, TYPE...END TYPE (user-defined types)
 - **Control flow**: IF/ELSEIF/ELSE/END IF, FOR/NEXT, WHILE/WEND, DO/LOOP, SELECT CASE, GOTO, GOSUB/RETURN, ON n GOTO/GOSUB, EXIT FOR/DO/SUB/FUNCTION, ON ERROR GOTO/RESUME, END, STOP, SYSTEM, SLEEP
 - **Procedures**: SUB/END SUB, FUNCTION/END FUNCTION, DEF FN, CALL, DECLARE
 - **Data**: DATA, READ, RESTORE
@@ -199,7 +199,6 @@ Source -> Lexer -> Tokens -> Parser -> AST -> Tree-Walking Interpreter -> Output
 - Graphics (SCREEN, PSET, LINE, CIRCLE, etc.)
 - Sound (SOUND, BEEP, PLAY)
 - Screen control (LOCATE, WIDTH, COLOR, INKEY$)
-- User-defined types (TYPE...END TYPE)
 - CHAIN/COMMON (multi-module programs)
 - DEF SEG/PEEK/POKE (memory access)
 - FIELD (random-access file fields), SEEK

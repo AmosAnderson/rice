@@ -1,14 +1,17 @@
+use std::collections::HashMap;
 use std::fmt;
 
 use crate::error::RuntimeError;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BasicType {
     Integer,
     Long,
     Single,
     Double,
     String,
+    FixedString(usize),
+    UserDefined(String),
 }
 
 #[derive(Debug, Clone)]
@@ -18,6 +21,10 @@ pub enum Value {
     Single(f64),
     Double(f64),
     Str(String),
+    Record {
+        type_name: String,
+        fields: HashMap<String, Value>,
+    },
 }
 
 impl Value {
@@ -28,6 +35,10 @@ impl Value {
             BasicType::Single => Value::Single(0.0),
             BasicType::Double => Value::Double(0.0),
             BasicType::String => Value::Str(String::new()),
+            BasicType::FixedString(n) => Value::Str(" ".repeat(n)),
+            BasicType::UserDefined(_) => {
+                panic!("default_for(UserDefined) requires type definition context; use Interpreter::create_default_record")
+            }
         }
     }
 
@@ -45,11 +56,12 @@ impl Value {
             Value::Single(_) => BasicType::Single,
             Value::Double(_) => BasicType::Double,
             Value::Str(_) => BasicType::String,
+            Value::Record { type_name, .. } => BasicType::UserDefined(type_name.clone()),
         }
     }
 
     pub fn is_numeric(&self) -> bool {
-        !matches!(self, Value::Str(_))
+        !matches!(self, Value::Str(_) | Value::Record { .. })
     }
 
     pub fn to_f64(&self) -> Result<f64, RuntimeError> {
@@ -61,6 +73,9 @@ impl Value {
             Value::Str(_) => Err(RuntimeError::TypeMismatch {
                 msg: "cannot convert string to number".into(),
             }),
+            Value::Record { .. } => Err(RuntimeError::TypeMismatch {
+                msg: "cannot convert record to number".into(),
+            }),
         }
     }
 
@@ -71,6 +86,9 @@ impl Value {
             Value::Double(n) => Ok(*n as i64),
             Value::Str(_) => Err(RuntimeError::TypeMismatch {
                 msg: "cannot convert string to integer".into(),
+            }),
+            Value::Record { .. } => Err(RuntimeError::TypeMismatch {
+                msg: "cannot convert record to integer".into(),
             }),
         }
     }
@@ -91,6 +109,11 @@ impl Value {
             BasicType::Single => Ok(Value::Single(self.to_f64()?)),
             BasicType::Double => Ok(Value::Double(self.to_f64()?)),
             BasicType::String => Ok(Value::Str(self.to_string_val()?)),
+            BasicType::FixedString(_) | BasicType::UserDefined(_) => {
+                Err(RuntimeError::TypeMismatch {
+                    msg: "cannot coerce to user-defined or fixed-string type".into(),
+                })
+            }
         }
     }
 
@@ -108,7 +131,7 @@ impl Value {
                 Value::Long(_) => 1,
                 Value::Single(_) => 2,
                 Value::Double(_) => 3,
-                Value::Str(_) => unreachable!(),
+                Value::Str(_) | Value::Record { .. } => unreachable!(),
             }
         };
         let target = std::cmp::max(rank(a), rank(b));
@@ -131,6 +154,7 @@ impl Value {
             Value::Single(n) => format_number(*n),
             Value::Double(n) => format_number(*n),
             Value::Str(s) => s.clone(),
+            Value::Record { type_name, .. } => format!("[{type_name}]"),
         }
     }
 
@@ -142,6 +166,7 @@ impl Value {
             Value::Single(n) => format_number_raw(*n),
             Value::Double(n) => format_number_raw(*n),
             Value::Str(s) => s.clone(),
+            Value::Record { type_name, .. } => format!("[{type_name}]"),
         }
     }
 
@@ -153,6 +178,9 @@ impl Value {
             Value::Double(n) => Ok(*n != 0.0),
             Value::Str(_) => Err(RuntimeError::TypeMismatch {
                 msg: "cannot use string as boolean".into(),
+            }),
+            Value::Record { .. } => Err(RuntimeError::TypeMismatch {
+                msg: "cannot use record as boolean".into(),
             }),
         }
     }
@@ -192,6 +220,7 @@ impl fmt::Display for Value {
             Value::Single(n) => write!(f, "{n}"),
             Value::Double(n) => write!(f, "{n}"),
             Value::Str(s) => write!(f, "{s}"),
+            Value::Record { type_name, .. } => write!(f, "[{type_name}]"),
         }
     }
 }
@@ -200,6 +229,10 @@ impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Value::Str(a), Value::Str(b)) => a == b,
+            (
+                Value::Record { type_name: ta, fields: fa },
+                Value::Record { type_name: tb, fields: fb },
+            ) => ta == tb && fa == fb,
             (a, b) if a.is_numeric() && b.is_numeric() => {
                 a.to_f64().unwrap_or(f64::NAN) == b.to_f64().unwrap_or(f64::NAN)
             }

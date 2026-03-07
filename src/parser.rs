@@ -197,6 +197,7 @@ impl Parser {
             Token::KwDefInt | Token::KwDefLng | Token::KwDefSng |
             Token::KwDefDbl | Token::KwDefStr => self.parse_deftype(),
             Token::KwDef => self.parse_def_fn(),
+            Token::KwType => self.parse_type_def(),
             Token::Identifier { .. } => self.parse_assignment_or_call(),
             _ => {
                 let tok = self.peek().clone();
@@ -370,6 +371,15 @@ impl Parser {
             }
             self.expect(Token::RightParen)?;
 
+            // Member access on array element: name(indices).field[.field...] = expr
+            if matches!(self.peek(), Token::Dot) {
+                let base = Expr::ArrayIndex { name: name.clone(), suffix, indices };
+                let target = self.parse_dot_chain(base)?;
+                self.expect(Token::Equal)?;
+                let value = self.parse_expr()?;
+                return Ok(Stmt::MemberAssign { target, value });
+            }
+
             if matches!(self.peek(), Token::Equal) {
                 // Array assignment: name(indices) = expr
                 self.advance(); // consume =
@@ -405,6 +415,15 @@ impl Parser {
             }
             self.expect(Token::RightParen)?;
             return Ok(Stmt::Call { name, args });
+        }
+
+        // Member access on scalar: name.field[.field...] = expr
+        if matches!(self.peek(), Token::Dot) {
+            let base = Expr::Variable(Variable { name: name.clone(), suffix });
+            let target = self.parse_dot_chain(base)?;
+            self.expect(Token::Equal)?;
+            let value = self.parse_expr()?;
+            return Ok(Stmt::MemberAssign { target, value });
         }
 
         // Simple assignment: name = expr
@@ -1451,6 +1470,24 @@ impl Parser {
         Ok(Stmt::DefType { typ, ranges })
     }
 
+    fn parse_type_def(&mut self) -> Result<Stmt, ParseError> {
+        self.advance(); // consume TYPE
+        let (name, _) = self.expect_identifier()?;
+        self.skip_newlines();
+
+        let mut fields = Vec::new();
+        while !matches!(self.peek(), Token::KwEndType) && !self.at_end() {
+            let (field_name, _) = self.expect_identifier()?;
+            self.expect(Token::KwAs)?;
+            let field_type = self.parse_type_keyword()?;
+            fields.push(TypeField { name: field_name, field_type });
+            self.skip_newlines();
+        }
+        self.expect(Token::KwEndType)?;
+
+        Ok(Stmt::TypeDef { name, fields })
+    }
+
     fn parse_def_fn(&mut self) -> Result<Stmt, ParseError> {
         self.advance(); // consume DEF
 
@@ -1706,24 +1743,24 @@ impl Parser {
     }
 
     fn parse_primary(&mut self) -> Result<Expr, ParseError> {
-        match self.peek().clone() {
+        let expr = match self.peek().clone() {
             Token::IntegerLiteral(n) => {
                 self.advance();
-                Ok(Expr::IntegerLit(n))
+                Expr::IntegerLit(n)
             }
             Token::DoubleLiteral(n) => {
                 self.advance();
-                Ok(Expr::DoubleLit(n))
+                Expr::DoubleLit(n)
             }
             Token::StringLiteral(s) => {
                 self.advance();
-                Ok(Expr::StringLit(s))
+                Expr::StringLit(s)
             }
             Token::LeftParen => {
                 self.advance();
-                let expr = self.parse_expr()?;
+                let inner = self.parse_expr()?;
                 self.expect(Token::RightParen)?;
-                Ok(Expr::Paren(Box::new(expr)))
+                Expr::Paren(Box::new(inner))
             }
             Token::Identifier { name, suffix } => {
                 self.advance();
@@ -1747,30 +1784,30 @@ impl Parser {
                         None => name.clone(),
                     };
 
-                    Ok(Expr::FunctionCall {
+                    Expr::FunctionCall {
                         name: func_name,
                         suffix,
                         args,
-                    })
+                    }
                 } else {
-                    Ok(Expr::Variable(Variable { name, suffix }))
+                    Expr::Variable(Variable { name, suffix })
                 }
             }
             Token::KwTimer => {
                 self.advance();
-                Ok(Expr::FunctionCall {
+                Expr::FunctionCall {
                     name: "TIMER".into(),
                     suffix: None,
                     args: vec![],
-                })
+                }
             }
             Token::KwFreefile => {
                 self.advance();
-                Ok(Expr::FunctionCall {
+                Expr::FunctionCall {
                     name: "FREEFILE".into(),
                     suffix: None,
                     args: vec![],
-                })
+                }
             }
             // Keywords that double as built-in functions
             ref tok if self.is_keyword_function(tok) => {
@@ -1787,25 +1824,43 @@ impl Parser {
                         }
                     }
                     self.expect(Token::RightParen)?;
-                    Ok(Expr::FunctionCall {
+                    Expr::FunctionCall {
                         name,
                         suffix: None,
                         args,
-                    })
+                    }
                 } else {
                     // No parens — treat as 0-arg function call
-                    Ok(Expr::FunctionCall {
+                    Expr::FunctionCall {
                         name,
                         suffix: None,
                         args: vec![],
-                    })
+                    }
                 }
             }
-            _ => Err(ParseError::Unexpected {
-                line: self.current_line(),
-                token: format!("{:?}", self.peek()),
-            }),
+            _ => {
+                return Err(ParseError::Unexpected {
+                    line: self.current_line(),
+                    token: format!("{:?}", self.peek()),
+                });
+            }
+        };
+
+        // Post-fix: dot notation for member access
+        let expr = self.parse_dot_chain(expr)?;
+        Ok(expr)
+    }
+
+    fn parse_dot_chain(&mut self, mut base: Expr) -> Result<Expr, ParseError> {
+        while matches!(self.peek(), Token::Dot) {
+            self.advance();
+            let (field_name, _) = self.expect_identifier()?;
+            base = Expr::MemberAccess {
+                object: Box::new(base),
+                field: field_name,
+            };
         }
+        Ok(base)
     }
 
     fn is_keyword_function(&self, tok: &Token) -> bool {
@@ -1854,22 +1909,43 @@ impl Parser {
     }
 
     fn parse_type_keyword(&mut self) -> Result<BasicType, ParseError> {
-        let ty = match self.peek() {
-            Token::KwInteger => BasicType::Integer,
-            Token::KwLong => BasicType::Long,
-            Token::KwSingle => BasicType::Single,
-            Token::KwDouble => BasicType::Double,
-            Token::KwString => BasicType::String,
+        match self.peek().clone() {
+            Token::KwInteger => { self.advance(); Ok(BasicType::Integer) }
+            Token::KwLong => { self.advance(); Ok(BasicType::Long) }
+            Token::KwSingle => { self.advance(); Ok(BasicType::Single) }
+            Token::KwDouble => { self.advance(); Ok(BasicType::Double) }
+            Token::KwString => {
+                self.advance();
+                // Check for STRING * n (fixed-length string)
+                if matches!(self.peek(), Token::Star) {
+                    self.advance(); // consume *
+                    if let Token::IntegerLiteral(n) = self.peek().clone() {
+                        self.advance();
+                        Ok(BasicType::FixedString(n as usize))
+                    } else {
+                        Err(ParseError::Expected {
+                            line: self.current_line(),
+                            expected: "integer constant after STRING *".into(),
+                            found: format!("{:?}", self.peek()),
+                        })
+                    }
+                } else {
+                    Ok(BasicType::String)
+                }
+            }
+            Token::Identifier { ref name, suffix: None } => {
+                let name = name.clone();
+                self.advance();
+                Ok(BasicType::UserDefined(name))
+            }
             _ => {
-                return Err(ParseError::Expected {
+                Err(ParseError::Expected {
                     line: self.current_line(),
                     expected: "type name".into(),
                     found: format!("{:?}", self.peek()),
-                });
+                })
             }
-        };
-        self.advance();
-        Ok(ty)
+        }
     }
 
     fn parse_body_until(&mut self, terminators: &[Token]) -> Result<Vec<LabeledStmt>, ParseError> {

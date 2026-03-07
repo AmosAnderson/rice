@@ -750,3 +750,27 @@ fn test_binary_conversion() {
     assert_eq!(lines[2].trim(), "4");
     assert_eq!(lines[3].trim(), "123456");
 }
+
+#[test]
+fn test_type_basic() {
+    let output = run_file("tests/programs/type_basic.bas");
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0].trim(), "John");
+    assert_eq!(lines[1].trim(), "Doe");
+    assert_eq!(lines[2].trim(), "30");
+}
+
+#[test]
+fn test_type_array() {
+    let output = run_file("tests/programs/type_array.bas");
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0].trim(), "10  20");
+    assert_eq!(lines[1].trim(), "30  40");
+    assert_eq!(lines[2].trim(), "50  60");
+}
+
+#[test]
+fn test_type_sub() {
+    let output = run_file("tests/programs/type_sub.bas");
+    assert_eq!(output.trim(), "16.5");
+}

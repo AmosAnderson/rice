@@ -117,6 +117,7 @@ impl Lexer {
             ';' => Token::Semicolon,
             ':' => Token::Colon,
             '#' => Token::Hash,
+            '.' => Token::Dot,
             _ => {
                 return Err(LexError::UnexpectedChar {
                     line: span.line,
