@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Rules
+
+- **Never commit or push code without explicit user approval.** Always ask before running `git commit`, `git push`, or any command that modifies the git history.
+
 ## Project Overview
 
 RICE BASIC is a structured BASIC interpreter written in Rust (QBasic/FreeBASIC dialect). No graphics or sound support. Supports both interactive REPL and file execution.
