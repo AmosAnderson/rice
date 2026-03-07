@@ -214,4 +214,4 @@ Source -> Lexer -> Tokens -> Parser -> AST -> Tree-Walking Interpreter -> Output
 
 ## License
 
-See repository for license information.
+This project is licensed under the [MIT License](LICENSE).
