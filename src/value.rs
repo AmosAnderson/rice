@@ -170,6 +170,23 @@ impl Value {
         }
     }
 
+    pub fn default_for_type(ty: Option<&BasicType>) -> Value {
+        match ty {
+            Some(t) => match t {
+                BasicType::UserDefined(_) => Value::Integer(0),
+                other => Value::default_for(other.clone()),
+            },
+            None => Value::Integer(0),
+        }
+    }
+
+    /// Coerce to a target type, falling back to default on failure.
+    pub fn coerce_to_type(&self, ty: &BasicType) -> Value {
+        self.coerce_to(ty.clone()).unwrap_or_else(|_| {
+            Value::default_for_type(Some(ty))
+        })
+    }
+
     pub fn is_truthy(&self) -> Result<bool, RuntimeError> {
         match self {
             Value::Integer(n) => Ok(*n != 0),

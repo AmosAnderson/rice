@@ -198,6 +198,9 @@ impl Parser {
             Token::KwDefDbl | Token::KwDefStr => self.parse_deftype(),
             Token::KwDef => self.parse_def_fn(),
             Token::KwType => self.parse_type_def(),
+            // CHAIN/COMMON
+            Token::KwChain => self.parse_chain(),
+            Token::KwCommon => self.parse_common(),
             Token::Identifier { .. } => self.parse_assignment_or_call(),
             _ => {
                 let tok = self.peek().clone();
@@ -1486,6 +1489,66 @@ impl Parser {
         self.expect(Token::KwEndType)?;
 
         Ok(Stmt::TypeDef { name, fields })
+    }
+
+    fn parse_chain(&mut self) -> Result<Stmt, ParseError> {
+        self.advance(); // consume CHAIN
+        let filespec = self.parse_expr()?;
+        Ok(Stmt::Chain { filespec })
+    }
+
+    fn parse_common(&mut self) -> Result<Stmt, ParseError> {
+        self.advance(); // consume COMMON
+
+        // Check for SHARED
+        let shared = if matches!(self.peek(), Token::KwShared) {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
+        // Check for optional block name: /blockname/
+        let block_name = if matches!(self.peek(), Token::Slash) {
+            self.advance(); // consume /
+            let (name, _) = self.expect_identifier()?;
+            self.expect(Token::Slash)?; // consume closing /
+            Some(name)
+        } else {
+            None
+        };
+
+        // Parse variable list
+        let mut vars = vec![self.parse_common_var()?];
+        while matches!(self.peek(), Token::Comma) {
+            self.advance();
+            vars.push(self.parse_common_var()?);
+        }
+
+        Ok(Stmt::Common(CommonStmt { shared, block_name, vars }))
+    }
+
+    fn parse_common_var(&mut self) -> Result<CommonVar, ParseError> {
+        let (name, suffix) = self.expect_identifier()?;
+
+        // Check for array marker ()
+        let is_array = if matches!(self.peek(), Token::LeftParen) {
+            self.advance(); // (
+            self.expect(Token::RightParen)?; // )
+            true
+        } else {
+            false
+        };
+
+        // Check for AS type
+        let as_type = if matches!(self.peek(), Token::KwAs) {
+            self.advance();
+            Some(self.parse_type_keyword()?)
+        } else {
+            None
+        };
+
+        Ok(CommonVar { name, suffix, as_type, is_array })
     }
 
     fn parse_def_fn(&mut self) -> Result<Stmt, ParseError> {

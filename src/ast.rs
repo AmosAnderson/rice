@@ -137,6 +137,10 @@ pub enum Stmt {
     TypeDef { name: String, fields: Vec<TypeField> },
     MemberAssign { target: Expr, value: Expr },
 
+    // CHAIN/COMMON
+    Chain { filespec: Expr },
+    Common(CommonStmt),
+
     // Misc
     End,
     System,
@@ -149,6 +153,21 @@ pub enum Stmt {
 pub struct TypeField {
     pub name: String,
     pub field_type: BasicType,
+}
+
+#[derive(Debug, Clone)]
+pub struct CommonVar {
+    pub name: String,
+    pub suffix: Option<TypeSuffix>,
+    pub as_type: Option<BasicType>,
+    pub is_array: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct CommonStmt {
+    pub shared: bool,
+    pub block_name: Option<String>,
+    pub vars: Vec<CommonVar>,
 }
 
 #[derive(Debug, Clone)]

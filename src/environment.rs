@@ -138,6 +138,28 @@ impl Environment {
         }
     }
 
+    /// Low-level key lookup by pre-built key string.
+    /// Does NOT follow shared_vars routing — use only on the global scope.
+    pub(crate) fn get_by_key(&self, key: &str) -> Option<Value> {
+        if let Some(v) = self.constants.get(key) {
+            return Some(v.clone());
+        }
+        if let Some(v) = self.vars.get(key) {
+            return Some(v.clone());
+        }
+        if let Some(parent) = &self.parent {
+            return parent.borrow().get_by_key(key);
+        }
+        None
+    }
+
+    /// Low-level key set by pre-built key string.
+    /// Bypasses constant protection and shared_vars routing — use only on a
+    /// fresh global scope (e.g., during CHAIN variable transfer).
+    pub(crate) fn set_by_key(&mut self, key: &str, value: Value) {
+        self.vars.insert(key.to_string(), value);
+    }
+
     fn get_from_root(env: &EnvRef, key: &str) -> Option<Value> {
         let e = env.borrow();
         if let Some(parent) = &e.parent {

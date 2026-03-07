@@ -383,6 +383,8 @@ impl Lexer {
                 "DEFSNG" => Token::KwDefSng,
                 "DEFDBL" => Token::KwDefDbl,
                 "DEFSTR" => Token::KwDefStr,
+                "CHAIN" => Token::KwChain,
+                "COMMON" => Token::KwCommon,
                 _ => Token::Identifier { name: word, suffix },
             }
         } else {

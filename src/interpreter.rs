@@ -53,6 +53,23 @@ enum ControlFlow {
     End,
     Resume,
     ResumeNext,
+    Chain {
+        filespec: String,
+        common_values: Vec<(CommonVarSpec, CommonTransferValue)>,
+    },
+}
+
+#[derive(Clone, Debug)]
+struct CommonVarSpec {
+    as_type: Option<BasicType>,
+    is_array: bool,
+    is_shared: bool,
+}
+
+#[derive(Clone, Debug)]
+enum CommonTransferValue {
+    Scalar(Value),
+    Array(Vec<(String, Value)>),
 }
 
 #[derive(Clone, Debug)]
@@ -119,6 +136,9 @@ pub struct Interpreter {
     deftype_map: [Option<BasicType>; 26],
     type_defs: HashMap<String, Vec<crate::ast::TypeField>>,
     array_type_map: HashMap<String, String>,
+    // CHAIN/COMMON support
+    common_declarations: Vec<(CommonVarSpec, String)>,
+    source_dir: Option<std::path::PathBuf>,
 }
 
 impl Drop for Interpreter {
@@ -129,6 +149,23 @@ impl Drop for Interpreter {
             }
         }
     }
+}
+
+/// Extract the array name prefix from a flattened array key.
+/// E.g., "MYARR_0_1" → "MYARR_", "MYARR%_0" → "MYARR%_"
+fn find_array_prefix(key: &str) -> &str {
+    // Array keys are NAME_idx or NAME%_idx — find first '_' followed by a digit
+    for (i, c) in key.char_indices() {
+        if c == '_' {
+            if let Some(next) = key[i + 1..].chars().next() {
+                if next.is_ascii_digit() {
+                    return &key[..=i];
+                }
+            }
+        }
+    }
+    // Fallback: entire key (shouldn't happen with well-formed array keys)
+    key
 }
 
 impl Default for Interpreter {
@@ -172,6 +209,8 @@ impl Interpreter {
             deftype_map: std::array::from_fn(|_| None),
             type_defs: HashMap::new(),
             array_type_map: HashMap::new(),
+            common_declarations: Vec::new(),
+            source_dir: None,
         }
     }
 
@@ -182,13 +221,34 @@ impl Interpreter {
         Ok(())
     }
 
+    pub fn run_file(&mut self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let path = std::path::Path::new(path);
+        let canonical = std::fs::canonicalize(path).map_err(|e| {
+            RuntimeError::General {
+                msg: format!("Cannot open '{}': {}", path.display(), e),
+            }
+        })?;
+        self.source_dir = canonical.parent().map(|p| p.to_path_buf());
+        let source = std::fs::read_to_string(&canonical).map_err(|e| {
+            RuntimeError::General {
+                msg: format!("Cannot read '{}': {}", canonical.display(), e),
+            }
+        })?;
+        self.run_source(&source)
+    }
+
     pub fn run_program(&mut self, program: &Program) -> Result<(), RuntimeError> {
         // Pre-scan: collect labels, DATA statements, SUB/FUNCTION definitions
         self.prescan(&program.statements);
 
         // Execute top-level statements
-        self.exec_block(&program.statements)?;
-        Ok(())
+        let cf = self.exec_block(&program.statements)?;
+        match cf {
+            ControlFlow::Chain { filespec, common_values } => {
+                self.chain_loop(filespec, common_values)
+            }
+            _ => Ok(()),
+        }
     }
 
     fn prescan(&mut self, stmts: &[LabeledStmt]) {
@@ -238,6 +298,20 @@ impl Interpreter {
                 }
                 Stmt::TypeDef { name, fields } => {
                     self.type_defs.insert(name.clone(), fields.clone());
+                }
+                Stmt::Common(common_stmt) => {
+                    // Only unnamed blocks participate in CHAIN variable transfer
+                    if common_stmt.block_name.is_none() {
+                        for var in &common_stmt.vars {
+                            let key = Environment::var_key(&var.name, var.suffix);
+                            let spec = CommonVarSpec {
+                                as_type: var.as_type.clone(),
+                                is_array: var.is_array,
+                                is_shared: common_stmt.shared,
+                            };
+                            self.common_declarations.push((spec, key));
+                        }
+                    }
                 }
                 // Recurse into nested blocks to find labels and DATA
                 Stmt::If(if_stmt) => {
@@ -834,6 +908,55 @@ impl Interpreter {
                 let new_val = self.eval_expr(value)?;
                 self.set_member_value(target, new_val)?;
                 Ok(ControlFlow::Normal)
+            }
+
+            // CHAIN/COMMON
+            Stmt::Common(common_stmt) => {
+                // COMMON SHARED: register vars as shared in the current environment
+                if common_stmt.shared && common_stmt.block_name.is_none() {
+                    for var in &common_stmt.vars {
+                        let key = Environment::var_key(&var.name, var.suffix);
+                        self.env.borrow_mut().shared_vars.insert(key);
+                    }
+                }
+                Ok(ControlFlow::Normal)
+            }
+
+            Stmt::Chain { filespec } => {
+                let path_str = self.eval_expr(filespec)?.to_string_val()?;
+                let resolved_path = self.resolve_chain_path(&path_str);
+
+                // Snapshot current COMMON variable values
+                let env = &self.env;
+                let common_values: Vec<(CommonVarSpec, CommonTransferValue)> = self
+                    .common_declarations
+                    .iter()
+                    .map(|(spec, key)| {
+                        let transfer = if spec.is_array {
+                            // Collect all flattened array elements matching this var's key prefix
+                            let prefix = format!("{}_", key);
+                            let env_borrow = env.borrow();
+                            let elements: Vec<(String, Value)> = env_borrow
+                                .vars_ref()
+                                .iter()
+                                .filter(|(k, _)| k.starts_with(&prefix))
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect();
+                            CommonTransferValue::Array(elements)
+                        } else {
+                            let value = env.borrow().get_by_key(key).unwrap_or_else(|| {
+                                Value::default_for_type(spec.as_type.as_ref())
+                            });
+                            CommonTransferValue::Scalar(value)
+                        };
+                        (spec.clone(), transfer)
+                    })
+                    .collect();
+
+                Ok(ControlFlow::Chain {
+                    filespec: resolved_path,
+                    common_values,
+                })
             }
         }
     }
@@ -1717,6 +1840,136 @@ impl Interpreter {
             }
         }
         Value::default_for_suffix(None)
+    }
+
+    fn resolve_chain_path(&self, path_str: &str) -> String {
+        let path = std::path::Path::new(path_str);
+        if path.is_absolute() {
+            path_str.to_string()
+        } else if let Some(ref dir) = self.source_dir {
+            dir.join(path).to_string_lossy().into_owned()
+        } else {
+            path_str.to_string()
+        }
+    }
+
+    fn chain_loop(
+        &mut self,
+        mut filespec: String,
+        mut common_values: Vec<(CommonVarSpec, CommonTransferValue)>,
+    ) -> Result<(), RuntimeError> {
+        loop {
+            // Canonicalize first to resolve the path once, then read using the resolved path
+            let read_path = if let Ok(canonical) = std::fs::canonicalize(&filespec) {
+                self.source_dir = canonical.parent().map(|p| p.to_path_buf());
+                canonical
+            } else {
+                std::path::PathBuf::from(&filespec)
+            };
+
+            let source = std::fs::read_to_string(&read_path).map_err(|e| {
+                RuntimeError::General {
+                    msg: format!("CHAIN error: cannot open '{}': {}", filespec, e),
+                }
+            })?;
+
+            // Lex and parse
+            let tokens = crate::lexer::Lexer::new(&source).tokenize().map_err(|e| {
+                RuntimeError::General {
+                    msg: format!("CHAIN error in '{}': {}", filespec, e),
+                }
+            })?;
+            let program =
+                crate::parser::Parser::new(tokens)
+                    .parse_program()
+                    .map_err(|e| RuntimeError::General {
+                        msg: format!("CHAIN error in '{}': {}", filespec, e),
+                    })?;
+
+            self.reset_program_state();
+
+            // Prescan the new program
+            self.prescan(&program.statements);
+
+            // Map incoming common values to the new program's COMMON declarations by position
+            for i in 0..self.common_declarations.len() {
+                let (spec, key) = &self.common_declarations[i];
+                let as_type = &spec.as_type;
+                let is_shared = spec.is_shared;
+                let key = key.clone();
+
+                let mut env = self.env.borrow_mut();
+                if let Some((_, transfer)) = common_values.get(i) {
+                    match transfer {
+                        CommonTransferValue::Scalar(value) => {
+                            let final_value = if let Some(target_type) = as_type {
+                                value.coerce_to_type(target_type)
+                            } else {
+                                value.clone()
+                            };
+                            env.set_by_key(&key, final_value);
+                        }
+                        CommonTransferValue::Array(elements) => {
+                            // Remap array element keys from old name to new name
+                            if let Some(first) = elements.first() {
+                                let old_prefix = find_array_prefix(&first.0);
+                                let new_prefix = format!("{}_", key);
+                                for (old_key, val) in elements {
+                                    if old_key.starts_with(old_prefix) {
+                                        let index_part = &old_key[old_prefix.len()..];
+                                        let new_key =
+                                            format!("{}{}", new_prefix, index_part);
+                                        env.set_by_key(&new_key, val.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if let Some(target_type) = as_type {
+                    // No incoming value — initialize to the declared type's default
+                    env.set_by_key(&key, Value::default_for_type(Some(target_type)));
+                }
+
+                if is_shared {
+                    env.shared_vars.insert(key);
+                }
+            }
+
+            // Execute the new program
+            let cf = self.exec_block(&program.statements)?;
+
+            match cf {
+                ControlFlow::Chain {
+                    filespec: next_file,
+                    common_values: next_vals,
+                } => {
+                    filespec = next_file;
+                    common_values = next_vals;
+                    // Loop continues
+                }
+                _ => return Ok(()),
+            }
+        }
+    }
+
+    /// Reset interpreter state for CHAIN. Preserves file handles, I/O, and RNG.
+    fn reset_program_state(&mut self) {
+        self.env = Environment::new_global();
+        self.subs.clear();
+        self.functions.clear();
+        self.def_fns.clear();
+        self.data_values.clear();
+        self.data_pos = 0;
+        self.error_handler = None;
+        self.current_error = None;
+        self.error_resume_pc = None;
+        self.in_error_handler = false;
+        self.static_vars.clear();
+        self.current_static_vars.clear();
+        self.deftype_map = std::array::from_fn(|_| None);
+        self.type_defs.clear();
+        self.array_type_map.clear();
+        self.common_declarations.clear();
     }
 
     /// Build a flattened key for array element access (temporary hack until

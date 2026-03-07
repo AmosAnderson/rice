@@ -209,4 +209,8 @@ pub enum Token {
     KwDefSng,
     KwDefDbl,
     KwDefStr,
+
+    // CHAIN/COMMON support
+    KwChain,
+    KwCommon,
 }

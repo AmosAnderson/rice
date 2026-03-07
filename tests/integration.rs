@@ -1,5 +1,38 @@
-use std::io::Cursor;
+use std::io::{BufReader, Cursor};
 use rice::interpreter::SharedOutput;
+
+/// Run a multi-file CHAIN test. `main_source` is the entry program; `files` is
+/// a list of (filename, source) pairs written to the same temp directory.
+/// Placeholders `{DIR}` in all sources are replaced with the temp dir path.
+fn run_chain_test(main_source: &str, files: &[(&str, &str)]) -> String {
+    let (output, result) = run_chain_test_may_fail(main_source, files);
+    result.unwrap();
+    output
+}
+
+/// Like run_chain_test but returns the error result too.
+fn run_chain_test_may_fail(
+    main_source: &str,
+    files: &[(&str, &str)],
+) -> (String, Result<(), Box<dyn std::error::Error>>) {
+    let dir = tempfile::tempdir().unwrap();
+    let dir_path = dir.path().to_str().unwrap().replace('\\', "/");
+
+    for (name, content) in files {
+        let file_content = content.replace("{DIR}", &dir_path);
+        std::fs::write(dir.path().join(name), file_content).unwrap();
+    }
+
+    let main_content = main_source.replace("{DIR}", &dir_path);
+    let main_path = dir.path().join("main.bas");
+    std::fs::write(&main_path, &main_content).unwrap();
+
+    let output = SharedOutput::new();
+    let input: Box<dyn std::io::BufRead> = Box::new(BufReader::new(Cursor::new(Vec::<u8>::new())));
+    let mut interp = rice::interpreter::Interpreter::with_io(Box::new(output.clone()), input);
+    let result = interp.run_file(main_path.to_str().unwrap());
+    (output.into_string(), result)
+}
 
 fn run_bas_with_tmpdir(source_template: &str) -> (String, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
@@ -773,4 +806,266 @@ fn test_type_array() {
 fn test_type_sub() {
     let output = run_file("tests/programs/type_sub.bas");
     assert_eq!(output.trim(), "16.5");
+}
+
+// ─── CHAIN / COMMON tests ───────────────────────────────────────────────
+
+#[test]
+fn test_chain_basic() {
+    // Basic CHAIN with COMMON: transfer integer and string by position
+    let output = run_chain_test(
+        r#"
+COMMON X AS INTEGER, Y AS STRING
+X = 42
+Y = "Hello from A"
+PRINT "A: X ="; X
+CHAIN "{DIR}/chain_b.bas"
+PRINT "This should not appear"
+"#,
+        &[(
+            "chain_b.bas",
+            r#"
+COMMON A AS INTEGER, B AS STRING
+PRINT "B: A ="; A
+PRINT "B: B = "; B
+"#,
+        )],
+    );
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0].trim(), "A: X = 42");
+    assert_eq!(lines[1].trim(), "B: A = 42");
+    assert_eq!(lines[2].trim(), "B: B = Hello from A");
+    assert_eq!(lines.len(), 3, "Code after CHAIN should not execute");
+}
+
+#[test]
+fn test_chain_no_common() {
+    // CHAIN without COMMON: variables should be cleared
+    let output = run_chain_test(
+        r#"
+DIM X AS INTEGER
+X = 99
+PRINT "A: X ="; X
+CHAIN "{DIR}/chain_b.bas"
+"#,
+        &[(
+            "chain_b.bas",
+            r#"
+PRINT "B: X ="; X
+"#,
+        )],
+    );
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0].trim(), "A: X = 99");
+    assert_eq!(lines[1].trim(), "B: X = 0");
+}
+
+#[test]
+fn test_chain_file_not_found() {
+    let (_, result) = run_chain_test_may_fail(
+        r#"
+CHAIN "{DIR}/nonexistent.bas"
+"#,
+        &[],
+    );
+    assert!(result.is_err());
+    let err_msg = format!("{}", result.unwrap_err());
+    assert!(err_msg.contains("CHAIN error"), "Error should mention CHAIN: {err_msg}");
+}
+
+#[test]
+fn test_chain_common_larger_target() {
+    // Source has 1 COMMON var, target has 3. Extra vars get defaults.
+    let output = run_chain_test(
+        r#"
+COMMON X AS INTEGER
+X = 10
+CHAIN "{DIR}/chain_b.bas"
+"#,
+        &[(
+            "chain_b.bas",
+            r#"
+COMMON A AS INTEGER, B AS INTEGER, C AS STRING
+PRINT "A ="; A
+PRINT "B ="; B
+PRINT "C = ["; C; "]"
+"#,
+        )],
+    );
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0].trim(), "A = 10");
+    assert_eq!(lines[1].trim(), "B = 0");
+    assert_eq!(lines[2].trim(), "C = []");
+}
+
+#[test]
+fn test_chain_common_smaller_target() {
+    // Source has 3 COMMON vars, target has 1. Extra source vars are ignored.
+    let output = run_chain_test(
+        r#"
+COMMON X AS INTEGER, Y AS INTEGER, Z AS INTEGER
+X = 10
+Y = 20
+Z = 30
+CHAIN "{DIR}/chain_b.bas"
+"#,
+        &[(
+            "chain_b.bas",
+            r#"
+COMMON A AS INTEGER
+PRINT "A ="; A
+"#,
+        )],
+    );
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0].trim(), "A = 10");
+}
+
+#[test]
+fn test_chain_common_array() {
+    // Transfer an array via COMMON
+    let output = run_chain_test(
+        r#"
+COMMON A() AS INTEGER
+DIM A(4)
+A(0) = 10
+A(1) = 20
+A(2) = 30
+A(3) = 40
+A(4) = 50
+CHAIN "{DIR}/chain_b.bas"
+"#,
+        &[(
+            "chain_b.bas",
+            r#"
+COMMON B() AS INTEGER
+PRINT B(0)
+PRINT B(1)
+PRINT B(2)
+PRINT B(3)
+PRINT B(4)
+"#,
+        )],
+    );
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0].trim(), "10");
+    assert_eq!(lines[1].trim(), "20");
+    assert_eq!(lines[2].trim(), "30");
+    assert_eq!(lines[3].trim(), "40");
+    assert_eq!(lines[4].trim(), "50");
+}
+
+#[test]
+fn test_chain_common_shared() {
+    // COMMON SHARED variables should be accessible from SUB
+    let output = run_chain_test(
+        r#"
+COMMON SHARED X AS INTEGER
+X = 42
+CHAIN "{DIR}/chain_b.bas"
+"#,
+        &[(
+            "chain_b.bas",
+            r#"
+COMMON SHARED A AS INTEGER
+
+SUB ShowA
+    PRINT "In SUB: A ="; A
+END SUB
+
+CALL ShowA
+"#,
+        )],
+    );
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0].trim(), "In SUB: A = 42");
+}
+
+#[test]
+fn test_chain_multiple_hops() {
+    // A → B → C: values flow through the chain
+    let output = run_chain_test(
+        r#"
+COMMON X AS INTEGER
+X = 1
+PRINT "A: X ="; X
+CHAIN "{DIR}/chain_b.bas"
+"#,
+        &[
+            (
+                "chain_b.bas",
+                r#"
+COMMON Y AS INTEGER
+Y = Y + 10
+PRINT "B: Y ="; Y
+CHAIN "{DIR}/chain_c.bas"
+"#,
+            ),
+            (
+                "chain_c.bas",
+                r#"
+COMMON Z AS INTEGER
+PRINT "C: Z ="; Z
+"#,
+            ),
+        ],
+    );
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0].trim(), "A: X = 1");
+    assert_eq!(lines[1].trim(), "B: Y = 11");
+    assert_eq!(lines[2].trim(), "C: Z = 11");
+}
+
+#[test]
+fn test_chain_file_handles_preserved() {
+    // File handles should persist across CHAIN
+    let output = run_chain_test(
+        r#"
+COMMON X AS INTEGER
+X = 1
+OPEN "{DIR}/test_data.txt" FOR OUTPUT AS #1
+PRINT #1, "Hello from A"
+CHAIN "{DIR}/chain_b.bas"
+"#,
+        &[(
+            "chain_b.bas",
+            r#"
+COMMON A AS INTEGER
+PRINT #1, "Hello from B"
+CLOSE #1
+OPEN "{DIR}/test_data.txt" FOR INPUT AS #1
+DIM line1 AS STRING
+DIM line2 AS STRING
+LINE INPUT #1, line1
+LINE INPUT #1, line2
+CLOSE #1
+PRINT line1
+PRINT line2
+"#,
+        )],
+    );
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0].trim(), "Hello from A");
+    assert_eq!(lines[1].trim(), "Hello from B");
+}
+
+#[test]
+fn test_chain_type_coercion() {
+    // Source has DOUBLE, target has INTEGER: value should be truncated
+    let output = run_chain_test(
+        r#"
+COMMON X AS DOUBLE
+X = 3.14
+CHAIN "{DIR}/chain_b.bas"
+"#,
+        &[(
+            "chain_b.bas",
+            r#"
+COMMON A AS INTEGER
+PRINT "A ="; A
+"#,
+        )],
+    );
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0].trim(), "A = 3");
 }
