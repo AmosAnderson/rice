@@ -308,6 +308,23 @@ fn keyword_name(token: &Token) -> &'static str {
         Token::KwRandomize => "RANDOMIZE",
         Token::KwTimer => "TIMER",
         Token::KwSystem => "SYSTEM",
+        Token::KwSleep => "SLEEP",
+        Token::KwClear => "CLEAR",
+        Token::KwName => "NAME",
+        Token::KwKill => "KILL",
+        Token::KwMkdir => "MKDIR",
+        Token::KwRmdir => "RMDIR",
+        Token::KwChdir => "CHDIR",
+        Token::KwShell => "SHELL",
+        Token::KwLset => "LSET",
+        Token::KwRset => "RSET",
+        Token::KwDef => "DEF",
+        Token::KwEndDef => "END DEF",
+        Token::KwDefInt => "DEFINT",
+        Token::KwDefLng => "DEFLNG",
+        Token::KwDefSng => "DEFSNG",
+        Token::KwDefDbl => "DEFDBL",
+        Token::KwDefStr => "DEFSTR",
         _ => "",
     }
 }
@@ -345,7 +362,7 @@ impl Repl {
     }
 
     pub fn run(&mut self) {
-        println!("RICE BASIC v0.9.0");
+        println!("RICE BASIC v{}", env!("CARGO_PKG_VERSION"));
         println!("Type SYSTEM or press Ctrl+D to exit.");
         println!();
 
@@ -490,7 +507,9 @@ fn compute_depth_delta(line: &str) -> i32 {
 }
 
 fn dirs_history_path() -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".to_string());
     format!("{home}/.rice_history")
 }
 

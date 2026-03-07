@@ -126,8 +126,8 @@ impl Value {
     /// Strings: printed as-is
     pub fn format_for_print(&self) -> String {
         match self {
-            Value::Integer(n) => format_number(*n as f64),
-            Value::Long(n) => format_number(*n as f64),
+            Value::Integer(n) => format_integer(*n),
+            Value::Long(n) => format_integer(*n),
             Value::Single(n) => format_number(*n),
             Value::Double(n) => format_number(*n),
             Value::Str(s) => s.clone(),
@@ -163,6 +163,14 @@ fn format_number_raw(n: f64) -> String {
         format!("{}", n as i64)
     } else {
         format!("{n}")
+    }
+}
+
+fn format_integer(n: i64) -> String {
+    if n >= 0 {
+        format!(" {n} ")
+    } else {
+        format!("{n} ")
     }
 }
 

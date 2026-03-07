@@ -56,12 +56,13 @@ impl Lexer {
             return Ok(tok);
         }
         if ch == '\r' {
+            let tok = self.make_token(Token::Newline);
             self.advance_char();
             if self.peek_char() == Some('\n') {
                 self.advance_char();
             }
             self.at_line_start = true;
-            return Ok(self.make_token(Token::Newline));
+            return Ok(tok);
         }
 
         // Numbers (or line numbers at start of line)
@@ -258,8 +259,8 @@ impl Lexer {
 
         let word: String = self.source[start..self.pos]
             .iter()
-            .collect::<String>()
-            .to_uppercase();
+            .flat_map(|c| c.to_uppercase())
+            .collect();
 
         // Check for type suffix
         let suffix = self.peek_char().and_then(TypeSuffix::from_char);

@@ -213,10 +213,14 @@ fn test_date_time() {
     let output = run_bas("PRINT DATE$\nPRINT TIME$");
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(lines.len(), 2);
-    assert_eq!(lines[0].trim(), "02-28-2026");
+    // Date format should be MM-DD-YYYY
+    let date = lines[0].trim();
+    assert_eq!(date.len(), 10, "DATE$ should be 10 chars: {date}");
+    assert_eq!(&date[2..3], "-");
+    assert_eq!(&date[5..6], "-");
     // Time format should be HH:MM:SS
     let time = lines[1].trim();
-    assert_eq!(time.len(), 8);
+    assert_eq!(time.len(), 8, "TIME$ should be 8 chars: {time}");
     assert_eq!(&time[2..3], ":");
     assert_eq!(&time[5..6], ":");
 }

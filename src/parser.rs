@@ -437,7 +437,7 @@ impl Parser {
         } else {
             false
         };
-        let _ = shared; // TODO: use in Phase 2
+        let _ = shared; // DIM SHARED parsed but not yet distinguished from DIM
 
         let mut decls = vec![self.parse_dim_decl()?];
         while matches!(self.peek(), Token::Comma) {
@@ -852,14 +852,6 @@ impl Parser {
         self.advance(); // consume SUB
         let (name, _) = self.expect_identifier()?;
 
-        // Check for SUB name STATIC
-        let is_static = if matches!(self.peek(), Token::KwStatic) {
-            self.advance();
-            true
-        } else {
-            false
-        };
-
         let params = if matches!(self.peek(), Token::LeftParen) {
             self.advance();
             let p = self.parse_param_list()?;
@@ -867,6 +859,14 @@ impl Parser {
             p
         } else {
             Vec::new()
+        };
+
+        // STATIC keyword comes after params in QBasic
+        let is_static = if matches!(self.peek(), Token::KwStatic) {
+            self.advance();
+            true
+        } else {
+            false
         };
 
         self.skip_newlines();
@@ -885,14 +885,6 @@ impl Parser {
         self.advance(); // consume FUNCTION
         let (name, suffix) = self.expect_identifier()?;
 
-        // Check for FUNCTION name STATIC
-        let is_static = if matches!(self.peek(), Token::KwStatic) {
-            self.advance();
-            true
-        } else {
-            false
-        };
-
         let params = if matches!(self.peek(), Token::LeftParen) {
             self.advance();
             let p = self.parse_param_list()?;
@@ -907,6 +899,14 @@ impl Parser {
             Some(self.parse_type_keyword()?)
         } else {
             None
+        };
+
+        // STATIC keyword comes after params/AS in QBasic
+        let is_static = if matches!(self.peek(), Token::KwStatic) {
+            self.advance();
+            true
+        } else {
+            false
         };
 
         self.skip_newlines();
@@ -1676,7 +1676,7 @@ impl Parser {
         match self.peek() {
             Token::Minus => {
                 self.advance();
-                let operand = self.parse_power()?;
+                let operand = self.parse_unary()?;
                 Ok(Expr::UnaryOp {
                     op: UnaryOp::Neg,
                     operand: Box::new(operand),
@@ -1684,7 +1684,7 @@ impl Parser {
             }
             Token::Plus => {
                 self.advance();
-                self.parse_power()
+                self.parse_unary()
             }
             _ => self.parse_power(),
         }
@@ -1819,7 +1819,7 @@ impl Parser {
         match tok {
             Token::KwLen => "LEN".into(),
             Token::KwString => "STRING$".into(),
-            _ => "UNKNOWN".into(),
+            _ => unreachable!("keyword_function_name called with non-function keyword"),
         }
     }
 
@@ -1926,7 +1926,9 @@ impl Parser {
 
     fn advance(&mut self) -> &SpannedToken {
         let tok = &self.tokens[self.pos];
-        self.pos += 1;
+        if self.pos < self.tokens.len() {
+            self.pos += 1;
+        }
         tok
     }
 

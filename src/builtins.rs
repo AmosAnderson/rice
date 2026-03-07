@@ -102,25 +102,35 @@ impl BuiltinRegistry {
     }
 
     pub fn exists(&self, name: &str) -> bool {
-        self.functions.contains_key(name)
+        let upper = name.to_uppercase();
+        self.functions.contains_key(&upper) || self.functions.contains_key(&format!("{}$", upper))
     }
 }
 
 // Math builtins
 
+fn preserve_type(result: f64, original: &Value) -> Value {
+    match original {
+        Value::Integer(_) => Value::Integer(result as i64),
+        Value::Long(_) => Value::Long(result as i64),
+        Value::Single(_) => Value::Single(result),
+        _ => Value::Double(result),
+    }
+}
+
 fn builtin_abs(args: &[Value]) -> Result<Value, RuntimeError> {
     let n = args[0].to_f64()?;
-    Ok(Value::Double(n.abs()))
+    Ok(preserve_type(n.abs(), &args[0]))
 }
 
 fn builtin_int(args: &[Value]) -> Result<Value, RuntimeError> {
     let n = args[0].to_f64()?;
-    Ok(Value::Double(n.floor()))
+    Ok(preserve_type(n.floor(), &args[0]))
 }
 
 fn builtin_fix(args: &[Value]) -> Result<Value, RuntimeError> {
     let n = args[0].to_f64()?;
-    Ok(Value::Double(n.trunc()))
+    Ok(preserve_type(n.trunc(), &args[0]))
 }
 
 fn builtin_sgn(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -176,11 +186,19 @@ fn builtin_log(args: &[Value]) -> Result<Value, RuntimeError> {
 }
 
 fn builtin_cint(args: &[Value]) -> Result<Value, RuntimeError> {
-    Ok(Value::Integer(args[0].to_f64()?.round() as i64))
+    let n = args[0].to_f64()?.round();
+    if n < -32768.0 || n > 32767.0 {
+        return Err(RuntimeError::Overflow { msg: "CINT overflow".into() });
+    }
+    Ok(Value::Integer(n as i64))
 }
 
 fn builtin_clng(args: &[Value]) -> Result<Value, RuntimeError> {
-    Ok(Value::Long(args[0].to_f64()?.round() as i64))
+    let n = args[0].to_f64()?.round();
+    if n < -2_147_483_648.0 || n > 2_147_483_647.0 {
+        return Err(RuntimeError::Overflow { msg: "CLNG overflow".into() });
+    }
+    Ok(Value::Long(n as i64))
 }
 
 fn builtin_csng(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -204,7 +222,11 @@ fn builtin_len(args: &[Value]) -> Result<Value, RuntimeError> {
 
 fn builtin_left(args: &[Value]) -> Result<Value, RuntimeError> {
     let s = args[0].to_string_val()?;
-    let n = args[1].to_i64()? as usize;
+    let n_raw = args[1].to_i64()?;
+    if n_raw < 0 {
+        return Err(RuntimeError::IllegalFunctionCall { msg: "LEFT$ count must be non-negative".into() });
+    }
+    let n = n_raw as usize;
     let result: String = s.chars().take(n).collect();
     Ok(Value::Str(result))
 }
@@ -279,12 +301,19 @@ fn builtin_rtrim(args: &[Value]) -> Result<Value, RuntimeError> {
 }
 
 fn builtin_space(args: &[Value]) -> Result<Value, RuntimeError> {
-    let n = args[0].to_i64()? as usize;
-    Ok(Value::Str(" ".repeat(n)))
+    let n = args[0].to_i64()?;
+    if n < 0 {
+        return Err(RuntimeError::IllegalFunctionCall { msg: "SPACE$ argument must be non-negative".into() });
+    }
+    Ok(Value::Str(" ".repeat(n as usize)))
 }
 
 fn builtin_string_fn(args: &[Value]) -> Result<Value, RuntimeError> {
-    let n = args[0].to_i64()? as usize;
+    let n = args[0].to_i64()?;
+    if n < 0 {
+        return Err(RuntimeError::IllegalFunctionCall { msg: "STRING$ count must be non-negative".into() });
+    }
+    let n = n as usize;
     let ch = match &args[1] {
         Value::Str(s) => s.chars().next().unwrap_or(' '),
         v => char::from(v.to_i64()? as u8),
@@ -338,8 +367,8 @@ fn builtin_val(args: &[Value]) -> Result<Value, RuntimeError> {
     }
     // QBasic returns 0 for non-numeric strings after parsing leading digits
     let mut num_str = String::new();
-    for ch in s.chars() {
-        if ch.is_ascii_digit() || ch == '.' || ch == '-' || ch == '+' {
+    for (i, ch) in s.chars().enumerate() {
+        if ch.is_ascii_digit() || ch == '.' || ((ch == '-' || ch == '+') && i == 0) {
             num_str.push(ch);
         } else {
             break;
@@ -362,32 +391,96 @@ fn builtin_oct(args: &[Value]) -> Result<Value, RuntimeError> {
     Ok(Value::Str(format!("{:o}", n)))
 }
 
+/// Get local time components (hours, minutes, seconds, millis) from system time.
+/// Uses platform-specific APIs to get local time without external dependencies.
+fn local_time_parts() -> (u64, u64, u64, u32) {
+    #[cfg(target_os = "windows")]
+    {
+        #[repr(C)]
+        struct SystemTime {
+            year: u16, month: u16, _dow: u16, day: u16,
+            hour: u16, minute: u16, second: u16, millis: u16,
+        }
+        unsafe extern "system" {
+            fn GetLocalTime(st: *mut SystemTime);
+        }
+        let mut st = SystemTime { year: 0, month: 0, _dow: 0, day: 0, hour: 0, minute: 0, second: 0, millis: 0 };
+        unsafe { GetLocalTime(&mut st); }
+        (st.hour as u64, st.minute as u64, st.second as u64, st.millis as u32)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        #[repr(C)]
+        struct Tm {
+            tm_sec: i32, tm_min: i32, tm_hour: i32, tm_mday: i32,
+            tm_mon: i32, tm_year: i32, tm_wday: i32, tm_yday: i32,
+            tm_isdst: i32, tm_gmtoff: i64, tm_zone: *const i8,
+        }
+        unsafe extern "C" {
+            fn time(t: *mut i64) -> i64;
+            fn localtime_r(t: *const i64, result: *mut Tm) -> *mut Tm;
+        }
+        let mut t: i64 = 0;
+        let mut tm = Tm { tm_sec: 0, tm_min: 0, tm_hour: 0, tm_mday: 0, tm_mon: 0, tm_year: 0, tm_wday: 0, tm_yday: 0, tm_isdst: 0, tm_gmtoff: 0, tm_zone: std::ptr::null() };
+        unsafe {
+            time(&mut t);
+            localtime_r(&t, &mut tm);
+        }
+        (tm.tm_hour as u64, tm.tm_min as u64, tm.tm_sec as u64, 0)
+    }
+}
+
+/// Get local date components (year, month, day).
+fn local_date_parts() -> (u16, u16, u16) {
+    #[cfg(target_os = "windows")]
+    {
+        #[repr(C)]
+        struct SystemTime {
+            year: u16, month: u16, _dow: u16, day: u16,
+            hour: u16, minute: u16, second: u16, millis: u16,
+        }
+        unsafe extern "system" {
+            fn GetLocalTime(st: *mut SystemTime);
+        }
+        let mut st = SystemTime { year: 0, month: 0, _dow: 0, day: 0, hour: 0, minute: 0, second: 0, millis: 0 };
+        unsafe { GetLocalTime(&mut st); }
+        (st.year, st.month, st.day)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        #[repr(C)]
+        struct Tm {
+            tm_sec: i32, tm_min: i32, tm_hour: i32, tm_mday: i32,
+            tm_mon: i32, tm_year: i32, tm_wday: i32, tm_yday: i32,
+            tm_isdst: i32, tm_gmtoff: i64, tm_zone: *const i8,
+        }
+        unsafe extern "C" {
+            fn time(t: *mut i64) -> i64;
+            fn localtime_r(t: *const i64, result: *mut Tm) -> *mut Tm;
+        }
+        let mut t: i64 = 0;
+        let mut tm = Tm { tm_sec: 0, tm_min: 0, tm_hour: 0, tm_mday: 0, tm_mon: 0, tm_year: 0, tm_wday: 0, tm_yday: 0, tm_isdst: 0, tm_gmtoff: 0, tm_zone: std::ptr::null() };
+        unsafe {
+            time(&mut t);
+            localtime_r(&t, &mut tm);
+        }
+        ((tm.tm_year + 1900) as u16, (tm.tm_mon + 1) as u16, tm.tm_mday as u16)
+    }
+}
+
 fn builtin_timer(_args: &[Value]) -> Result<Value, RuntimeError> {
-    use std::time::SystemTime;
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs_today = now.as_secs() % 86400;
-    let frac = now.subsec_millis() as f64 / 1000.0;
-    Ok(Value::Single(secs_today as f64 + frac))
+    let (h, m, s, ms) = local_time_parts();
+    let secs_today = h * 3600 + m * 60 + s;
+    Ok(Value::Single(secs_today as f64 + ms as f64 / 1000.0))
 }
 
 fn builtin_date(_args: &[Value]) -> Result<Value, RuntimeError> {
-    // Standard BASIC returns MM-DD-YYYY or similar.
-    // To avoid complex dependencies, we return a hardcoded date for now or use system time.
-    // For now, let's just use placeholder to not break things without 'chrono'.
-    Ok(Value::Str("02-28-2026".into()))
+    let (year, month, day) = local_date_parts();
+    Ok(Value::Str(format!("{:02}-{:02}-{:04}", month, day, year)))
 }
 
 fn builtin_time(_args: &[Value]) -> Result<Value, RuntimeError> {
-    use std::time::SystemTime;
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = now.as_secs() % 86400;
-    let hours = secs / 3600;
-    let mins = (secs % 3600) / 60;
-    let secs = secs % 60;
+    let (hours, mins, secs, _) = local_time_parts();
     Ok(Value::Str(format!("{:02}:{:02}:{:02}", hours, mins, secs)))
 }
 

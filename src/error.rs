@@ -36,8 +36,8 @@ pub enum RuntimeError {
     DivisionByZero,
     #[error("undefined variable: {name}")]
     UndefinedVariable { name: String },
-    #[error("overflow")]
-    Overflow,
+    #[error("overflow: {msg}")]
+    Overflow { msg: String },
     #[error("subscript out of range")]
     SubscriptOutOfRange,
     #[error("RETURN without GOSUB")]
@@ -65,7 +65,7 @@ impl RuntimeError {
             RuntimeError::NextWithoutFor => 1,
             RuntimeError::DivisionByZero => 11,
             RuntimeError::TypeMismatch { .. } => 13,
-            RuntimeError::Overflow => 6,
+            RuntimeError::Overflow { .. } => 6,
             RuntimeError::SubscriptOutOfRange => 9,
             RuntimeError::IllegalFunctionCall { .. } => 5,
             RuntimeError::ReturnWithoutGosub => 3,

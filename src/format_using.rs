@@ -8,6 +8,8 @@ pub fn format_using(format_str: &str, values: &[Value]) -> Result<String, Runtim
     let mut fi = 0; // format index
     let mut vi = 0; // value index
 
+    let mut iteration_count = 0;
+    let max_iterations = chars.len() * values.len().max(1) + chars.len();
     loop {
         if fi >= chars.len() {
             if vi >= values.len() {
@@ -15,6 +17,10 @@ pub fn format_using(format_str: &str, values: &[Value]) -> Result<String, Runtim
             }
             // Values remain — repeat the format string
             fi = 0;
+            iteration_count += 1;
+            if iteration_count > max_iterations {
+                break; // Prevent infinite loop with non-consuming format strings
+            }
         }
 
         let ch = chars[fi];

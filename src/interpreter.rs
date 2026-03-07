@@ -232,6 +232,27 @@ impl Interpreter {
                         },
                     );
                 }
+                // Recurse into nested blocks to find labels and DATA
+                Stmt::If(if_stmt) => {
+                    self.prescan(&if_stmt.then_body);
+                    for (_, body) in &if_stmt.elseif_clauses {
+                        self.prescan(body);
+                    }
+                    if let Some(else_body) = &if_stmt.else_body {
+                        self.prescan(else_body);
+                    }
+                }
+                Stmt::For(for_stmt) => self.prescan(&for_stmt.body),
+                Stmt::WhileWend { body, .. } => self.prescan(body),
+                Stmt::DoLoop(do_stmt) => self.prescan(&do_stmt.body),
+                Stmt::SelectCase(sel) => {
+                    for case in &sel.cases {
+                        self.prescan(&case.body);
+                    }
+                    if let Some(else_body) = &sel.else_body {
+                        self.prescan(else_body);
+                    }
+                }
                 _ => {}
             }
         }
@@ -359,7 +380,7 @@ impl Interpreter {
             }
             Stmt::Const { name, value } => {
                 let val = self.eval_expr(value)?;
-                self.env.borrow_mut().define_const(name, val)?;
+                self.env.borrow_mut().define_const(name, None, val)?;
                 Ok(ControlFlow::Normal)
             }
             Stmt::Input(input) => {
@@ -390,7 +411,11 @@ impl Interpreter {
             Stmt::ExitFor => Ok(ControlFlow::ExitFor),
             Stmt::ExitDo => Ok(ControlFlow::ExitDo),
             Stmt::ExitSub => Ok(ControlFlow::ExitSub),
-            Stmt::ExitFunction => Ok(ControlFlow::ExitFunction(Value::Integer(0))),
+            Stmt::ExitFunction => {
+                // ExitFunction doesn't need to carry a value here;
+                // the caller (call_user_function) reads the function-name variable.
+                Ok(ControlFlow::ExitFunction(Value::Integer(0)))
+            }
             Stmt::End | Stmt::System | Stmt::Stop => Ok(ControlFlow::End),
             Stmt::Rem => Ok(ControlFlow::Normal),
             Stmt::ExprStmt(expr) => {
@@ -444,12 +469,30 @@ impl Interpreter {
                 for decl in decls {
                     let default = Value::default_for(Self::resolve_decl_type(decl));
                     self.env.borrow_mut().set(&decl.name, decl.suffix, default);
+                    // Clear flattened array elements (keys like "NAME(0,1)")
+                    let prefix = format!("{}(", decl.name);
+                    let keys: Vec<String> = self.env.borrow().var_keys()
+                        .into_iter()
+                        .filter(|k| k.starts_with(&prefix))
+                        .collect();
+                    for key in keys {
+                        self.env.borrow_mut().vars_mut().remove(&key);
+                    }
                 }
                 Ok(ControlFlow::Normal)
             }
             Stmt::Erase(names) => {
                 for name in names {
                     self.env.borrow_mut().set(name, None, Value::Integer(0));
+                    // Clear flattened array elements
+                    let prefix = format!("{name}(");
+                    let keys: Vec<String> = self.env.borrow().var_keys()
+                        .into_iter()
+                        .filter(|k| k.starts_with(&prefix))
+                        .collect();
+                    for key in keys {
+                        self.env.borrow_mut().vars_mut().remove(&key);
+                    }
                 }
                 Ok(ControlFlow::Normal)
             }
@@ -660,16 +703,17 @@ impl Interpreter {
                     .to_string_val()?;
                 let start_pos = (self.eval_expr(start)?.to_i64()? - 1).max(0) as usize;
                 let repl = self.eval_expr(replacement)?.to_string_val()?;
+                let mut chars: Vec<char> = current.chars().collect();
+                let repl_chars: Vec<char> = repl.chars().collect();
+                let char_count = chars.len();
                 let max_len = if let Some(len_expr) = length {
                     self.eval_expr(len_expr)?.to_i64()? as usize
                 } else {
-                    current.len().saturating_sub(start_pos)
+                    char_count.saturating_sub(start_pos)
                 };
                 // Cannot extend string; replacement is truncated
-                let avail = current.len().saturating_sub(start_pos);
-                let replace_len = max_len.min(avail).min(repl.len());
-                let mut chars: Vec<char> = current.chars().collect();
-                let repl_chars: Vec<char> = repl.chars().collect();
+                let avail = char_count.saturating_sub(start_pos);
+                let replace_len = max_len.min(avail).min(repl_chars.len());
                 for i in 0..replace_len {
                     if start_pos + i < chars.len() {
                         chars[start_pos + i] = repl_chars[i];
@@ -685,12 +729,17 @@ impl Interpreter {
                 let current = self.env.borrow().get(&var.name, var.suffix)
                     .unwrap_or(Value::Str(String::new()))
                     .to_string_val()?;
-                let target_len = current.len();
+                let target_len = current.chars().count();
                 let new_val = self.eval_expr(expr)?.to_string_val()?;
-                let result = if new_val.len() >= target_len {
-                    new_val[..target_len].to_string()
+                let new_chars: Vec<char> = new_val.chars().collect();
+                let result: String = if new_chars.len() >= target_len {
+                    new_chars[..target_len].iter().collect()
                 } else {
-                    format!("{:<width$}", new_val, width = target_len)
+                    let mut s: String = new_chars.into_iter().collect();
+                    for _ in 0..(target_len - s.chars().count()) {
+                        s.push(' ');
+                    }
+                    s
                 };
                 self.env.borrow_mut().set(&var.name, var.suffix, Value::Str(result));
                 Ok(ControlFlow::Normal)
@@ -701,12 +750,19 @@ impl Interpreter {
                 let current = self.env.borrow().get(&var.name, var.suffix)
                     .unwrap_or(Value::Str(String::new()))
                     .to_string_val()?;
-                let target_len = current.len();
+                let target_len = current.chars().count();
                 let new_val = self.eval_expr(expr)?.to_string_val()?;
-                let result = if new_val.len() >= target_len {
-                    new_val[..target_len].to_string()
+                let new_chars: Vec<char> = new_val.chars().collect();
+                let result: String = if new_chars.len() >= target_len {
+                    new_chars[..target_len].iter().collect()
                 } else {
-                    format!("{:>width$}", new_val, width = target_len)
+                    let pad = target_len - new_chars.len();
+                    let mut s = String::new();
+                    for _ in 0..pad {
+                        s.push(' ');
+                    }
+                    s.extend(new_chars);
+                    s
                 };
                 self.env.borrow_mut().set(&var.name, var.suffix, Value::Str(result));
                 Ok(ControlFlow::Normal)
@@ -965,12 +1021,12 @@ impl Interpreter {
             }
             let cf = self.exec_block(body)?;
             match cf {
-                ControlFlow::ExitDo => break,
                 ControlFlow::End => return Ok(ControlFlow::End),
                 ControlFlow::Goto(l) => return Ok(ControlFlow::Goto(l)),
                 ControlFlow::Gosub(l) => return Ok(ControlFlow::Gosub(l)),
                 ControlFlow::ExitSub => return Ok(ControlFlow::ExitSub),
                 ControlFlow::ExitFunction(v) => return Ok(ControlFlow::ExitFunction(v)),
+                ControlFlow::ExitDo => return Ok(ControlFlow::ExitDo),
                 _ => {}
             }
         }
@@ -1567,6 +1623,7 @@ impl Interpreter {
                 match val {
                     Value::Integer(_) => Ok(Value::Integer(-n as i64)),
                     Value::Long(_) => Ok(Value::Long(-n as i64)),
+                    Value::Single(_) => Ok(Value::Single(-n)),
                     _ => Ok(Value::Double(-n)),
                 }
             }
@@ -1583,7 +1640,8 @@ impl Interpreter {
             BasicType::Integer => Value::Integer(n as i64),
             BasicType::Long => Value::Long(n as i64),
             BasicType::Single => Value::Single(n),
-            BasicType::Double | BasicType::String => Value::Double(n),
+            BasicType::Double => Value::Double(n),
+            BasicType::String => unreachable!("make_numeric called with String type"),
         })
     }
 

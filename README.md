@@ -202,6 +202,8 @@ Source -> Lexer -> Tokens -> Parser -> AST -> Tree-Walking Interpreter -> Output
 - User-defined types (TYPE...END TYPE)
 - CHAIN/COMMON (multi-module programs)
 - DEF SEG/PEEK/POKE (memory access)
+- FIELD (random-access file fields), SEEK
+- BYVAL parameter semantics
 
 ## Dependencies
 

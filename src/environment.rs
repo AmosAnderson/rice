@@ -34,13 +34,14 @@ impl Environment {
     }
 
     pub fn new_child(parent: EnvRef) -> EnvRef {
+        let option_base = parent.borrow().option_base;
         Rc::new(RefCell::new(Self {
             vars: HashMap::new(),
             constants: HashMap::new(),
             parent: Some(parent),
             labels: HashMap::new(),
             gosub_stack: Vec::new(),
-            option_base: 0,
+            option_base,
             shared_vars: HashSet::new(),
         }))
     }
@@ -68,8 +69,8 @@ impl Environment {
     pub fn set(&mut self, name: &str, suffix: Option<TypeSuffix>, value: Value) {
         let key = Self::var_key(name, suffix);
         // Don't overwrite constants
-        if self.constants.contains_key(&key) {
-            return; // Silently ignore; caller should check
+        if self.constants.contains_key(&key) || self.is_const_in_parents(&key) {
+            return; // Constant cannot be reassigned
         }
         // If variable is shared, write to root
         if self.shared_vars.contains(&key) {
@@ -81,8 +82,8 @@ impl Environment {
         self.vars.insert(key, value);
     }
 
-    pub fn define_const(&mut self, name: &str, value: Value) -> Result<(), RuntimeError> {
-        let key = Self::var_key(name, None);
+    pub fn define_const(&mut self, name: &str, suffix: Option<TypeSuffix>, value: Value) -> Result<(), RuntimeError> {
+        let key = Self::var_key(name, suffix);
         if self.constants.contains_key(&key) {
             return Err(RuntimeError::DuplicateDefinition { name: name.into() });
         }
@@ -122,6 +123,18 @@ impl Environment {
         match suffix {
             Some(s) => format!("{}{}", name, s.to_char()),
             None => name.to_string(),
+        }
+    }
+
+    fn is_const_in_parents(&self, key: &str) -> bool {
+        if let Some(parent) = &self.parent {
+            let p = parent.borrow();
+            if p.constants.contains_key(key) {
+                return true;
+            }
+            p.is_const_in_parents(key)
+        } else {
+            false
         }
     }
 
