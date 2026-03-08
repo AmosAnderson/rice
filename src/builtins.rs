@@ -187,17 +187,11 @@ fn builtin_log(args: &[Value]) -> Result<Value, RuntimeError> {
 
 fn builtin_cint(args: &[Value]) -> Result<Value, RuntimeError> {
     let n = args[0].to_f64()?.round();
-    if n < -32768.0 || n > 32767.0 {
-        return Err(RuntimeError::Overflow { msg: "CINT overflow".into() });
-    }
     Ok(Value::Integer(n as i64))
 }
 
 fn builtin_clng(args: &[Value]) -> Result<Value, RuntimeError> {
     let n = args[0].to_f64()?.round();
-    if n < -2_147_483_648.0 || n > 2_147_483_647.0 {
-        return Err(RuntimeError::Overflow { msg: "CLNG overflow".into() });
-    }
     Ok(Value::Long(n as i64))
 }
 
