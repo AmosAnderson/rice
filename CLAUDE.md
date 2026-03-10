@@ -22,7 +22,7 @@ cargo test --test integration  # Run integration tests only
 cargo test test_hello          # Run a single test by name
 ```
 
-Rust edition 2024 (`Cargo.toml`). Uses `thiserror` for error types, `rustyline` for REPL, `pretty_assertions` and `tempfile` for tests, `tower-lsp`/`tokio`/`serde_json` for the LSP server.
+Rust edition 2024 (`Cargo.toml`). Uses `thiserror` for error types, `rustyline` for REPL, `crossterm` for terminal manipulation, `pretty_assertions` and `tempfile` for tests, `tower-lsp`/`tokio`/`serde_json` for the LSP server.
 
 There is also an LSP binary:
 ```bash
@@ -43,7 +43,7 @@ All hand-written (no parser generators).
 - **`lexer.rs`** — Hand-written tokenizer. Case-insensitive. Detects line numbers at line start. Recognizes compound keywords (`END IF`, `END SUB`, `LINE INPUT`). Attaches type suffixes to identifiers.
 - **`ast.rs`** — `Stmt` and `Expr` enums. `LabeledStmt` wraps statements with optional line labels. Key types: `PrintStmt`, `IfStmt`, `ForStmt`, `DoLoopStmt`, `SelectCaseStmt`, `SubDef`, `FunctionDef`.
 - **`parser.rs`** — Recursive descent. Expression parsing uses precedence climbing (IMP → EQV → XOR → OR → AND → NOT → comparison → +/- → MOD → \\ → */÷ → unary → ^). `at_stmt_end()` also treats `ELSE` as a terminator for single-line IF support.
-- **`interpreter.rs`** — Tree-walking evaluator. Uses `ControlFlow` enum (Normal, ExitFor, ExitDo, ExitSub, ExitFunction, Goto, Gosub, Return, End, Resume, ResumeNext) for control flow. `SharedOutput` wrapper enables testable output capture. `FileHandle` struct manages open files with `BufReader`/`BufWriter` for text and binary I/O. Error handler state (error_handler, current_error, error_resume_pc) enables ON ERROR GOTO/RESUME. ERR and ERL are resolved as interpreter-state functions. Maintains `def_fns` map for DEF FN definitions, `static_vars` for STATIC variable persistence across calls, and `deftype_map` for DEFtype letter-range defaults.
+- **`interpreter.rs`** — Tree-walking evaluator. Uses `ControlFlow` enum (Normal, ExitFor, ExitDo, ExitSub, ExitFunction, Goto, Gosub, Return, End, Resume, ResumeNext, Chain) for control flow. `SharedOutput` wrapper enables testable output capture. `FileHandle` struct manages open files with `BufReader`/`BufWriter` for text and binary I/O. Error handler state (error_handler, current_error, error_resume_pc) enables ON ERROR GOTO/RESUME. ERR and ERL are resolved as interpreter-state functions. Maintains `def_fns` map for DEF FN definitions, `static_vars` for STATIC variable persistence across calls, and `deftype_map` for DEFtype letter-range defaults.
 - **`format_using.rs`** — PRINT USING format engine. Supports QBasic numeric specifiers (`#`, `.`, `+`, `-`, `$$`, `**`, `**$`, `,`, `^^^^`) and string specifiers (`!`, `\ \`, `&`). Escape with `_`. Overflow prefix `%`.
 - **`environment.rs`** — `Rc<RefCell<Environment>>` scope chain. Variable key = name + suffix (`X%` and `X$` are different variables). GOSUB return stack and label map stored here. Supports `shared_vars` set for SHARED keyword (reads/writes go to root scope). Constants are checked through the parent chain to prevent reassignment.
 - **`value.rs`** — `Value` enum (Integer, Long, Single, Double, Str). QBasic-style PRINT formatting (leading space for positive numbers). Type coercion ladder: Integer < Long < Single < Double.
@@ -75,10 +75,36 @@ All hand-written (no parser generators).
 
 Integration tests in `tests/programs/*.bas` cover: hello world, arithmetic, variables, FizzBuzz, while loops, do/loops, select case, gosub/return, recursive factorial, string functions, DATA/READ, SUB calls, file I/O (text, binary, append, WRITE#/INPUT# round-trip, FREEFILE, EOF, LOF), WRITE (console), SLEEP, CLEAR, file system operations (NAME, KILL, MKDIR, RMDIR, CHDIR), SHELL, ENVIRON$, MID$ assignment, LSET/RSET, SHARED, STATIC, DEFtype, DEF FN, date/time functions, binary conversion (MKI$/CVI etc.), ON n GOTO/GOSUB, RANDOMIZE/RND, TYPE (user-defined types with dot notation, arrays of TYPE, TYPE in SUB).
 
-To add a new integration test: create a `.bas` file in `tests/programs/`, then add a test function in `tests/integration.rs` using the `run_file()` helper (or `run_bas()` for inline source). The interpreter's `SharedOutput` captures PRINT output for assertion.
+To add a new integration test: create a `.bas` file in `tests/programs/`, then add a test function in `tests/integration.rs` using one of these helpers:
+- `run_file("tests/programs/foo.bas")` — load and execute a `.bas` file, returns captured output
+- `run_bas("PRINT 42\n")` — parse/execute inline BASIC source
+- `run_bas_with_tmpdir(src)` — execute with a temp directory; use `{DIR}` placeholder in source for paths
+- `run_bas_may_fail(src)` — returns both output and `Result` for testing error conditions
+- `run_chain_test(main_source, files)` — multi-file CHAIN test helper
+- `run_chain_test_may_fail(main_source, files)` — CHAIN test with error handling
+
+The interpreter's `SharedOutput` captures PRINT output for assertion.
+
+### Extending the Interpreter
+
+**Adding a new statement:**
+1. Add `Token::Kw*` variant to `token.rs`
+2. Add `"KEYWORD" => Token::KwKeyword` in the lexer's keyword match table in `lexer.rs`
+3. Add `Stmt::*` variant in `ast.rs`
+4. Add `Token::Kw* => self.parse_*()` case in `parse_statement()` in `parser.rs`
+5. Add `Stmt::* => ...` case in `exec_stmt()` in `interpreter.rs` (return `ControlFlow::Normal` for simple statements)
+6. If the statement needs prescan (labels, data, definitions), add handling in the prescan phase
+
+**Adding a builtin function:**
+1. Write `fn builtin_name(args: &[Value]) -> Result<Value, RuntimeError>` in `builtins.rs`
+2. Call `reg.register("NAME", builtin_name, arity)` in `BuiltinRegistry::new()` (use arity `0` for variadic)
+
+**Adding a new error:**
+1. Add variant to `LexError`, `ParseError`, or `RuntimeError` in `error.rs` with `#[error(...)]` attribute
+2. For `RuntimeError`: add QBasic error code mapping in `qbasic_error_code()` if applicable
 
 ## Status of BASIC Features
 
-**Working**: PRINT, PRINT USING, LET, DIM, CONST, INPUT, LINE INPUT, IF/ELSEIF/ELSE, FOR/NEXT, WHILE/WEND, DO/LOOP, SELECT CASE, GOTO, GOSUB/RETURN, EXIT FOR/DO/SUB/FUNCTION, SUB/FUNCTION definitions, CALL, DECLARE, DATA/READ/RESTORE, SWAP, all string/math/conversion builtins, ERR/ERL, OPTION BASE, REDIM, ERASE, File I/O (OPEN, CLOSE, PRINT#, WRITE#, INPUT#, LINE INPUT#, GET, PUT), file functions (FREEFILE, EOF, LOF, LOC), ON ERROR GOTO/RESUME, ON n GOTO/GOSUB, RANDOMIZE/RND, WRITE (console), SLEEP, CLEAR, NAME/KILL/MKDIR/RMDIR/CHDIR, SHELL, ENVIRON$, MID$ (statement form), LSET/RSET, SHARED, STATIC, DEFtype (DEFINT/DEFLNG/DEFSNG/DEFDBL/DEFSTR), DEF FN, MKI$/MKL$/MKS$/MKD$/CVI/CVL/CVS/CVD, TYPE (user-defined types with dot-notation, STRING * n, arrays of TYPE).
+**Working**: PRINT, PRINT USING, LET, DIM, CONST, INPUT, LINE INPUT, IF/ELSEIF/ELSE, FOR/NEXT, WHILE/WEND, DO/LOOP, SELECT CASE, GOTO, GOSUB/RETURN, EXIT FOR/DO/SUB/FUNCTION, SUB/FUNCTION definitions, CALL, DECLARE, DATA/READ/RESTORE, SWAP, all string/math/conversion builtins, ERR/ERL, OPTION BASE, REDIM, ERASE, File I/O (OPEN, CLOSE, PRINT#, WRITE#, INPUT#, LINE INPUT#, GET, PUT, FIELD, SEEK), file functions (FREEFILE, EOF, LOF, LOC, SEEK), ON ERROR GOTO/RESUME, ON n GOTO/GOSUB, RANDOMIZE/RND, WRITE (console), SLEEP, CLEAR, NAME/KILL/MKDIR/RMDIR/CHDIR, SHELL, ENVIRON$, MID$ (statement form), LSET/RSET, SHARED, STATIC, DEFtype (DEFINT/DEFLNG/DEFSNG/DEFDBL/DEFSTR), DEF FN, MKI$/MKL$/MKS$/MKD$/CVI/CVL/CVS/CVD, TYPE (user-defined types with dot-notation, STRING * n, arrays of TYPE), CHAIN/COMMON (multi-module programming), text/console features (CLS, LOCATE, COLOR, BEEP, WIDTH, VIEW PRINT, CSRLIN, POS, INKEY$, INPUT$, SCREEN()), BYVAL parameter semantics.
 
-**Not implemented**: proper array storage (currently uses flattened key hack), BYVAL semantics, FIELD (random-access file fields), SEEK statement/function, LBOUND/UBOUND (stubs only).
+**Not implemented**: proper array storage (currently uses flattened key hack), LBOUND/UBOUND (stubs only).

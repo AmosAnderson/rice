@@ -141,6 +141,10 @@ pub enum Stmt {
     Chain { filespec: Expr },
     Common(CommonStmt),
 
+    // FIELD/SEEK
+    Field { file_num: Expr, fields: Vec<FieldDef> },
+    Seek { file_num: Expr, position: Expr },
+
     // Console
     Cls,
     Beep,
@@ -356,6 +360,12 @@ pub enum ResumeTarget {
     Default,
     Next,
     Label(Label),
+}
+
+#[derive(Debug, Clone)]
+pub struct FieldDef {
+    pub width: Expr,
+    pub var: Variable,
 }
 
 // Expressions

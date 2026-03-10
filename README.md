@@ -17,7 +17,7 @@ cargo run
 ```
 
 ```
-RICE BASIC v0.9.0
+RICE BASIC v0.9.1
 Type SYSTEM or press Ctrl+D to exit.
 
 Ok
@@ -66,8 +66,10 @@ RICE BASIC implements a broad subset of QBasic:
 - **Procedures**: SUB/END SUB, FUNCTION/END FUNCTION, DEF FN, CALL, DECLARE
 - **Data**: DATA, READ, RESTORE
 - **String mutation**: MID$ (assignment), LSET, RSET
-- **File I/O**: OPEN, CLOSE, PRINT#, WRITE#, INPUT#, LINE INPUT#, GET, PUT
+- **File I/O**: OPEN, CLOSE, PRINT#, WRITE#, INPUT#, LINE INPUT#, GET, PUT, FIELD, SEEK
 - **File system**: NAME...AS, KILL, MKDIR, RMDIR, CHDIR
+- **Console**: CLS, LOCATE, COLOR, BEEP, WIDTH, VIEW PRINT
+- **Multi-module**: CHAIN, COMMON
 - **System**: SHELL
 
 ### Built-in Functions
@@ -75,8 +77,9 @@ RICE BASIC implements a broad subset of QBasic:
 - **String**: LEN, LEFT$, RIGHT$, MID$, INSTR, UCASE$, LCASE$, LTRIM$, RTRIM$, SPACE$, STRING$, CHR$, ASC, STR$, VAL, HEX$, OCT$
 - **Math**: ABS, SGN, INT, FIX, SQR, EXP, LOG, SIN, COS, TAN, ATN, RND
 - **Conversion**: CINT, CLNG, CSNG, CDBL, MKI$, MKL$, MKS$, MKD$, CVI, CVL, CVS, CVD
-- **File**: FREEFILE, EOF, LOF, LOC
+- **File**: FREEFILE, EOF, LOF, LOC, SEEK
 - **Error handling**: ERR, ERL
+- **Console**: CSRLIN, POS, INKEY$, INPUT$, SCREEN()
 - **System**: ENVIRON$, TIMER, DATE$, TIME$, RANDOMIZE
 
 ### File I/O
@@ -197,17 +200,14 @@ Source -> Lexer -> Tokens -> Parser -> AST -> Tree-Walking Interpreter -> Output
 ## What's Not Implemented
 
 - Graphics (SCREEN, PSET, LINE, CIRCLE, etc.)
-- Sound (SOUND, BEEP, PLAY)
-- Screen control (LOCATE, WIDTH, COLOR, INKEY$)
-- CHAIN/COMMON (multi-module programs)
+- Sound (SOUND, PLAY)
 - DEF SEG/PEEK/POKE (memory access)
-- FIELD (random-access file fields), SEEK
-- BYVAL parameter semantics
 
 ## Dependencies
 
 - [thiserror](https://crates.io/crates/thiserror) -- error type derivation
 - [rustyline](https://crates.io/crates/rustyline) -- REPL line editing and history
+- [crossterm](https://crates.io/crates/crossterm) -- cross-platform terminal manipulation
 - [tower-lsp](https://crates.io/crates/tower-lsp) -- LSP server framework
 - [tokio](https://crates.io/crates/tokio) -- async runtime (for LSP)
 - [serde_json](https://crates.io/crates/serde_json) -- JSON serialization (for LSP)

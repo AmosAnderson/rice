@@ -391,6 +391,8 @@ impl Lexer {
                 "COLOR" => Token::KwColor,
                 "WIDTH" => Token::KwWidth,
                 "VIEW" => Token::KwView,
+                "FIELD" => Token::KwField,
+                "SEEK" => Token::KwSeek,
                 _ => Token::Identifier { name: word, suffix },
             }
         } else {

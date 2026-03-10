@@ -101,12 +101,19 @@ struct DefFnDef {
     body: DefFnBody,
 }
 
+struct FieldMapping {
+    width: usize,
+    var_name: String,
+    var_suffix: Option<TypeSuffix>,
+}
+
 struct FileHandle {
     mode: FileMode,
     reader: Option<BufReader<File>>,
     writer: Option<BufWriter<File>>,
     rec_len: i64,
     eof_flag: bool,
+    field_mappings: Vec<FieldMapping>,
 }
 
 pub struct Interpreter {
@@ -974,6 +981,16 @@ impl Interpreter {
                 })
             }
 
+            // FIELD/SEEK
+            Stmt::Field { file_num, fields } => {
+                self.exec_field(file_num, fields)?;
+                Ok(ControlFlow::Normal)
+            }
+            Stmt::Seek { file_num, position } => {
+                self.exec_seek(file_num, position)?;
+                Ok(ControlFlow::Normal)
+            }
+
             // Console
             Stmt::Cls => {
                 write!(self.output, "\x1b[2J\x1b[H").ok();
@@ -1447,6 +1464,8 @@ impl Interpreter {
             }
             self.current_static_vars = prev_static;
 
+            self.byref_writeback(&sub.params, arg_exprs, &child_env);
+
             match result? {
                 ControlFlow::End => Ok(ControlFlow::End),
                 _ => Ok(ControlFlow::Normal),
@@ -1455,6 +1474,26 @@ impl Interpreter {
             Err(RuntimeError::General {
                 msg: format!("undefined SUB: {name}"),
             })
+        }
+    }
+
+    /// BYREF write-back: copy modified parameter values back to caller variables.
+    /// Skips BYVAL params, array params, and non-variable argument expressions.
+    fn byref_writeback(
+        &self,
+        params: &[Param],
+        arg_exprs: &[Expr],
+        child_env: &EnvRef,
+    ) {
+        for (i, param) in params.iter().enumerate() {
+            if param.by_val || param.is_array {
+                continue;
+            }
+            if let Some(Expr::Variable(caller_var)) = arg_exprs.get(i) {
+                let val = child_env.borrow().get(&param.name, param.suffix)
+                    .unwrap_or(Value::Integer(0));
+                self.env.borrow_mut().set(&caller_var.name, caller_var.suffix, val);
+            }
         }
     }
 
@@ -1675,6 +1714,35 @@ impl Interpreter {
                         };
                         return Ok(Value::Integer(pos));
                     }
+                    "SEEK" => {
+                        if arg_vals.len() != 1 {
+                            return Err(RuntimeError::ArityMismatch { expected: 1, got: arg_vals.len() });
+                        }
+                        let fnum = arg_vals[0].to_i64()?;
+                        let fh = self.file_handles.get_mut(&fnum).ok_or_else(|| RuntimeError::General {
+                            msg: format!("file #{fnum} is not open"),
+                        })?;
+                        // Flush writer to ensure file position reflects writes
+                        if let Some(writer) = &mut fh.writer {
+                            writer.flush().map_err(|e| RuntimeError::General {
+                                msg: format!("flush error: {e}"),
+                            })?;
+                        }
+                        let byte_pos = if let Some(writer) = &mut fh.writer {
+                            writer.stream_position().unwrap_or(0)
+                        } else if let Some(reader) = &mut fh.reader {
+                            reader.stream_position().unwrap_or(0)
+                        } else {
+                            0
+                        };
+                        // SEEK returns 1-based position; for RANDOM mode, return record number
+                        let result = if fh.mode == FileMode::Random && fh.rec_len > 0 {
+                            (byte_pos as i64 / fh.rec_len) + 1
+                        } else {
+                            byte_pos as i64 + 1
+                        };
+                        return Ok(Value::Integer(result));
+                    }
                     _ => {}
                 }
 
@@ -1696,7 +1764,7 @@ impl Interpreter {
                 // Try user-defined function
                 let func = self.functions.get(&func_name).or_else(|| self.functions.get(name)).cloned();
                 if let Some(func) = func {
-                    return self.call_user_function(&func, &arg_vals);
+                    return self.call_user_function(&func, &arg_vals, args);
                 }
 
                 // Fall through to array access
@@ -1730,6 +1798,7 @@ impl Interpreter {
         &mut self,
         func: &UserFunction,
         args: &[Value],
+        arg_exprs: &[Expr],
     ) -> Result<Value, RuntimeError> {
         if args.len() != func.params.len() {
             return Err(RuntimeError::ArityMismatch {
@@ -1790,6 +1859,8 @@ impl Interpreter {
             }
         }
         self.current_static_vars = prev_static;
+
+        self.byref_writeback(&func.params, arg_exprs, &child_env);
 
         match result? {
             ControlFlow::ExitFunction(v) => Ok(v),
@@ -2572,6 +2643,7 @@ impl Interpreter {
             writer,
             rec_len,
             eof_flag: false,
+            field_mappings: Vec::new(),
         });
 
         Ok(())
@@ -2862,6 +2934,79 @@ impl Interpreter {
         Ok(())
     }
 
+    fn exec_field(&mut self, file_num_expr: &Expr, fields: &[FieldDef]) -> Result<(), RuntimeError> {
+        let file_num = self.eval_expr(file_num_expr)?.to_i64()?;
+
+        // Evaluate all field widths before borrowing file_handles
+        let mut field_specs = Vec::new();
+        for field in fields {
+            let width = self.eval_expr(&field.width)?.to_i64()? as usize;
+            field_specs.push((width, field.var.name.clone(), field.var.suffix));
+        }
+
+        let fh = self.file_handles.get_mut(&file_num).ok_or_else(|| RuntimeError::General {
+            msg: format!("file #{file_num} is not open"),
+        })?;
+
+        if fh.mode != FileMode::Random {
+            return Err(RuntimeError::General {
+                msg: "FIELD requires a file opened FOR RANDOM".into(),
+            });
+        }
+
+        let mut total_width: usize = 0;
+        let mut mappings = Vec::with_capacity(field_specs.len());
+        for &(width, _, _) in &field_specs {
+            total_width += width;
+            if total_width > fh.rec_len as usize {
+                return Err(RuntimeError::General {
+                    msg: "FIELD width exceeds record length".into(),
+                });
+            }
+        }
+        for (width, var_name, var_suffix) in field_specs.into_iter() {
+            self.env.borrow_mut().set(
+                &var_name,
+                var_suffix,
+                Value::Str(" ".repeat(width)),
+            );
+            mappings.push(FieldMapping { width, var_name, var_suffix });
+        }
+        fh.field_mappings = mappings;
+        Ok(())
+    }
+
+    fn exec_seek(&mut self, file_num_expr: &Expr, position_expr: &Expr) -> Result<(), RuntimeError> {
+        let file_num = self.eval_expr(file_num_expr)?.to_i64()?;
+        let position = self.eval_expr(position_expr)?.to_i64()?;
+        let fh = self.file_handles.get_mut(&file_num).ok_or_else(|| RuntimeError::General {
+            msg: format!("file #{file_num} is not open"),
+        })?;
+
+        // SEEK uses 1-based byte position for BINARY, record number for RANDOM
+        let byte_pos = if fh.mode == FileMode::Random {
+            ((position - 1) * fh.rec_len) as u64
+        } else {
+            (position - 1) as u64
+        };
+
+        // Flush writer before seeking to ensure data is on disk
+        if let Some(writer) = &mut fh.writer {
+            writer.flush().map_err(|e| RuntimeError::General {
+                msg: format!("flush error: {e}"),
+            })?;
+            writer.seek(SeekFrom::Start(byte_pos)).map_err(|e| RuntimeError::General {
+                msg: format!("SEEK error: {e}"),
+            })?;
+        }
+        if let Some(reader) = &mut fh.reader {
+            reader.seek(SeekFrom::Start(byte_pos)).map_err(|e| RuntimeError::General {
+                msg: format!("SEEK error: {e}"),
+            })?;
+        }
+        Ok(())
+    }
+
     fn exec_get_put(&mut self, gp: &GetPutStmt) -> Result<(), RuntimeError> {
         let file_num = self.eval_expr(&gp.file_num)?.to_i64()?;
         let record = if let Some(expr) = &gp.record {
@@ -2875,8 +3020,23 @@ impl Interpreter {
         })?;
 
         let rec_len = fh.rec_len;
+        let has_fields = !fh.field_mappings.is_empty();
+        let field_mappings: Vec<_> = if has_fields {
+            fh.field_mappings.iter()
+                .map(|m| (m.width, m.var_name.clone(), m.var_suffix))
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         if gp.is_get {
+            // Flush writer before reading to ensure data is on disk
+            if let Some(writer) = &mut fh.writer {
+                writer.flush().map_err(|e| RuntimeError::General {
+                    msg: format!("flush error: {e}"),
+                })?;
+            }
+
             // Seek if record specified
             if let Some(rec) = record {
                 let pos = (rec - 1) * rec_len;
@@ -2896,13 +3056,24 @@ impl Interpreter {
             if bytes_read == 0 {
                 fh.eof_flag = true;
             }
-            buf.truncate(bytes_read);
 
-            // Trim trailing nulls/spaces for string representation
-            let s = String::from_utf8_lossy(&buf).trim_end_matches('\0').to_string();
-
-            if let Some(var) = &gp.var {
-                self.env.borrow_mut().set(&var.name, var.suffix, Value::Str(s));
+            if has_fields && gp.var.is_none() {
+                // Populate FIELD-mapped variables from the buffer
+                let mut offset = 0;
+                for &(width, ref var_name, var_suffix) in &field_mappings {
+                    let end = (offset + width).min(buf.len());
+                    let slice = if offset < buf.len() { &buf[offset..end] } else { &[] as &[u8] };
+                    let s = String::from_utf8_lossy(slice).to_string();
+                    self.env.borrow_mut().set(var_name, var_suffix, Value::Str(s));
+                    offset += width;
+                }
+            } else {
+                // Original behavior: store in single variable
+                buf.truncate(bytes_read);
+                let s = String::from_utf8_lossy(&buf).trim_end_matches('\0').to_string();
+                if let Some(var) = &gp.var {
+                    self.env.borrow_mut().set(&var.name, var.suffix, Value::Str(s));
+                }
             }
         } else {
             // PUT
@@ -2920,7 +3091,23 @@ impl Interpreter {
                 msg: format!("file #{file_num} is not open for writing"),
             })?;
 
-            if let Some(var) = &gp.var {
+            if has_fields && gp.var.is_none() {
+                // Build record buffer from FIELD-mapped variables
+                let mut padded = vec![b' '; rec_len as usize];
+                let mut offset = 0;
+                for &(width, ref var_name, var_suffix) in &field_mappings {
+                    let val = self.env.borrow().get(var_name, var_suffix)
+                        .unwrap_or(Value::Str(String::new()));
+                    let s = val.to_string_val().unwrap_or_default();
+                    let bytes = s.as_bytes();
+                    let copy_len = bytes.len().min(width);
+                    if offset + copy_len <= padded.len() {
+                        padded[offset..offset + copy_len].copy_from_slice(&bytes[..copy_len]);
+                    }
+                    offset += width;
+                }
+                let _ = writer.write_all(&padded);
+            } else if let Some(var) = &gp.var {
                 let val = self.env.borrow().get(&var.name, var.suffix)
                     .unwrap_or(Value::Str(String::new()));
                 let s = match val {

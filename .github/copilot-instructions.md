@@ -59,7 +59,7 @@
 - Single-line vs block `IF` is parser-sensitive; `ELSE` is treated as statement terminator in relevant contexts.
 - Undefined variables auto-initialize by suffix (`0` for numeric, `""` for string).
 - Arrays are currently implemented with flattened keys; avoid broad refactors without targeted tests.
-- Not yet implemented: proper array storage, BYVAL semantics, FIELD (random-access file fields), SEEK, LBOUND/UBOUND (stubs only).
+- Not yet implemented: proper array storage, LBOUND/UBOUND (stubs only).
 
 ## Security
 - Interpreter executes untrusted BASIC source without built-in time/resource limits.

@@ -1238,3 +1238,187 @@ PRINT SCREEN(2, 3); SCREEN(2, 4)
     assert!(output.contains(" 88"), "SCREEN(2,3) should return 88 for 'X'");
     assert!(output.contains(" 89"), "SCREEN(2,4) should return 89 for 'Y'");
 }
+
+// ==================== FIELD ====================
+
+#[test]
+fn test_field_basic() {
+    let (output, _dir) = run_bas_with_tmpdir(r#"
+OPEN "{DIR}/field.dat" FOR RANDOM AS #1 LEN = 30
+FIELD #1, 10 AS N$, 15 AS A$, 5 AS Z$
+LSET N$ = "Alice"
+LSET A$ = "123 Main St"
+LSET Z$ = "12345"
+PUT #1, 1
+LSET N$ = "Bob"
+LSET A$ = "456 Oak Ave"
+LSET Z$ = "67890"
+PUT #1, 2
+GET #1, 1
+PRINT RTRIM$(N$)
+PRINT RTRIM$(A$)
+PRINT RTRIM$(Z$)
+GET #1, 2
+PRINT RTRIM$(N$)
+PRINT RTRIM$(A$)
+PRINT RTRIM$(Z$)
+CLOSE #1
+"#);
+    assert_eq!(output, "Alice\n123 Main St\n12345\nBob\n456 Oak Ave\n67890\n");
+}
+
+#[test]
+fn test_field_overwrite_record() {
+    let (output, _dir) = run_bas_with_tmpdir(r#"
+OPEN "{DIR}/field2.dat" FOR RANDOM AS #1 LEN = 20
+FIELD #1, 10 AS A$, 10 AS B$
+LSET A$ = "First"
+LSET B$ = "Second"
+PUT #1, 1
+LSET A$ = "Updated"
+LSET B$ = "Record"
+PUT #1, 1
+GET #1, 1
+PRINT RTRIM$(A$)
+PRINT RTRIM$(B$)
+CLOSE #1
+"#);
+    assert_eq!(output, "Updated\nRecord\n");
+}
+
+// ==================== SEEK ====================
+
+#[test]
+fn test_seek_binary() {
+    let (output, _dir) = run_bas_with_tmpdir(r#"
+OPEN "{DIR}/seek.dat" FOR BINARY AS #1
+DIM s$
+s$ = "ABCDEFGHIJ"
+PUT #1, 1, s$
+PRINT SEEK(1)
+SEEK #1, 1
+PRINT SEEK(1)
+CLOSE #1
+"#);
+    // After PUT of 10 bytes, position should be 11 (1-based)
+    // After SEEK to 1, position should be 1
+    assert_eq!(output, " 11 \n 1 \n");
+}
+
+#[test]
+fn test_seek_random() {
+    let (output, _dir) = run_bas_with_tmpdir(r#"
+OPEN "{DIR}/seekr.dat" FOR RANDOM AS #1 LEN = 10
+FIELD #1, 10 AS D$
+LSET D$ = "Record1"
+PUT #1, 1
+LSET D$ = "Record2"
+PUT #1, 2
+LSET D$ = "Record3"
+PUT #1, 3
+SEEK #1, 2
+PRINT SEEK(1)
+GET #1
+PRINT RTRIM$(D$)
+CLOSE #1
+"#);
+    assert_eq!(output, " 2 \nRecord2\n");
+}
+
+// ==================== BYVAL ====================
+
+#[test]
+fn test_byref_sub() {
+    let output = run_bas(r#"
+DIM x AS INTEGER
+x = 10
+CALL AddFive(x)
+PRINT x
+
+SUB AddFive(n AS INTEGER)
+    n = n + 5
+END SUB
+"#);
+    assert_eq!(output, " 15 \n");
+}
+
+#[test]
+fn test_byval_sub() {
+    let output = run_bas(r#"
+DIM x AS INTEGER
+x = 10
+CALL AddFive(x)
+PRINT x
+
+SUB AddFive(BYVAL n AS INTEGER)
+    n = n + 5
+END SUB
+"#);
+    assert_eq!(output, " 10 \n");
+}
+
+#[test]
+fn test_byval_paren_forces_byval() {
+    let output = run_bas(r#"
+DIM x AS INTEGER
+x = 10
+CALL AddFive((x))
+PRINT x
+
+SUB AddFive(n AS INTEGER)
+    n = n + 5
+END SUB
+"#);
+    assert_eq!(output, " 10 \n");
+}
+
+#[test]
+fn test_byval_expression_arg() {
+    let output = run_bas(r#"
+DIM x AS INTEGER
+x = 10
+CALL AddFive(x + 0)
+PRINT x
+
+SUB AddFive(n AS INTEGER)
+    n = n + 5
+END SUB
+"#);
+    assert_eq!(output, " 10 \n");
+}
+
+#[test]
+fn test_byref_function() {
+    let output = run_bas(r#"
+DIM x AS INTEGER
+x = 10
+DIM r AS INTEGER
+r = Dbl(x)
+PRINT x
+PRINT r
+
+FUNCTION Dbl(n AS INTEGER)
+    n = n * 2
+    Dbl = n
+END FUNCTION
+"#);
+    assert_eq!(output, " 20 \n 20 \n");
+}
+
+#[test]
+fn test_byval_function() {
+    let output = run_bas(r#"
+DIM x AS INTEGER
+x = 10
+DIM r AS INTEGER
+r = Dbl(x)
+PRINT x
+PRINT r
+
+FUNCTION Dbl(BYVAL n AS INTEGER)
+    n = n * 2
+    Dbl = n
+END FUNCTION
+"#);
+    assert_eq!(output, " 10 \n 20 \n");
+}

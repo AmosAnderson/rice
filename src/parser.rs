@@ -201,6 +201,9 @@ impl Parser {
             // CHAIN/COMMON
             Token::KwChain => self.parse_chain(),
             Token::KwCommon => self.parse_common(),
+            // FIELD/SEEK
+            Token::KwField => self.parse_field(),
+            Token::KwSeek => self.parse_seek(),
             // Console
             Token::KwCls => {
                 self.advance();
@@ -1551,6 +1554,42 @@ impl Parser {
         Some(name.to_string())
     }
 
+    fn parse_field(&mut self) -> Result<Stmt, ParseError> {
+        self.advance(); // consume FIELD
+        // Optional #
+        if matches!(self.peek(), Token::Hash) {
+            self.advance();
+        }
+        let file_num = self.parse_expr()?;
+        self.expect(Token::Comma)?;
+
+        let mut fields = Vec::new();
+        loop {
+            let width = self.parse_expr()?;
+            self.expect(Token::KwAs)?;
+            let var = self.parse_variable()?;
+            fields.push(FieldDef { width, var });
+            if !matches!(self.peek(), Token::Comma) {
+                break;
+            }
+            self.advance(); // consume comma
+        }
+
+        Ok(Stmt::Field { file_num, fields })
+    }
+
+    fn parse_seek(&mut self) -> Result<Stmt, ParseError> {
+        self.advance(); // consume SEEK
+        // Optional #
+        if matches!(self.peek(), Token::Hash) {
+            self.advance();
+        }
+        let file_num = self.parse_expr()?;
+        self.expect(Token::Comma)?;
+        let position = self.parse_expr()?;
+        Ok(Stmt::Seek { file_num, position })
+    }
+
     fn parse_chain(&mut self) -> Result<Stmt, ParseError> {
         self.advance(); // consume CHAIN
         let filespec = self.parse_expr()?;
@@ -1992,7 +2031,7 @@ impl Parser {
     fn is_keyword_function(&self, tok: &Token) -> bool {
         matches!(
             tok,
-            Token::KwLen | Token::KwString
+            Token::KwLen | Token::KwString | Token::KwSeek
         )
     }
 
@@ -2000,6 +2039,7 @@ impl Parser {
         match tok {
             Token::KwLen => "LEN".into(),
             Token::KwString => "STRING$".into(),
+            Token::KwSeek => "SEEK".into(),
             _ => unreachable!("keyword_function_name called with non-function keyword"),
         }
     }

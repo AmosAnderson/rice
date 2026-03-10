@@ -221,4 +221,8 @@ pub enum Token {
     KwColor,
     KwWidth,
     KwView,
+
+    // FIELD/SEEK
+    KwField,
+    KwSeek,
 }
