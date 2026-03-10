@@ -1069,3 +1069,172 @@ PRINT "A ="; A
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(lines[0].trim(), "A = 3");
 }
+
+// ── Phase 1+2: Console features ──────────────────────────────────────
+
+#[test]
+fn test_cls() {
+    let output = run_bas("CLS\n");
+    assert!(output.contains("\x1b[2J\x1b[H"), "CLS should emit ANSI clear + home");
+}
+
+#[test]
+fn test_beep() {
+    let output = run_bas("BEEP\n");
+    assert!(output.contains("\x07"), "BEEP should emit BEL character");
+}
+
+#[test]
+fn test_locate() {
+    let output = run_bas("LOCATE 5, 10\nPRINT \"X\"\n");
+    assert!(output.contains("\x1b[5;10H"), "LOCATE should emit ANSI cursor move");
+    assert!(output.contains("X"));
+}
+
+#[test]
+fn test_locate_row_only() {
+    let output = run_bas("LOCATE 3\nPRINT \"Y\"\n");
+    assert!(output.contains("\x1b[3;1H"), "LOCATE with row only should keep col=1");
+}
+
+#[test]
+fn test_color() {
+    let output = run_bas("COLOR 4, 1\nPRINT \"red on blue\"\n");
+    // QBasic color 4 = red -> ANSI 31, color 1 = blue -> ANSI 44
+    assert!(output.contains("\x1b[31;44m"), "COLOR 4,1 should emit combined ANSI 31;44");
+}
+
+#[test]
+fn test_color_fg_only() {
+    let output = run_bas("COLOR 2\nPRINT \"green\"\n");
+    // QBasic color 2 = green -> ANSI 32
+    assert!(output.contains("\x1b[32m"));
+}
+
+#[test]
+fn test_color_error_out_of_range() {
+    let (_output, result) = run_bas_may_fail("COLOR 16\n");
+    assert!(result.is_err(), "COLOR 16 should error (out of range 0-15)");
+}
+
+#[test]
+fn test_locate_error_row_zero() {
+    let (_output, result) = run_bas_may_fail("LOCATE 0, 1\n");
+    assert!(result.is_err(), "LOCATE 0 should error (rows are 1-based)");
+}
+
+#[test]
+fn test_csrlin() {
+    let output = run_bas("LOCATE 7, 1\nPRINT CSRLIN\n");
+    assert!(output.contains(" 7"), "CSRLIN should return 7 after LOCATE 7");
+}
+
+#[test]
+fn test_pos() {
+    let output = run_bas("LOCATE 1, 12\nPRINT POS(0)\n");
+    assert!(output.contains(" 12"), "POS(0) should return 12 after LOCATE ,12");
+}
+
+#[test]
+fn test_width() {
+    let output = run_bas("WIDTH 40\nPRINT \"ok\"\n");
+    assert!(output.contains("ok"), "WIDTH should not crash");
+}
+
+#[test]
+fn test_view_print() {
+    let output = run_bas("VIEW PRINT 5 TO 20\n");
+    assert!(output.contains("\x1b[5;20r"), "VIEW PRINT should emit ANSI scroll region");
+}
+
+#[test]
+fn test_view_print_reset() {
+    let output = run_bas("VIEW PRINT\n");
+    // Reset emits ANSI scroll region reset (no args)
+    assert!(output.contains("\x1b[r"), "VIEW PRINT (no args) should reset scroll region");
+}
+
+// ── Phase 3: INKEY$ and INPUT$ ───────────────────────────────────────
+
+#[test]
+fn test_inkey_returns_empty_in_test_mode() {
+    let output = run_bas("PRINT INKEY$\n");
+    // In non-interactive mode, INKEY$ returns ""
+    assert_eq!(output.trim(), "");
+}
+
+#[test]
+fn test_inkey_in_expression() {
+    let output = run_bas(r#"
+DIM k AS STRING
+k = INKEY$
+IF k = "" THEN PRINT "empty" ELSE PRINT "key"
+"#);
+    assert_eq!(output.trim(), "empty");
+}
+
+#[test]
+fn test_input_dollar_from_file() {
+    let (output, _dir) = run_bas_with_tmpdir(r#"
+OPEN "{DIR}/test.dat" FOR OUTPUT AS #1
+PRINT #1, "HELLO WORLD"
+CLOSE #1
+OPEN "{DIR}/test.dat" FOR INPUT AS #2
+DIM s AS STRING
+s = INPUT$(5, #2)
+PRINT s
+CLOSE #2
+"#);
+    assert_eq!(output.trim(), "HELLO");
+}
+
+#[test]
+fn test_input_dollar_from_file_no_hash() {
+    let (output, _dir) = run_bas_with_tmpdir(r#"
+OPEN "{DIR}/test.dat" FOR OUTPUT AS #1
+PRINT #1, "ABCDEFG"
+CLOSE #1
+OPEN "{DIR}/test.dat" FOR INPUT AS #2
+DIM s AS STRING
+s = INPUT$(3, 2)
+PRINT s
+CLOSE #2
+"#);
+    assert_eq!(output.trim(), "ABC");
+}
+
+// ── Phase 4: SCREEN() function ───────────────────────────────────────
+
+#[test]
+fn test_screen_function() {
+    let output = run_bas(r#"
+LOCATE 1, 1
+PRINT "A";
+PRINT SCREEN(1, 1)
+"#);
+    // SCREEN(1,1) should return ASCII code of 'A' = 65
+    assert!(output.contains(" 65"), "SCREEN(1,1) should return 65 for 'A'");
+}
+
+#[test]
+fn test_screen_function_empty() {
+    let output = run_bas(r#"
+CLS
+PRINT SCREEN(5, 5)
+"#);
+    // Empty screen position should return 32 (space)
+    assert!(output.contains(" 32"), "Empty position should return 32 (space)");
+}
+
+#[test]
+fn test_screen_function_after_print() {
+    let output = run_bas(r#"
+CLS
+LOCATE 2, 3
+PRINT "XY";
+PRINT SCREEN(2, 3); SCREEN(2, 4)
+"#);
+    // X=88, Y=89
+    assert!(output.contains(" 88"), "SCREEN(2,3) should return 88 for 'X'");
+    assert!(output.contains(" 89"), "SCREEN(2,4) should return 89 for 'Y'");
+}

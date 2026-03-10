@@ -116,6 +116,11 @@ pub struct Interpreter {
     functions: HashMap<String, UserFunction>,
     def_fns: HashMap<String, DefFnDef>,
     print_col: usize,
+    print_row: usize,
+    screen_width: usize,
+    screen_height: usize,
+    current_fg: Option<u8>,
+    current_bg: Option<u8>,
     data_values: Vec<DataItem>,
     data_pos: usize,
     output: Box<dyn Write>,
@@ -139,6 +144,8 @@ pub struct Interpreter {
     // CHAIN/COMMON support
     common_declarations: Vec<(CommonVarSpec, String)>,
     source_dir: Option<std::path::PathBuf>,
+    interactive: bool,
+    screen_buffer: Vec<Vec<u8>>,
 }
 
 impl Drop for Interpreter {
@@ -176,10 +183,12 @@ impl Default for Interpreter {
 
 impl Interpreter {
     pub fn new() -> Self {
-        Self::with_io(
+        let mut interp = Self::with_io(
             Box::new(io::stdout()),
             Box::new(io::BufReader::new(io::stdin())),
-        )
+        );
+        interp.interactive = true;
+        interp
     }
 
     pub fn with_io(output: Box<dyn Write>, input: Box<dyn BufRead>) -> Self {
@@ -190,6 +199,11 @@ impl Interpreter {
             functions: HashMap::new(),
             def_fns: HashMap::new(),
             print_col: 0,
+            print_row: 1,
+            screen_width: 80,
+            screen_height: 25,
+            current_fg: None,
+            current_bg: None,
             data_values: Vec::new(),
             data_pos: 0,
             output,
@@ -211,6 +225,8 @@ impl Interpreter {
             array_type_map: HashMap::new(),
             common_declarations: Vec::new(),
             source_dir: None,
+            interactive: false,
+            screen_buffer: vec![vec![b' '; 80]; 25],
         }
     }
 
@@ -681,34 +697,33 @@ impl Interpreter {
             Stmt::Write(exprs) => {
                 for (i, expr) in exprs.iter().enumerate() {
                     if i > 0 {
-                        write!(self.output, ",").ok();
+                        self.write_text(",");
                     }
                     let val = self.eval_expr(expr)?;
                     match &val {
-                        Value::Str(s) => write!(self.output, "\"{}\"", s).ok(),
-                        Value::Integer(n) => write!(self.output, "{}", n).ok(),
-                        Value::Long(n) => write!(self.output, "{}", n).ok(),
+                        Value::Str(s) => self.write_text(&format!("\"{}\"", s)),
+                        Value::Integer(n) => self.write_text(&format!("{}", n)),
+                        Value::Long(n) => self.write_text(&format!("{}", n)),
                         Value::Single(n) => {
                             if *n == (*n as i64) as f64 && n.abs() < 1e15 {
-                                write!(self.output, "{}", *n as i64).ok()
+                                self.write_text(&format!("{}", *n as i64));
                             } else {
-                                write!(self.output, "{}", n).ok()
+                                self.write_text(&format!("{}", n));
                             }
                         }
                         Value::Double(n) => {
                             if *n == (*n as i64) as f64 && n.abs() < 1e15 {
-                                write!(self.output, "{}", *n as i64).ok()
+                                self.write_text(&format!("{}", *n as i64));
                             } else {
-                                write!(self.output, "{}", n).ok()
+                                self.write_text(&format!("{}", n));
                             }
                         }
                         Value::Record { type_name, .. } => {
-                            write!(self.output, "[{}]", type_name).ok()
+                            self.write_text(&format!("[{}]", type_name));
                         }
                     };
                 }
-                writeln!(self.output).ok();
-                self.print_col = 0;
+                self.write_text("\n");
                 Ok(ControlFlow::Normal)
             }
 
@@ -958,6 +973,108 @@ impl Interpreter {
                     common_values,
                 })
             }
+
+            // Console
+            Stmt::Cls => {
+                write!(self.output, "\x1b[2J\x1b[H").ok();
+                self.print_row = 1;
+                self.print_col = 0;
+                for row in &mut self.screen_buffer {
+                    row.fill(b' ');
+                }
+                Ok(ControlFlow::Normal)
+            }
+            Stmt::Beep => {
+                write!(self.output, "\x07").ok();
+                Ok(ControlFlow::Normal)
+            }
+            Stmt::Locate { row, col } => {
+                let r = if let Some(expr) = row {
+                    let v = self.eval_expr(expr)?.to_i64()?;
+                    if v < 1 || v > self.screen_height as i64 {
+                        return Err(RuntimeError::IllegalFunctionCall {
+                            msg: format!("LOCATE row {} out of range", v),
+                        });
+                    }
+                    v as usize
+                } else {
+                    self.print_row
+                };
+                let c = if let Some(expr) = col {
+                    let v = self.eval_expr(expr)?.to_i64()?;
+                    if v < 1 || v > self.screen_width as i64 {
+                        return Err(RuntimeError::IllegalFunctionCall {
+                            msg: format!("LOCATE column {} out of range", v),
+                        });
+                    }
+                    v as usize
+                } else {
+                    self.print_col + 1
+                };
+                write!(self.output, "\x1b[{};{}H", r, c).ok();
+                self.print_row = r;
+                self.print_col = c - 1;
+                Ok(ControlFlow::Normal)
+            }
+            Stmt::Color { fg, bg } => {
+                let fg_val = if let Some(expr) = fg {
+                    let v = self.eval_expr(expr)?.to_i64()?;
+                    if v < 0 || v > 15 {
+                        return Err(RuntimeError::IllegalFunctionCall {
+                            msg: format!("COLOR foreground {} out of range", v),
+                        });
+                    }
+                    Some(v as u8)
+                } else {
+                    self.current_fg
+                };
+                let bg_val = if let Some(expr) = bg {
+                    let v = self.eval_expr(expr)?.to_i64()?;
+                    if v < 0 || v > 15 {
+                        return Err(RuntimeError::IllegalFunctionCall {
+                            msg: format!("COLOR background {} out of range", v),
+                        });
+                    }
+                    Some(v as u8)
+                } else {
+                    self.current_bg
+                };
+                self.current_fg = fg_val;
+                self.current_bg = bg_val;
+                let mut seq = String::from("\x1b[");
+                let mut need_sep = false;
+                if let Some(f) = fg_val {
+                    seq.push_str(&Self::qb_fg_to_ansi(f).to_string());
+                    need_sep = true;
+                }
+                if let Some(b) = bg_val {
+                    if need_sep { seq.push(';'); }
+                    seq.push_str(&Self::qb_bg_to_ansi(b).to_string());
+                }
+                seq.push('m');
+                write!(self.output, "{}", seq).ok();
+                Ok(ControlFlow::Normal)
+            }
+            Stmt::Width { columns, rows } => {
+                if let Some(expr) = columns {
+                    self.screen_width = self.eval_expr(expr)?.to_i64()? as usize;
+                }
+                if let Some(expr) = rows {
+                    self.screen_height = self.eval_expr(expr)?.to_i64()? as usize;
+                }
+                Ok(ControlFlow::Normal)
+            }
+            Stmt::ViewPrint { top, bottom } => {
+                if let (Some(t), Some(b)) = (top, bottom) {
+                    let t_val = self.eval_expr(t)?.to_i64()?;
+                    let b_val = self.eval_expr(b)?.to_i64()?;
+                    write!(self.output, "\x1b[{};{}r", t_val, b_val).ok();
+                } else {
+                    // Reset scroll region
+                    write!(self.output, "\x1b[r").ok();
+                }
+                Ok(ControlFlow::Normal)
+            }
         }
     }
 
@@ -965,19 +1082,16 @@ impl Interpreter {
         // Handle PRINT USING
         if let Some(ref fmt_expr) = ps.format {
             let result = self.eval_format_using(fmt_expr, &ps.items)?;
-            write!(self.output, "{}", result).ok();
-            self.print_col += result.len();
+            self.write_text(&result);
             match ps.trailing {
                 PrintSep::Newline => {
-                    writeln!(self.output).ok();
-                    self.print_col = 0;
+                    self.write_text("\n");
                 }
                 PrintSep::Semicolon => {}
                 PrintSep::Comma => {
                     let next_zone = ((self.print_col / 14) + 1) * 14;
                     let spaces = next_zone - self.print_col;
-                    write!(self.output, "{}", " ".repeat(spaces)).ok();
-                    self.print_col = next_zone;
+                    self.write_text(&" ".repeat(spaces));
                 }
             }
             self.output.flush().ok();
@@ -989,42 +1103,36 @@ impl Interpreter {
                 PrintItem::Expr(expr) => {
                     let val = self.eval_expr(expr)?;
                     let s = val.format_for_print();
-                    write!(self.output, "{}", s).ok();
-                    self.print_col += s.len();
+                    self.write_text(&s);
                 }
                 PrintItem::Tab(expr) => {
                     let n = self.eval_expr(expr)?.to_i64()? as usize;
                     if n > self.print_col {
                         let spaces = n - self.print_col;
-                        write!(self.output, "{}", " ".repeat(spaces)).ok();
-                        self.print_col = n;
+                        self.write_text(&" ".repeat(spaces));
                     }
                 }
                 PrintItem::Spc(expr) => {
                     let n = self.eval_expr(expr)?.to_i64()? as usize;
-                    write!(self.output, "{}", " ".repeat(n)).ok();
-                    self.print_col += n;
+                    self.write_text(&" ".repeat(n));
                 }
                 PrintItem::Comma => {
                     // Advance to next 14-column zone
                     let next_zone = ((self.print_col / 14) + 1) * 14;
                     let spaces = next_zone - self.print_col;
-                    write!(self.output, "{}", " ".repeat(spaces)).ok();
-                    self.print_col = next_zone;
+                    self.write_text(&" ".repeat(spaces));
                 }
             }
         }
         match ps.trailing {
             PrintSep::Newline => {
-                writeln!(self.output).ok();
-                self.print_col = 0;
+                self.write_text("\n");
             }
             PrintSep::Semicolon => {}
             PrintSep::Comma => {
                 let next_zone = ((self.print_col / 14) + 1) * 14;
                 let spaces = next_zone - self.print_col;
-                write!(self.output, "{}", " ".repeat(spaces)).ok();
-                self.print_col = next_zone;
+                self.write_text(&" ".repeat(spaces));
             }
         }
         self.output.flush().ok();
@@ -1073,6 +1181,7 @@ impl Interpreter {
             break;
         }
         self.print_col = 0;
+        self.print_row += 1;
         Ok(())
     }
 
@@ -1371,6 +1480,12 @@ impl Interpreter {
                     if builtin_name == "ERR" || builtin_name == "ERL" {
                         return Ok(self.get_error_value(&builtin_name));
                     }
+                    if builtin_name == "CSRLIN" {
+                        return Ok(Value::Integer(self.print_row as i64));
+                    }
+                    if builtin_name == "INKEY$" {
+                        return Ok(Value::Str(self.read_inkey()?));
+                    }
 
                     let is_implicit_builtin = matches!(builtin_name.as_str(), "DATE$" | "TIME$" | "TIMER");
                     if is_implicit_builtin
@@ -1449,6 +1564,52 @@ impl Interpreter {
                             return Err(RuntimeError::ArityMismatch { expected: 0, got: arg_vals.len() });
                         }
                         return Ok(self.get_error_value(name));
+                    }
+                    "CSRLIN" => {
+                        if !arg_vals.is_empty() {
+                            return Err(RuntimeError::ArityMismatch { expected: 0, got: arg_vals.len() });
+                        }
+                        return Ok(Value::Integer(self.print_row as i64));
+                    }
+                    "POS" => {
+                        // POS takes 1 arg (ignored) — returns current column (1-indexed)
+                        if arg_vals.len() != 1 {
+                            return Err(RuntimeError::ArityMismatch { expected: 1, got: arg_vals.len() });
+                        }
+                        return Ok(Value::Integer((self.print_col + 1) as i64));
+                    }
+                    "INKEY$" => {
+                        if !arg_vals.is_empty() {
+                            return Err(RuntimeError::ArityMismatch { expected: 0, got: arg_vals.len() });
+                        }
+                        return Ok(Value::Str(self.read_inkey()?));
+                    }
+                    "INPUT$" => {
+                        return self.eval_input_dollar(&arg_vals);
+                    }
+                    "SCREEN" => {
+                        // SCREEN(row, col) returns ASCII code at position
+                        // SCREEN(row, col, 1) returns color attribute (not implemented, returns 7)
+                        if arg_vals.len() < 2 || arg_vals.len() > 3 {
+                            return Err(RuntimeError::ArityMismatch { expected: 2, got: arg_vals.len() });
+                        }
+                        let row = arg_vals[0].to_i64()? as usize;
+                        let col = arg_vals[1].to_i64()? as usize;
+                        if row < 1 || col < 1 {
+                            return Err(RuntimeError::IllegalFunctionCall {
+                                msg: format!("SCREEN({}, {}): row and col must be >= 1", row, col),
+                            });
+                        }
+                        let r = row - 1;
+                        let c = col - 1;
+                        let ch = if r < self.screen_buffer.len()
+                            && c < self.screen_buffer[r].len()
+                        {
+                            self.screen_buffer[r][c]
+                        } else {
+                            b' '
+                        };
+                        return Ok(Value::Integer(ch as i64));
                     }
                     "FREEFILE" => {
                         if !arg_vals.is_empty() {
@@ -2167,6 +2328,180 @@ impl Interpreter {
             "ERR" => Value::Integer(self.current_error.as_ref().map_or(0, |e| e.err_code) as i64),
             "ERL" => Value::Integer(self.current_error.as_ref().map_or(0, |e| e.err_line) as i64),
             _ => Value::Integer(0),
+        }
+    }
+
+    /// Write visible text to output and update screen buffer.
+    fn write_text(&mut self, text: &str) {
+        write!(self.output, "{}", text).ok();
+        for ch in text.bytes() {
+            if ch == b'\n' {
+                self.print_col = 0;
+                self.print_row += 1;
+            } else if ch == b'\r' {
+                self.print_col = 0;
+            } else {
+                let row = self.print_row.saturating_sub(1);
+                let col = self.print_col;
+                if row < self.screen_buffer.len() && col < self.screen_buffer[row].len() {
+                    self.screen_buffer[row][col] = ch;
+                }
+                self.print_col += 1;
+            }
+        }
+    }
+
+    /// Map QBasic foreground color index (0–15) to ANSI SGR code.
+
+    /// Non-blocking read of a single keypress. Returns "" if no key available.
+    /// In non-interactive mode (tests, piped input), always returns "".
+    fn read_inkey(&mut self) -> Result<String, RuntimeError> {
+        if !self.interactive {
+            return Ok(String::new());
+        }
+        use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+        use std::time::Duration;
+        crossterm::terminal::enable_raw_mode().map_err(|e| RuntimeError::General {
+            msg: format!("INKEY$: failed to enable raw mode: {e}"),
+        })?;
+        let result = if event::poll(Duration::ZERO).unwrap_or(false) {
+            match event::read() {
+                Ok(Event::Key(KeyEvent { code, modifiers, .. })) => {
+                    match code {
+                        KeyCode::Char(c) => {
+                            if modifiers.contains(KeyModifiers::CONTROL) {
+                                // Ctrl+C → CHR$(3), etc.
+                                let ctrl = (c as u8).wrapping_sub(b'a').wrapping_add(1);
+                                String::from(ctrl as char)
+                            } else {
+                                String::from(c)
+                            }
+                        }
+                        KeyCode::Enter => String::from('\r'),
+                        KeyCode::Esc => String::from(27 as char),
+                        KeyCode::Backspace => String::from(8 as char),
+                        KeyCode::Tab => String::from(9 as char),
+                        // Extended keys: CHR$(0) + scan code
+                        KeyCode::Up => format!("\0H"),
+                        KeyCode::Down => format!("\0P"),
+                        KeyCode::Left => format!("\0K"),
+                        KeyCode::Right => format!("\0M"),
+                        KeyCode::Home => format!("\0G"),
+                        KeyCode::End => format!("\0O"),
+                        KeyCode::PageUp => format!("\0I"),
+                        KeyCode::PageDown => format!("\0Q"),
+                        KeyCode::Insert => format!("\0R"),
+                        KeyCode::Delete => format!("\0S"),
+                        KeyCode::F(n) if n >= 1 && n <= 10 => {
+                            // F1=59, F2=60, ..., F10=68
+                            format!("\0{}", (58 + n) as char)
+                        }
+                        _ => String::new(),
+                    }
+                }
+                _ => String::new(),
+            }
+        } else {
+            String::new()
+        };
+        crossterm::terminal::disable_raw_mode().ok();
+        Ok(result)
+    }
+
+    /// INPUT$(n) — read n characters from keyboard; INPUT$(n, #filenum) — read n bytes from file.
+    fn eval_input_dollar(&mut self, args: &[Value]) -> Result<Value, RuntimeError> {
+        match args.len() {
+            1 => {
+                let n = args[0].to_i64()?;
+                if n < 1 {
+                    return Err(RuntimeError::IllegalFunctionCall {
+                        msg: "INPUT$ count must be >= 1".to_string(),
+                    });
+                }
+                let n = n as usize;
+                let mut buf = vec![0u8; n];
+                let mut total = 0;
+                while total < n {
+                    match self.input.read(&mut buf[total..]) {
+                        Ok(0) => break,
+                        Ok(bytes) => total += bytes,
+                        Err(_) => break,
+                    }
+                }
+                Ok(Value::Str(String::from_utf8_lossy(&buf[..total]).into_owned()))
+            }
+            2 => {
+                let n = args[0].to_i64()?;
+                if n < 1 {
+                    return Err(RuntimeError::IllegalFunctionCall {
+                        msg: "INPUT$ count must be >= 1".to_string(),
+                    });
+                }
+                let fnum = args[1].to_i64()?;
+                let fh = self.file_handles.get_mut(&fnum).ok_or_else(|| RuntimeError::General {
+                    msg: format!("file #{fnum} is not open"),
+                })?;
+                let reader = fh.reader.as_mut().ok_or_else(|| RuntimeError::General {
+                    msg: format!("file #{fnum} is not open for reading"),
+                })?;
+                let n = n as usize;
+                let mut buf = vec![0u8; n];
+                let mut total = 0;
+                while total < n {
+                    match reader.read(&mut buf[total..]) {
+                        Ok(0) => break,
+                        Ok(bytes) => total += bytes,
+                        Err(_) => break,
+                    }
+                }
+                Ok(Value::Str(String::from_utf8_lossy(&buf[..total]).into_owned()))
+            }
+            _ => Err(RuntimeError::ArityMismatch { expected: 1, got: args.len() }),
+        }
+    }
+
+    fn qb_fg_to_ansi(c: u8) -> u8 {
+        match c {
+            0 => 30,   // Black
+            1 => 34,   // Blue
+            2 => 32,   // Green
+            3 => 36,   // Cyan
+            4 => 31,   // Red
+            5 => 35,   // Magenta
+            6 => 33,   // Brown/Yellow
+            7 => 37,   // White
+            8 => 90,   // Gray
+            9 => 94,   // Light Blue
+            10 => 92,  // Light Green
+            11 => 96,  // Light Cyan
+            12 => 91,  // Light Red
+            13 => 95,  // Light Magenta
+            14 => 93,  // Yellow
+            15 => 97,  // Bright White
+            _ => 37,
+        }
+    }
+
+    /// Map QBasic background color index (0–15) to ANSI SGR code.
+    fn qb_bg_to_ansi(c: u8) -> u8 {
+        match c {
+            0 => 40,
+            1 => 44,
+            2 => 42,
+            3 => 46,
+            4 => 41,
+            5 => 45,
+            6 => 43,
+            7 => 47,
+            8 => 100,
+            9 => 104,
+            10 => 102,
+            11 => 106,
+            12 => 101,
+            13 => 105,
+            14 => 103,
+            15 => 107,
+            _ => 40,
         }
     }
 

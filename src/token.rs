@@ -213,4 +213,12 @@ pub enum Token {
     // CHAIN/COMMON support
     KwChain,
     KwCommon,
+
+    // Console
+    KwCls,
+    KwBeep,
+    KwLocate,
+    KwColor,
+    KwWidth,
+    KwView,
 }

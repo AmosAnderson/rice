@@ -141,6 +141,14 @@ pub enum Stmt {
     Chain { filespec: Expr },
     Common(CommonStmt),
 
+    // Console
+    Cls,
+    Beep,
+    Locate { row: Option<Expr>, col: Option<Expr> },
+    Color { fg: Option<Expr>, bg: Option<Expr> },
+    Width { columns: Option<Expr>, rows: Option<Expr> },
+    ViewPrint { top: Option<Expr>, bottom: Option<Expr> },
+
     // Misc
     End,
     System,

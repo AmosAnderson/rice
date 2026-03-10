@@ -385,6 +385,12 @@ impl Lexer {
                 "DEFSTR" => Token::KwDefStr,
                 "CHAIN" => Token::KwChain,
                 "COMMON" => Token::KwCommon,
+                "CLS" => Token::KwCls,
+                "BEEP" => Token::KwBeep,
+                "LOCATE" => Token::KwLocate,
+                "COLOR" => Token::KwColor,
+                "WIDTH" => Token::KwWidth,
+                "VIEW" => Token::KwView,
                 _ => Token::Identifier { name: word, suffix },
             }
         } else {

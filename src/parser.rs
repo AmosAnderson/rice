@@ -201,6 +201,19 @@ impl Parser {
             // CHAIN/COMMON
             Token::KwChain => self.parse_chain(),
             Token::KwCommon => self.parse_common(),
+            // Console
+            Token::KwCls => {
+                self.advance();
+                Ok(Stmt::Cls)
+            }
+            Token::KwBeep => {
+                self.advance();
+                Ok(Stmt::Beep)
+            }
+            Token::KwLocate => self.parse_locate(),
+            Token::KwColor => self.parse_color(),
+            Token::KwWidth => self.parse_width(),
+            Token::KwView => self.parse_view_print(),
             Token::Identifier { .. } => self.parse_assignment_or_call(),
             _ => {
                 let tok = self.peek().clone();
@@ -1480,7 +1493,7 @@ impl Parser {
 
         let mut fields = Vec::new();
         while !matches!(self.peek(), Token::KwEndType) && !self.at_end() {
-            let (field_name, _) = self.expect_identifier()?;
+            let field_name = self.expect_field_name()?;
             self.expect(Token::KwAs)?;
             let field_type = self.parse_type_keyword()?;
             fields.push(TypeField { name: field_name, field_type });
@@ -1489,6 +1502,53 @@ impl Parser {
         self.expect(Token::KwEndType)?;
 
         Ok(Stmt::TypeDef { name, fields })
+    }
+
+    /// Accept an identifier or certain keywords as a field name in TYPE definitions.
+    fn expect_field_name(&mut self) -> Result<String, ParseError> {
+        match self.peek().clone() {
+            Token::Identifier { name, .. } => {
+                self.advance();
+                Ok(name)
+            }
+            ref tok => {
+                if let Some(name) = Self::keyword_as_field_name(tok) {
+                    self.advance();
+                    Ok(name)
+                } else {
+                    Err(ParseError::Expected {
+                        line: self.current_line(),
+                        expected: "field name".into(),
+                        found: format!("{:?}", self.peek()),
+                    })
+                }
+            }
+        }
+    }
+
+    /// Map keyword tokens that may also appear as TYPE field names to their string name.
+    fn keyword_as_field_name(tok: &Token) -> Option<String> {
+        let name = match tok {
+            Token::KwWidth => "WIDTH",
+            Token::KwName => "NAME",
+            Token::KwColor => "COLOR",
+            Token::KwLen => "LEN",
+            Token::KwType => "TYPE",
+            Token::KwError => "ERROR",
+            Token::KwTimer => "TIMER",
+            Token::KwStep => "STEP",
+            Token::KwInput => "INPUT",
+            Token::KwOutput => "OUTPUT",
+            Token::KwOpen => "OPEN",
+            Token::KwClose => "CLOSE",
+            Token::KwShared => "SHARED",
+            Token::KwStatic => "STATIC",
+            Token::KwBase => "BASE",
+            Token::KwView => "VIEW",
+            Token::KwLocate => "LOCATE",
+            _ => return None,
+        };
+        Some(name.to_string())
     }
 
     fn parse_chain(&mut self) -> Result<Stmt, ParseError> {
@@ -1833,9 +1893,12 @@ impl Parser {
                     self.advance();
                     let mut args = Vec::new();
                     if !matches!(self.peek(), Token::RightParen) {
+                        // Skip optional # before argument (e.g., INPUT$(n, #1))
+                        if matches!(self.peek(), Token::Hash) { self.advance(); }
                         args.push(self.parse_expr()?);
                         while matches!(self.peek(), Token::Comma) {
                             self.advance();
+                            if matches!(self.peek(), Token::Hash) { self.advance(); }
                             args.push(self.parse_expr()?);
                         }
                     }
@@ -1917,7 +1980,7 @@ impl Parser {
     fn parse_dot_chain(&mut self, mut base: Expr) -> Result<Expr, ParseError> {
         while matches!(self.peek(), Token::Dot) {
             self.advance();
-            let (field_name, _) = self.expect_identifier()?;
+            let field_name = self.expect_field_name()?;
             base = Expr::MemberAccess {
                 object: Box::new(base),
                 field: field_name,
@@ -2090,6 +2153,104 @@ impl Parser {
             .get(self.pos)
             .map(|st| st.span.line)
             .unwrap_or(0)
+    }
+
+    fn parse_locate(&mut self) -> Result<Stmt, ParseError> {
+        self.advance(); // consume LOCATE
+        // LOCATE [row], [col] — both optional
+        let row = if self.at_stmt_end() || matches!(self.peek(), Token::Comma) {
+            None
+        } else {
+            Some(self.parse_expr()?)
+        };
+        let col = if matches!(self.peek(), Token::Comma) {
+            self.advance(); // consume comma
+            if self.at_stmt_end() || matches!(self.peek(), Token::Comma) {
+                None
+            } else {
+                Some(self.parse_expr()?)
+            }
+        } else {
+            None
+        };
+        // Ignore remaining optional args (cursor visibility, start, stop)
+        while matches!(self.peek(), Token::Comma) {
+            self.advance();
+            if !self.at_stmt_end() && !matches!(self.peek(), Token::Comma) {
+                let _ = self.parse_expr()?;
+            }
+        }
+        Ok(Stmt::Locate { row, col })
+    }
+
+    fn parse_color(&mut self) -> Result<Stmt, ParseError> {
+        self.advance(); // consume COLOR
+        // COLOR [fg], [bg] — both optional
+        let fg = if self.at_stmt_end() || matches!(self.peek(), Token::Comma) {
+            None
+        } else {
+            Some(self.parse_expr()?)
+        };
+        let bg = if matches!(self.peek(), Token::Comma) {
+            self.advance();
+            if self.at_stmt_end() || matches!(self.peek(), Token::Comma) {
+                None
+            } else {
+                Some(self.parse_expr()?)
+            }
+        } else {
+            None
+        };
+        // Ignore optional border arg
+        if matches!(self.peek(), Token::Comma) {
+            self.advance();
+            if !self.at_stmt_end() {
+                let _ = self.parse_expr()?;
+            }
+        }
+        Ok(Stmt::Color { fg, bg })
+    }
+
+    fn parse_width(&mut self) -> Result<Stmt, ParseError> {
+        self.advance(); // consume WIDTH
+        let columns = if self.at_stmt_end() || matches!(self.peek(), Token::Comma) {
+            None
+        } else {
+            Some(self.parse_expr()?)
+        };
+        let rows = if matches!(self.peek(), Token::Comma) {
+            self.advance();
+            if self.at_stmt_end() {
+                None
+            } else {
+                Some(self.parse_expr()?)
+            }
+        } else {
+            None
+        };
+        Ok(Stmt::Width { columns, rows })
+    }
+
+    fn parse_view_print(&mut self) -> Result<Stmt, ParseError> {
+        self.advance(); // consume VIEW
+        // Expect PRINT after VIEW
+        if !matches!(self.peek(), Token::KwPrint) {
+            return Err(ParseError::Expected {
+                line: self.current_line(),
+                expected: "PRINT after VIEW".into(),
+                found: format!("{:?}", self.peek()),
+            });
+        }
+        self.advance(); // consume PRINT
+        if self.at_stmt_end() {
+            // VIEW PRINT with no args — reset scroll region
+            Ok(Stmt::ViewPrint { top: None, bottom: None })
+        } else {
+            let top = self.parse_expr()?;
+            self.expect(Token::KwTo)?;
+            let bottom = self.parse_expr()?;
+            Ok(Stmt::ViewPrint { top: Some(top), bottom: Some(bottom) })
+        }
     }
 }
 
