@@ -1,12 +1,16 @@
 /// FFI value operations for the Rice runtime.
 ///
-/// RiceValue is passed as two i64 values: (tag, data).
+/// Values are passed as two i64 values: (tag, data).
 /// Tag: 0=Integer, 1=Long, 2=Single, 3=Double, 4=String
 /// Data: raw bits (i64 for ints, f64 bits for floats, pointer for strings)
+///
+/// Functions that produce values write to output pointers (*mut i64)
+/// instead of returning structs, for cross-platform ABI compatibility.
 
 use std::ffi::{CStr, CString};
 
 use crate::ast::BinOp;
+use crate::builtins::BuiltinRegistry;
 use crate::value::Value;
 
 const TAG_INTEGER: i64 = 0;
@@ -15,32 +19,28 @@ const TAG_SINGLE: i64 = 2;
 const TAG_DOUBLE: i64 = 3;
 const TAG_STRING: i64 = 4;
 
-/// FFI-safe tagged value: two i64s returned in registers.
-/// On x86_64: rax + rdx. On aarch64: x0 + x1.
-#[repr(C)]
-pub struct RiceValue {
-    pub tag: i64,
-    pub data: i64,
-}
-
-/// Convert a Value to RiceValue for FFI.
+/// Convert a Value to (tag, data) pair and write to output pointers.
 /// For strings, allocates a CString that must eventually be freed via rice_value_drop.
-pub fn value_to_ffi(val: &Value) -> RiceValue {
-    match val {
-        Value::Integer(n) => RiceValue { tag: TAG_INTEGER, data: *n },
-        Value::Long(n) => RiceValue { tag: TAG_LONG, data: *n },
-        Value::Single(n) => RiceValue { tag: TAG_SINGLE, data: n.to_bits() as i64 },
-        Value::Double(n) => RiceValue { tag: TAG_DOUBLE, data: n.to_bits() as i64 },
+fn write_value(val: &Value, out_tag: *mut i64, out_data: *mut i64) {
+    let (tag, data) = match val {
+        Value::Integer(n) => (TAG_INTEGER, *n),
+        Value::Long(n) => (TAG_LONG, *n),
+        Value::Single(n) => (TAG_SINGLE, n.to_bits() as i64),
+        Value::Double(n) => (TAG_DOUBLE, n.to_bits() as i64),
         Value::Str(s) => {
             let c_str = CString::new(s.as_str()).unwrap_or_default();
             let ptr = c_str.into_raw();
-            RiceValue { tag: TAG_STRING, data: ptr as i64 }
+            (TAG_STRING, ptr as i64)
         }
-        Value::Record { .. } => RiceValue { tag: TAG_INTEGER, data: 0 },
+        Value::Record { .. } => (TAG_INTEGER, 0),
+    };
+    unsafe {
+        *out_tag = tag;
+        *out_data = data;
     }
 }
 
-/// Convert RiceValue back to a Value.
+/// Convert (tag, data) back to a Value.
 /// For strings, reads (borrows) the C string without taking ownership.
 pub fn ffi_to_value(tag: i64, data: i64) -> Value {
     match tag {
@@ -63,27 +63,39 @@ pub fn ffi_to_value(tag: i64, data: i64) -> Value {
 // --- extern "C" functions ---
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rice_value_new_int(v: i64) -> RiceValue {
-    RiceValue { tag: TAG_INTEGER, data: v }
+pub extern "C" fn rice_value_new_int(v: i64, out_tag: *mut i64, out_data: *mut i64) {
+    unsafe {
+        *out_tag = TAG_INTEGER;
+        *out_data = v;
+    }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rice_value_new_double(v: f64) -> RiceValue {
-    RiceValue { tag: TAG_DOUBLE, data: v.to_bits() as i64 }
+pub extern "C" fn rice_value_new_double(v: f64, out_tag: *mut i64, out_data: *mut i64) {
+    unsafe {
+        *out_tag = TAG_DOUBLE;
+        *out_data = v.to_bits() as i64;
+    }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rice_value_new_string(s: *const std::ffi::c_char) -> RiceValue {
+pub extern "C" fn rice_value_new_string(s: *const std::ffi::c_char, out_tag: *mut i64, out_data: *mut i64) {
     if s.is_null() {
         let c_str = CString::new("").unwrap();
         let ptr = c_str.into_raw();
-        return RiceValue { tag: TAG_STRING, data: ptr as i64 };
+        unsafe {
+            *out_tag = TAG_STRING;
+            *out_data = ptr as i64;
+        }
+        return;
     }
-    // Copy the C string directly into a new CString (avoids intermediate Rust String)
     let c_str = unsafe { CStr::from_ptr(s) };
     let owned = c_str.to_owned();
     let ptr = owned.into_raw();
-    RiceValue { tag: TAG_STRING, data: ptr as i64 }
+    unsafe {
+        *out_tag = TAG_STRING;
+        *out_data = ptr as i64;
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -128,7 +140,7 @@ fn i32_to_binop(op: i32) -> Option<BinOp> {
     }
 }
 
-/// Perform a binary operation on two RiceValues.
+/// Perform a binary operation on two values, write result to output pointers.
 #[unsafe(no_mangle)]
 pub extern "C" fn rice_value_binop(
     ltag: i64,
@@ -136,7 +148,9 @@ pub extern "C" fn rice_value_binop(
     op: i32,
     rtag: i64,
     rdata: i64,
-) -> RiceValue {
+    out_tag: *mut i64,
+    out_data: *mut i64,
+) {
     let lval = ffi_to_value(ltag, ldata);
     let rval = ffi_to_value(rtag, rdata);
 
@@ -144,21 +158,27 @@ pub extern "C" fn rice_value_binop(
         Some(b) => b,
         None => {
             eprintln!("rice runtime: invalid binop code {op}");
-            return value_to_ffi(&Value::Integer(0));
+            unsafe {
+                *out_tag = TAG_INTEGER;
+                *out_data = 0;
+            }
+            return;
         }
     };
 
     let result = eval_binop(&lval, binop, &rval);
-    value_to_ffi(&result)
+    write_value(&result, out_tag, out_data);
 }
 
-/// Perform a unary operation on a RiceValue.
+/// Perform a unary operation on a value, write result to output pointers.
 #[unsafe(no_mangle)]
 pub extern "C" fn rice_value_unary_op(
     tag: i64,
     data: i64,
     op: i32,
-) -> RiceValue {
+    out_tag: *mut i64,
+    out_data: *mut i64,
+) {
     let val = ffi_to_value(tag, data);
     let result = match op {
         0 => {
@@ -188,7 +208,50 @@ pub extern "C" fn rice_value_unary_op(
             Value::Integer(0)
         }
     };
-    value_to_ffi(&result)
+    write_value(&result, out_tag, out_data);
+}
+
+/// Call a builtin function by name.
+/// Args are passed as a flat array: [tag0, data0, tag1, data1, ...]
+#[unsafe(no_mangle)]
+pub extern "C" fn rice_builtin_call(
+    name_ptr: *const std::ffi::c_char,
+    argc: i32,
+    args_ptr: *const i64,
+    out_tag: *mut i64,
+    out_data: *mut i64,
+) {
+    let name = if name_ptr.is_null() {
+        String::new()
+    } else {
+        unsafe { CStr::from_ptr(name_ptr) }.to_string_lossy().into_owned()
+    };
+
+    let mut args = Vec::new();
+    for i in 0..argc as isize {
+        let tag = unsafe { *args_ptr.offset(i * 2) };
+        let data = unsafe { *args_ptr.offset(i * 2 + 1) };
+        args.push(ffi_to_value(tag, data));
+    }
+
+    let registry = BuiltinRegistry::default();
+    match registry.call(&name, &args) {
+        Ok(Some(val)) => write_value(&val, out_tag, out_data),
+        Ok(None) => {
+            // SUB-like builtin (no return value) - return 0
+            unsafe {
+                *out_tag = TAG_INTEGER;
+                *out_data = 0;
+            }
+        }
+        Err(e) => {
+            eprintln!("rice runtime: builtin {} error: {}", name, e);
+            unsafe {
+                *out_tag = TAG_INTEGER;
+                *out_data = 0;
+            }
+        }
+    }
 }
 
 /// Evaluate a binary operation, replicating interpreter semantics.
@@ -216,7 +279,7 @@ fn eval_binop(left: &Value, op: BinOp, right: &Value) -> Value {
         };
     }
 
-    // Numeric operations — determine result type first to avoid unnecessary f64 conversion
+    // Numeric operations — determine result type first
     let use_int = matches!(
         (left, right),
         (Value::Integer(_), Value::Integer(_))

@@ -2,6 +2,19 @@ use std::env;
 use std::process;
 
 fn main() {
+    // Run on a thread with a larger stack to support deep recursion.
+    // In debug builds, Rust's match arms in exec_stmt/eval_expr create
+    // large stack frames (~100KB each), exhausting the default 1MB Windows
+    // stack at only ~10 levels of recursion.
+    const STACK_SIZE: usize = 8 * 1024 * 1024; // 8 MB
+    let builder = std::thread::Builder::new().stack_size(STACK_SIZE);
+    let handler = builder.spawn(run).unwrap();
+    if handler.join().is_err() {
+        process::exit(1);
+    }
+}
+
+fn run() {
     let args: Vec<String> = env::args().collect();
 
     let mut compile = false;
@@ -60,10 +73,15 @@ fn main() {
         // Determine output path
         let out = output.unwrap_or_else(|| {
             let p = std::path::Path::new(&source);
-            p.file_stem()
+            let stem = p.file_stem()
                 .unwrap_or_default()
                 .to_string_lossy()
-                .to_string()
+                .to_string();
+            if cfg!(target_os = "windows") {
+                format!("{stem}.exe")
+            } else {
+                stem
+            }
         });
 
         match rice::compiler::compile_file(&source, &out) {

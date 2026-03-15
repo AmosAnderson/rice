@@ -13,6 +13,9 @@ pub type TempId = u32;
 /// Label for control flow
 pub type IrLabel = u32;
 
+/// Variable slot identifier
+pub type VarId = u32;
+
 /// A constant value in the IR
 #[derive(Debug, Clone)]
 pub enum Constant {
@@ -54,6 +57,21 @@ pub enum Instruction {
     /// Jump if temp is falsy
     BranchIfNot(TempId, IrLabel),
 
+    /// Store temp into a variable slot
+    StoreVar(VarId, TempId),
+
+    /// Load a variable slot into a temp
+    LoadVar(TempId, VarId),
+
+    /// Call a user-defined function: result = call func_name(args...)
+    CallFunc(TempId, String, Vec<TempId>),
+
+    /// Call a builtin function: result = builtin_name(args...)
+    CallBuiltin(TempId, String, Vec<TempId>),
+
+    /// Return from a function (sets return value)
+    ReturnFunc(TempId),
+
     /// Terminate the program
     End,
 }
@@ -62,7 +80,9 @@ pub enum Instruction {
 #[derive(Debug)]
 pub struct IrFunction {
     pub name: String,
+    pub params: Vec<String>,   // parameter variable names (uppercased)
     pub instructions: Vec<Instruction>,
+    pub var_count: u32,        // total number of variable slots used
 }
 
 /// The complete IR program
@@ -70,7 +90,8 @@ pub struct IrFunction {
 pub struct IrProgram {
     /// The main program function
     pub main: IrFunction,
-    // Future: subs and functions will go here
+    /// User-defined functions
+    pub functions: Vec<IrFunction>,
 }
 
 impl fmt::Display for IrProgram {
@@ -78,6 +99,12 @@ impl fmt::Display for IrProgram {
         writeln!(f, "=== RiceIR: {} ===", self.main.name)?;
         for (i, inst) in self.main.instructions.iter().enumerate() {
             writeln!(f, "  {:4}: {}", i, format_instruction(inst))?;
+        }
+        for func in &self.functions {
+            writeln!(f, "=== FUNCTION {} ({}) ===", func.name, func.params.join(", "))?;
+            for (i, inst) in func.instructions.iter().enumerate() {
+                writeln!(f, "  {:4}: {}", i, format_instruction(inst))?;
+            }
         }
         Ok(())
     }
@@ -99,6 +126,17 @@ fn format_instruction(inst: &Instruction) -> String {
         Instruction::Jump(l) => format!("jump L{l}"),
         Instruction::BranchIf(t, l) => format!("branch_if t{t} L{l}"),
         Instruction::BranchIfNot(t, l) => format!("branch_if_not t{t} L{l}"),
+        Instruction::StoreVar(v, t) => format!("var{v} = t{t}"),
+        Instruction::LoadVar(t, v) => format!("t{t} = var{v}"),
+        Instruction::CallFunc(t, name, args) => {
+            let arg_str: Vec<String> = args.iter().map(|a| format!("t{a}")).collect();
+            format!("t{t} = call {}({})", name, arg_str.join(", "))
+        }
+        Instruction::CallBuiltin(t, name, args) => {
+            let arg_str: Vec<String> = args.iter().map(|a| format!("t{a}")).collect();
+            format!("t{t} = builtin {}({})", name, arg_str.join(", "))
+        }
+        Instruction::ReturnFunc(t) => format!("return t{t}"),
         Instruction::End => "end".to_string(),
     }
 }

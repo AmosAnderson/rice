@@ -449,50 +449,8 @@ impl Interpreter {
                 self.exec_print(ps)?;
                 Ok(ControlFlow::Normal)
             }
-            Stmt::Let { var, expr } => {
-                // Check for array assignment (encoded as BinaryOp::Eq with ArrayIndex left)
-                if let Expr::BinaryOp {
-                    left,
-                    op: BinOp::Eq,
-                    right,
-                } = expr
-                    && let Expr::ArrayIndex {
-                        name,
-                        suffix,
-                        indices,
-                    } = left.as_ref()
-                {
-                    let val = self.eval_expr(right)?;
-                    let idx_vals: Vec<i64> = indices
-                        .iter()
-                        .map(|e| self.eval_expr(e).and_then(|v| v.to_i64()))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    let key = Self::array_key(name, *suffix, &idx_vals);
-                    self.env.borrow_mut().set(&key, None, val);
-                    return Ok(ControlFlow::Normal);
-                }
-                let val = self.eval_expr(expr)?;
-                self.env.borrow_mut().set(&var.name, var.suffix, val);
-                Ok(ControlFlow::Normal)
-            }
-            Stmt::Dim(decls) => {
-                for decl in decls {
-                    let resolved = Self::resolve_decl_type(decl);
-                    if let BasicType::UserDefined(ref type_name) = resolved {
-                        if decl.dimensions.is_some() {
-                            // Array of TYPE: register for lazy auto-init
-                            self.array_type_map.insert(decl.name.clone(), type_name.clone());
-                        } else {
-                            let record = self.create_default_record(type_name)?;
-                            self.env.borrow_mut().set(&decl.name, decl.suffix, record);
-                        }
-                    } else {
-                        let default = Value::default_for(resolved);
-                        self.env.borrow_mut().set(&decl.name, decl.suffix, default);
-                    }
-                }
-                Ok(ControlFlow::Normal)
-            }
+            Stmt::Let { var, expr } => self.exec_let(var, expr),
+            Stmt::Dim(decls) => self.exec_dim(decls),
             Stmt::Const { name, value } => {
                 let val = self.eval_expr(value)?;
                 self.env.borrow_mut().define_const(name, None, val)?;
@@ -551,23 +509,7 @@ impl Interpreter {
                 self.env.borrow_mut().set(&b.name, b.suffix, va);
                 Ok(ControlFlow::Normal)
             }
-            Stmt::Read(vars) => {
-                for var in vars {
-                    if self.data_pos >= self.data_values.len() {
-                        return Err(RuntimeError::General {
-                            msg: "READ past end of DATA".into(),
-                        });
-                    }
-                    let item = &self.data_values[self.data_pos];
-                    self.data_pos += 1;
-                    let val = match item {
-                        DataItem::Number(n) => Value::Double(*n),
-                        DataItem::Str(s) => Value::Str(s.clone()),
-                    };
-                    self.env.borrow_mut().set(&var.name, var.suffix, val);
-                }
-                Ok(ControlFlow::Normal)
-            }
+            Stmt::Read(vars) => self.exec_read(vars),
             Stmt::Restore(label) => {
                 if label.is_some() {
                     // TODO: restore to specific label
@@ -580,37 +522,8 @@ impl Interpreter {
                 self.env.borrow_mut().option_base = *n;
                 Ok(ControlFlow::Normal)
             }
-            Stmt::Redim { decls, .. } => {
-                for decl in decls {
-                    let default = Value::default_for(Self::resolve_decl_type(decl));
-                    self.env.borrow_mut().set(&decl.name, decl.suffix, default);
-                    // Clear flattened array elements (keys like "NAME(0,1)")
-                    let prefix = format!("{}(", decl.name);
-                    let keys: Vec<String> = self.env.borrow().var_keys()
-                        .into_iter()
-                        .filter(|k| k.starts_with(&prefix))
-                        .collect();
-                    for key in keys {
-                        self.env.borrow_mut().vars_mut().remove(&key);
-                    }
-                }
-                Ok(ControlFlow::Normal)
-            }
-            Stmt::Erase(names) => {
-                for name in names {
-                    self.env.borrow_mut().set(name, None, Value::Integer(0));
-                    // Clear flattened array elements
-                    let prefix = format!("{name}(");
-                    let keys: Vec<String> = self.env.borrow().var_keys()
-                        .into_iter()
-                        .filter(|k| k.starts_with(&prefix))
-                        .collect();
-                    for key in keys {
-                        self.env.borrow_mut().vars_mut().remove(&key);
-                    }
-                }
-                Ok(ControlFlow::Normal)
-            }
+            Stmt::Redim { decls, .. } => self.exec_redim(decls),
+            Stmt::Erase(names) => self.exec_erase(names),
             Stmt::Open(open) => {
                 self.exec_open(open)?;
                 Ok(ControlFlow::Normal)
@@ -700,39 +613,7 @@ impl Interpreter {
                 Ok(ControlFlow::Normal)
             }
 
-            // Phase 1: WRITE (console)
-            Stmt::Write(exprs) => {
-                for (i, expr) in exprs.iter().enumerate() {
-                    if i > 0 {
-                        self.write_text(",");
-                    }
-                    let val = self.eval_expr(expr)?;
-                    match &val {
-                        Value::Str(s) => self.write_text(&format!("\"{}\"", s)),
-                        Value::Integer(n) => self.write_text(&format!("{}", n)),
-                        Value::Long(n) => self.write_text(&format!("{}", n)),
-                        Value::Single(n) => {
-                            if *n == (*n as i64) as f64 && n.abs() < 1e15 {
-                                self.write_text(&format!("{}", *n as i64));
-                            } else {
-                                self.write_text(&format!("{}", n));
-                            }
-                        }
-                        Value::Double(n) => {
-                            if *n == (*n as i64) as f64 && n.abs() < 1e15 {
-                                self.write_text(&format!("{}", *n as i64));
-                            } else {
-                                self.write_text(&format!("{}", n));
-                            }
-                        }
-                        Value::Record { type_name, .. } => {
-                            self.write_text(&format!("[{}]", type_name));
-                        }
-                    };
-                }
-                self.write_text("\n");
-                Ok(ControlFlow::Normal)
-            }
+            Stmt::Write(exprs) => self.exec_write_console(exprs),
 
             // Phase 1: SLEEP
             Stmt::Sleep(expr) => {
@@ -813,77 +694,11 @@ impl Interpreter {
                 Ok(ControlFlow::Normal)
             }
 
-            // Phase 2: MID$ assignment
             Stmt::MidAssign { var, start, length, replacement } => {
-                let current = self.env.borrow().get(&var.name, var.suffix)
-                    .unwrap_or(Value::Str(String::new()))
-                    .to_string_val()?;
-                let start_pos = (self.eval_expr(start)?.to_i64()? - 1).max(0) as usize;
-                let repl = self.eval_expr(replacement)?.to_string_val()?;
-                let mut chars: Vec<char> = current.chars().collect();
-                let repl_chars: Vec<char> = repl.chars().collect();
-                let char_count = chars.len();
-                let max_len = if let Some(len_expr) = length {
-                    self.eval_expr(len_expr)?.to_i64()? as usize
-                } else {
-                    char_count.saturating_sub(start_pos)
-                };
-                // Cannot extend string; replacement is truncated
-                let avail = char_count.saturating_sub(start_pos);
-                let replace_len = max_len.min(avail).min(repl_chars.len());
-                for i in 0..replace_len {
-                    if start_pos + i < chars.len() {
-                        chars[start_pos + i] = repl_chars[i];
-                    }
-                }
-                let result: String = chars.into_iter().collect();
-                self.env.borrow_mut().set(&var.name, var.suffix, Value::Str(result));
-                Ok(ControlFlow::Normal)
+                self.exec_mid_assign(var, start, length.as_ref(), replacement)
             }
-
-            // Phase 2: LSET
-            Stmt::Lset { var, expr } => {
-                let current = self.env.borrow().get(&var.name, var.suffix)
-                    .unwrap_or(Value::Str(String::new()))
-                    .to_string_val()?;
-                let target_len = current.chars().count();
-                let new_val = self.eval_expr(expr)?.to_string_val()?;
-                let new_chars: Vec<char> = new_val.chars().collect();
-                let result: String = if new_chars.len() >= target_len {
-                    new_chars[..target_len].iter().collect()
-                } else {
-                    let mut s: String = new_chars.into_iter().collect();
-                    for _ in 0..(target_len - s.chars().count()) {
-                        s.push(' ');
-                    }
-                    s
-                };
-                self.env.borrow_mut().set(&var.name, var.suffix, Value::Str(result));
-                Ok(ControlFlow::Normal)
-            }
-
-            // Phase 2: RSET
-            Stmt::Rset { var, expr } => {
-                let current = self.env.borrow().get(&var.name, var.suffix)
-                    .unwrap_or(Value::Str(String::new()))
-                    .to_string_val()?;
-                let target_len = current.chars().count();
-                let new_val = self.eval_expr(expr)?.to_string_val()?;
-                let new_chars: Vec<char> = new_val.chars().collect();
-                let result: String = if new_chars.len() >= target_len {
-                    new_chars[..target_len].iter().collect()
-                } else {
-                    let pad = target_len - new_chars.len();
-                    let mut s = String::new();
-                    for _ in 0..pad {
-                        s.push(' ');
-                    }
-                    s.extend(new_chars);
-                    s
-                };
-                self.env.borrow_mut().set(&var.name, var.suffix, Value::Str(result));
-                Ok(ControlFlow::Normal)
-            }
+            Stmt::Lset { var, expr } => self.exec_lset(var, expr),
+            Stmt::Rset { var, expr } => self.exec_rset(var, expr),
 
             // Phase 3: SHARED
             Stmt::Shared(vars) => {
@@ -944,42 +759,7 @@ impl Interpreter {
                 Ok(ControlFlow::Normal)
             }
 
-            Stmt::Chain { filespec } => {
-                let path_str = self.eval_expr(filespec)?.to_string_val()?;
-                let resolved_path = self.resolve_chain_path(&path_str);
-
-                // Snapshot current COMMON variable values
-                let env = &self.env;
-                let common_values: Vec<(CommonVarSpec, CommonTransferValue)> = self
-                    .common_declarations
-                    .iter()
-                    .map(|(spec, key)| {
-                        let transfer = if spec.is_array {
-                            // Collect all flattened array elements matching this var's key prefix
-                            let prefix = format!("{}_", key);
-                            let env_borrow = env.borrow();
-                            let elements: Vec<(String, Value)> = env_borrow
-                                .vars_ref()
-                                .iter()
-                                .filter(|(k, _)| k.starts_with(&prefix))
-                                .map(|(k, v)| (k.clone(), v.clone()))
-                                .collect();
-                            CommonTransferValue::Array(elements)
-                        } else {
-                            let value = env.borrow().get_by_key(key).unwrap_or_else(|| {
-                                Value::default_for_type(spec.as_type.as_ref())
-                            });
-                            CommonTransferValue::Scalar(value)
-                        };
-                        (spec.clone(), transfer)
-                    })
-                    .collect();
-
-                Ok(ControlFlow::Chain {
-                    filespec: resolved_path,
-                    common_values,
-                })
-            }
+            Stmt::Chain { filespec } => self.exec_chain(filespec),
 
             // FIELD/SEEK
             Stmt::Field { file_num, fields } => {
@@ -1093,6 +873,242 @@ impl Interpreter {
                 Ok(ControlFlow::Normal)
             }
         }
+    }
+
+    fn exec_let(&mut self, var: &Variable, expr: &Expr) -> Result<ControlFlow, RuntimeError> {
+        // Check for array assignment (encoded as BinaryOp::Eq with ArrayIndex left)
+        if let Expr::BinaryOp {
+            left,
+            op: BinOp::Eq,
+            right,
+        } = expr
+            && let Expr::ArrayIndex {
+                name,
+                suffix,
+                indices,
+            } = left.as_ref()
+        {
+            let val = self.eval_expr(right)?;
+            let idx_vals: Vec<i64> = indices
+                .iter()
+                .map(|e| self.eval_expr(e).and_then(|v| v.to_i64()))
+                .collect::<Result<Vec<_>, _>>()?;
+            let key = Self::array_key(name, *suffix, &idx_vals);
+            self.env.borrow_mut().set(&key, None, val);
+            return Ok(ControlFlow::Normal);
+        }
+        let val = self.eval_expr(expr)?;
+        self.env.borrow_mut().set(&var.name, var.suffix, val);
+        Ok(ControlFlow::Normal)
+    }
+
+    fn exec_dim(&mut self, decls: &[DimDecl]) -> Result<ControlFlow, RuntimeError> {
+        for decl in decls {
+            let resolved = Self::resolve_decl_type(decl);
+            if let BasicType::UserDefined(ref type_name) = resolved {
+                if decl.dimensions.is_some() {
+                    self.array_type_map.insert(decl.name.clone(), type_name.clone());
+                } else {
+                    let record = self.create_default_record(type_name)?;
+                    self.env.borrow_mut().set(&decl.name, decl.suffix, record);
+                }
+            } else {
+                let default = Value::default_for(resolved);
+                self.env.borrow_mut().set(&decl.name, decl.suffix, default);
+            }
+        }
+        Ok(ControlFlow::Normal)
+    }
+
+    fn exec_read(&mut self, vars: &[Variable]) -> Result<ControlFlow, RuntimeError> {
+        for var in vars {
+            if self.data_pos >= self.data_values.len() {
+                return Err(RuntimeError::General {
+                    msg: "READ past end of DATA".into(),
+                });
+            }
+            let item = &self.data_values[self.data_pos];
+            self.data_pos += 1;
+            let val = match item {
+                DataItem::Number(n) => Value::Double(*n),
+                DataItem::Str(s) => Value::Str(s.clone()),
+            };
+            self.env.borrow_mut().set(&var.name, var.suffix, val);
+        }
+        Ok(ControlFlow::Normal)
+    }
+
+    fn exec_redim(&mut self, decls: &[DimDecl]) -> Result<ControlFlow, RuntimeError> {
+        for decl in decls {
+            let default = Value::default_for(Self::resolve_decl_type(decl));
+            self.env.borrow_mut().set(&decl.name, decl.suffix, default);
+            let prefix = format!("{}(", decl.name);
+            let keys: Vec<String> = self.env.borrow().var_keys()
+                .into_iter()
+                .filter(|k| k.starts_with(&prefix))
+                .collect();
+            for key in keys {
+                self.env.borrow_mut().vars_mut().remove(&key);
+            }
+        }
+        Ok(ControlFlow::Normal)
+    }
+
+    fn exec_erase(&mut self, names: &[String]) -> Result<ControlFlow, RuntimeError> {
+        for name in names {
+            self.env.borrow_mut().set(name, None, Value::Integer(0));
+            let prefix = format!("{name}(");
+            let keys: Vec<String> = self.env.borrow().var_keys()
+                .into_iter()
+                .filter(|k| k.starts_with(&prefix))
+                .collect();
+            for key in keys {
+                self.env.borrow_mut().vars_mut().remove(&key);
+            }
+        }
+        Ok(ControlFlow::Normal)
+    }
+
+    fn exec_write_console(&mut self, exprs: &[Expr]) -> Result<ControlFlow, RuntimeError> {
+        for (i, expr) in exprs.iter().enumerate() {
+            if i > 0 {
+                self.write_text(",");
+            }
+            let val = self.eval_expr(expr)?;
+            match &val {
+                Value::Str(s) => self.write_text(&format!("\"{}\"", s)),
+                Value::Integer(n) => self.write_text(&format!("{}", n)),
+                Value::Long(n) => self.write_text(&format!("{}", n)),
+                Value::Single(n) => {
+                    if *n == (*n as i64) as f64 && n.abs() < 1e15 {
+                        self.write_text(&format!("{}", *n as i64));
+                    } else {
+                        self.write_text(&format!("{}", n));
+                    }
+                }
+                Value::Double(n) => {
+                    if *n == (*n as i64) as f64 && n.abs() < 1e15 {
+                        self.write_text(&format!("{}", *n as i64));
+                    } else {
+                        self.write_text(&format!("{}", n));
+                    }
+                }
+                Value::Record { type_name, .. } => {
+                    self.write_text(&format!("[{}]", type_name));
+                }
+            };
+        }
+        self.write_text("\n");
+        Ok(ControlFlow::Normal)
+    }
+
+    fn exec_mid_assign(
+        &mut self,
+        var: &Variable,
+        start: &Expr,
+        length: Option<&Expr>,
+        replacement: &Expr,
+    ) -> Result<ControlFlow, RuntimeError> {
+        let current = self.env.borrow().get(&var.name, var.suffix)
+            .unwrap_or(Value::Str(String::new()))
+            .to_string_val()?;
+        let start_pos = (self.eval_expr(start)?.to_i64()? - 1).max(0) as usize;
+        let repl = self.eval_expr(replacement)?.to_string_val()?;
+        let mut chars: Vec<char> = current.chars().collect();
+        let repl_chars: Vec<char> = repl.chars().collect();
+        let char_count = chars.len();
+        let max_len = if let Some(len_expr) = length {
+            self.eval_expr(len_expr)?.to_i64()? as usize
+        } else {
+            char_count.saturating_sub(start_pos)
+        };
+        let avail = char_count.saturating_sub(start_pos);
+        let replace_len = max_len.min(avail).min(repl_chars.len());
+        for i in 0..replace_len {
+            if start_pos + i < chars.len() {
+                chars[start_pos + i] = repl_chars[i];
+            }
+        }
+        let result: String = chars.into_iter().collect();
+        self.env.borrow_mut().set(&var.name, var.suffix, Value::Str(result));
+        Ok(ControlFlow::Normal)
+    }
+
+    fn exec_lset(&mut self, var: &Variable, expr: &Expr) -> Result<ControlFlow, RuntimeError> {
+        let current = self.env.borrow().get(&var.name, var.suffix)
+            .unwrap_or(Value::Str(String::new()))
+            .to_string_val()?;
+        let target_len = current.chars().count();
+        let new_val = self.eval_expr(expr)?.to_string_val()?;
+        let new_chars: Vec<char> = new_val.chars().collect();
+        let result: String = if new_chars.len() >= target_len {
+            new_chars[..target_len].iter().collect()
+        } else {
+            let mut s: String = new_chars.into_iter().collect();
+            for _ in 0..(target_len - s.chars().count()) {
+                s.push(' ');
+            }
+            s
+        };
+        self.env.borrow_mut().set(&var.name, var.suffix, Value::Str(result));
+        Ok(ControlFlow::Normal)
+    }
+
+    fn exec_rset(&mut self, var: &Variable, expr: &Expr) -> Result<ControlFlow, RuntimeError> {
+        let current = self.env.borrow().get(&var.name, var.suffix)
+            .unwrap_or(Value::Str(String::new()))
+            .to_string_val()?;
+        let target_len = current.chars().count();
+        let new_val = self.eval_expr(expr)?.to_string_val()?;
+        let new_chars: Vec<char> = new_val.chars().collect();
+        let result: String = if new_chars.len() >= target_len {
+            new_chars[..target_len].iter().collect()
+        } else {
+            let pad = target_len - new_chars.len();
+            let mut s = String::new();
+            for _ in 0..pad {
+                s.push(' ');
+            }
+            s.extend(new_chars);
+            s
+        };
+        self.env.borrow_mut().set(&var.name, var.suffix, Value::Str(result));
+        Ok(ControlFlow::Normal)
+    }
+
+    fn exec_chain(&mut self, filespec: &Expr) -> Result<ControlFlow, RuntimeError> {
+        let path_str = self.eval_expr(filespec)?.to_string_val()?;
+        let resolved_path = self.resolve_chain_path(&path_str);
+
+        let env = &self.env;
+        let common_values: Vec<(CommonVarSpec, CommonTransferValue)> = self
+            .common_declarations
+            .iter()
+            .map(|(spec, key)| {
+                let transfer = if spec.is_array {
+                    let prefix = format!("{}_", key);
+                    let env_borrow = env.borrow();
+                    let elements: Vec<(String, Value)> = env_borrow
+                        .vars_ref()
+                        .iter()
+                        .filter(|(k, _)| k.starts_with(&prefix))
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    CommonTransferValue::Array(elements)
+                } else {
+                    let value = env.borrow().get_by_key(key).unwrap_or_else(|| {
+                        Value::default_for_type(spec.as_type.as_ref())
+                    });
+                    CommonTransferValue::Scalar(value)
+                };
+                (spec.clone(), transfer)
+            })
+            .collect();
+
+        Ok(ControlFlow::Chain {
+            filespec: resolved_path,
+            common_values,
+        })
     }
 
     fn exec_print(&mut self, ps: &PrintStmt) -> Result<(), RuntimeError> {
