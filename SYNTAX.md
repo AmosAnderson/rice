@@ -9,7 +9,7 @@ rice                  # Start interactive REPL
 rice myprogram.bas    # Execute a file
 ```
 
-In the REPL, type statements and press Enter to execute them. Type `END` or press Ctrl+D to exit.
+In the REPL, type statements and press Enter to execute them. Type `SYSTEM` or press Ctrl+D to exit.
 
 ---
 
@@ -349,6 +349,73 @@ PRINT Factorial(10)    ' Prints 3628800
 
 Use `EXIT SUB` or `EXIT FUNCTION` to return early.
 
+### Parameters: BYVAL
+
+By default, parameters are passed by reference. Use `BYVAL` to pass by value:
+
+```basic
+SUB Test (BYVAL x AS INTEGER)
+    x = x + 1        ' Does not affect the caller's variable
+END SUB
+```
+
+### DEF FN
+
+Define simple inline functions (or multi-line with END DEF):
+
+```basic
+DEF FNSquare(x) = x * x
+PRINT FNSquare(5)       ' 25
+
+DEF FNMax(a, b)
+    IF a > b THEN FNMax = a ELSE FNMax = b
+END DEF
+```
+
+---
+
+## User-Defined Types
+
+```basic
+TYPE PersonType
+    Name AS STRING * 20
+    Age AS INTEGER
+    Salary AS DOUBLE
+END TYPE
+
+DIM p AS PersonType
+p.Name = "Alice"
+p.Age = 30
+p.Salary = 65000.50
+PRINT p.Name; p.Age
+```
+
+Fields can be: `INTEGER`, `LONG`, `SINGLE`, `DOUBLE`, or `STRING * n` (fixed-length). Arrays of types and passing types to procedures are supported. See the [User-Defined Types guide](docs/user-defined-types.md) for details.
+
+---
+
+## Multi-Module Programming
+
+### CHAIN
+
+Load and execute another BASIC program:
+
+```basic
+CHAIN "nextprogram.bas"
+```
+
+### COMMON
+
+Declare variables to pass between CHAINed programs:
+
+```basic
+COMMON x AS INTEGER, name$ AS STRING        ' Unnamed block (positional)
+COMMON /settings/ width AS INTEGER          ' Named block (matched by name)
+COMMON SHARED /config/ maxItems AS INTEGER  ' Shared with SUBs/FUNCTIONs
+```
+
+See the [Multi-Module guide](docs/multi-module.md) for details.
+
 ---
 
 ## Arrays
@@ -510,6 +577,24 @@ In RANDOM mode, records are padded to the `LEN` specified in OPEN (default 128 b
 | `EOF(n)`     | Returns -1 (true) at end of file, 0 otherwise |
 | `LOF(n)`     | Returns file length in bytes                   |
 | `LOC(n)`     | Returns current byte position in file          |
+| `SEEK(n)`    | Returns current file position (1-based)        |
+
+### FIELD Statement
+
+For RANDOM-mode files, define fields that map to buffer positions:
+
+```basic
+OPEN "data.dat" FOR RANDOM AS #1 LEN = 40
+FIELD #1, 20 AS name$, 2 AS age$, 8 AS salary$
+```
+
+### SEEK Statement
+
+Set the file position for the next read or write:
+
+```basic
+SEEK #1, 10    ' Move to position 10 (1-based)
+```
 
 ### Complete Example
 
@@ -727,11 +812,40 @@ PRINT USING "###"; 1; 2; 3    ' Prints "  1  2  3"
 
 ---
 
+## Console Features
+
+### Cursor and Screen
+
+```basic
+CLS                       ' Clear screen
+LOCATE row, col           ' Move cursor to row, col (1-based)
+COLOR foreground, background  ' Set text colors (ANSI codes)
+BEEP                      ' Sound a terminal bell
+WIDTH columns             ' Set terminal width
+VIEW PRINT top TO bottom  ' Set scrolling region
+VIEW PRINT                ' Reset scrolling region
+```
+
+### Console Functions
+
+| Function          | Description                                      |
+|-------------------|--------------------------------------------------|
+| `CSRLIN`          | Returns the current cursor row (1-based)         |
+| `POS(0)`          | Returns the current cursor column (1-based)      |
+| `INKEY$`          | Reads a key without waiting (returns "" if none) |
+| `INPUT$(n)`       | Reads n characters from keyboard                 |
+| `INPUT$(n, #f)`   | Reads n bytes from file #f                       |
+| `SCREEN(r, c)`    | Returns ASCII code of character at row r, col c  |
+| `SCREEN(r, c, 1)` | Color attribute at row r, col c (stub: returns 7)|
+
+---
+
 ## Program Control
 
 ```basic
 END     ' Terminate the program
 STOP    ' Halt execution (same as END)
+SYSTEM  ' Exit to system
 ```
 
 ---
@@ -826,11 +940,11 @@ END FUNCTION
 
 RICE BASIC intentionally omits:
 
-- **Graphics**: No `SCREEN`, `PSET`, `LINE`, `CIRCLE`, `DRAW`, `PAINT`, `PALETTE`, `COLOR` (screen colors)
-- **Sound**: No `SOUND`, `BEEP`, `PLAY`
-- **Screen control**: No `LOCATE` (cursor positioning), `WIDTH`, `VIEW`, `WINDOW`
-- **User-defined types**: `TYPE...END TYPE` is not yet supported
-- **DEFtype**: `DEFINT`, `DEFSNG`, etc. are not yet supported
-- **ON n GOTO/GOSUB**: Computed jumps are not yet supported
+- **Graphics modes**: No `SCREEN` (mode switching), `PSET`, `LINE`, `CIRCLE`, `DRAW`, `PAINT`, `PALETTE`, `WINDOW`
+- **Sound**: No `SOUND`, `PLAY`
+- **Memory access**: No `DEF SEG`, `PEEK`, `POKE`
+- **Proper array storage**: Arrays use a flattened key representation; `LBOUND`/`UBOUND` are stubs only
+
+RICE BASIC does support text-mode console features including `CLS`, `LOCATE`, `COLOR`, `BEEP`, `WIDTH`, `VIEW PRINT`, `CSRLIN`, `POS`, `INKEY$`, `INPUT$`, and `SCREEN()` (for reading character/attribute at a position).
 
 All keywords are case-insensitive: `PRINT`, `Print`, and `print` all work.

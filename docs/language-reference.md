@@ -520,6 +520,13 @@ For binary file I/O and data manipulation:
 | `EOF(n)`       | End-of-file test (-1 if true)        | `EOF(1)`                 |
 | `LOF(n)`       | File length in bytes                 | `LOF(1)`                 |
 | `LOC(n)`       | Current file position                | `LOC(1)`                 |
+| `SEEK(n)`      | File position (1-based; record number for RANDOM) | `SEEK(1)` |
+| `CSRLIN`       | Current cursor row (1-based)         | `CSRLIN`                 |
+| `POS(0)`       | Current cursor column (1-based)      | `POS(0)`                 |
+| `INKEY$`       | Read key without waiting ("" if none)| `INKEY$`                 |
+| `INPUT$(n)`    | Read n characters from keyboard      | `INPUT$(1)`              |
+| `INPUT$(n, #f)`| Read n bytes from file               | `INPUT$(10, #1)`         |
+| `SCREEN(r, c)` | ASCII code at screen position        | `SCREEN(1, 1)`           |
 | `COMMAND$`     | Command-line arguments (stub)        | `""`                     |
 
 ---
@@ -601,10 +608,23 @@ SHELL "dir"
 
 ### SLEEP
 
-Pause execution:
+Pause execution for a given number of seconds:
 
 ```basic
-SLEEP 1000    ' Sleep for 1000 milliseconds
+SLEEP 2    ' Sleep for 2 seconds
+SLEEP      ' Sleep indefinitely (until interrupted)
+```
+
+### Console Statements
+
+```basic
+CLS                           ' Clear screen
+LOCATE row, col               ' Move cursor (1-based)
+COLOR foreground, background  ' Set text colors (ANSI codes)
+BEEP                          ' Sound terminal bell
+WIDTH columns                 ' Set terminal width
+VIEW PRINT top TO bottom      ' Set scrolling region
+VIEW PRINT                    ' Reset scrolling region
 ```
 
 ### File System Operations

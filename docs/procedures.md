@@ -98,9 +98,11 @@ DECLARE FUNCTION MyFunc (x AS INTEGER) AS INTEGER
 
 ---
 
-## DEF FN (Single-Line Functions)
+## DEF FN (Inline Functions)
 
-Define simple inline functions:
+Define simple functions using either single-line or multi-line syntax:
+
+### Single-Line Form
 
 ```basic
 DEF FNSquare(x) = x * x
@@ -112,9 +114,23 @@ PRINT FNArea(3)         ' 28.27...
 PRINT FNCelsius(212)    ' 100
 ```
 
+### Multi-Line Form
+
+```basic
+DEF FNMax(a, b)
+    IF a > b THEN
+        FNMax = a
+    ELSE
+        FNMax = b
+    END IF
+END DEF
+
+PRINT FNMax(10, 20)     ' 20
+```
+
 DEF FN functions:
 - Must have names starting with `FN`
-- Are defined with a single expression (no multi-line body)
+- Can use single-line (`= expr`) or multi-line (`... END DEF`) syntax
 - Can take multiple parameters
 - Are scoped to the module where they are defined
 

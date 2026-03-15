@@ -25,10 +25,14 @@ cargo run
 The REPL maintains state between lines, so you can define variables and use them later:
 
 ```
-> DIM x AS INTEGER
-> x = 42
-> PRINT x
+Ok
+DIM x AS INTEGER
+Ok
+x = 42
+Ok
+PRINT x
  42
+Ok
 ```
 
 ### Executing Files

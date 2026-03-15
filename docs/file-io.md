@@ -14,7 +14,7 @@ OPEN filename$ FOR mode AS #filenum [LEN = reclen]
 | `OUTPUT` | Write text. Creates file or truncates existing.  |
 | `APPEND` | Write text. Creates file or appends to existing. |
 | `BINARY` | Read/write raw bytes at arbitrary positions.     |
-| `RANDOM` | Random-access records. (Treated like BINARY.)    |
+| `RANDOM` | Fixed-length record access. Supports FIELD.      |
 
 ### File Numbers
 
@@ -136,6 +136,46 @@ CLOSE #1
 ```
 
 Position is 1-based (first byte is position 1).
+
+### FIELD
+
+For RANDOM-mode files, the `FIELD` statement defines named string variables that map to portions of the record buffer:
+
+```basic
+OPEN "records.dat" FOR RANDOM AS #1 LEN = 40
+FIELD #1, 20 AS name$, 2 AS age$, 8 AS salary$
+
+' Write a record using LSET/RSET and PUT
+LSET name$ = "Alice"
+LSET age$ = MKI$(30)
+LSET salary$ = MKD$(65000.50)
+PUT #1, 1
+
+' Read a record using GET
+GET #1, 1
+PRINT name$
+PRINT CVI(age$)
+PRINT CVD(salary$)
+CLOSE #1
+```
+
+The total width of all fields must not exceed the record length specified in OPEN.
+
+### SEEK Statement
+
+Set the current file position for the next read or write:
+
+```basic
+SEEK #1, 10    ' Move to byte position 10 (1-based)
+```
+
+The `SEEK` function returns the current file position:
+
+```basic
+PRINT SEEK(1)  ' Current position of file #1
+```
+
+For RANDOM-mode files, SEEK returns the record number rather than the byte position.
 
 ### Binary Conversion Functions
 
