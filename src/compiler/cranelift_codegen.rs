@@ -30,6 +30,7 @@ struct RuntimeFuncIds {
     value_unary_op: FuncId,
     value_is_truthy: FuncId,
     builtin_call: FuncId,
+    runtime_call: FuncId,
 }
 
 /// Code generator that translates RiceIR to a native object file
@@ -90,6 +91,8 @@ impl CodeGenerator {
             ("rice_value_is_truthy",   make_sig(&module, &[i64, i64],                            &[i32t])),
             // rice_builtin_call(name: *const c_char, argc: i32, args: *const i64, out_tag: *i64, out_data: *i64)
             ("rice_builtin_call",      make_sig(&module, &[i64, i32t, i64, i64, i64],           &[])),
+            // rice_runtime_call(rt: *mut RiceRuntime, name: *const c_char, argc: i32, args: *const i64, out_tag: *i64, out_data: *i64)
+            ("rice_runtime_call",      make_sig(&module, &[i64, i64, i32t, i64, i64, i64],      &[])),
         ];
 
         let mut ids: HashMap<&str, FuncId> = HashMap::new();
@@ -114,6 +117,7 @@ impl CodeGenerator {
             value_unary_op:    ids["rice_value_unary_op"],
             value_is_truthy:   ids["rice_value_is_truthy"],
             builtin_call:      ids["rice_builtin_call"],
+            runtime_call:      ids["rice_runtime_call"],
         };
 
         Ok(Self { module, rt })
@@ -365,6 +369,7 @@ impl CodeGenerator {
         let fn_unary_op = self.module.declare_func_in_func(self.rt.value_unary_op, builder.func);
         let fn_is_truthy = self.module.declare_func_in_func(self.rt.value_is_truthy, builder.func);
         let fn_builtin_call = self.module.declare_func_in_func(self.rt.builtin_call, builder.func);
+        let fn_runtime_call = self.module.declare_func_in_func(self.rt.runtime_call, builder.func);
 
         // Resolve user function refs
         let mut user_func_refs: HashMap<String, cranelift_codegen::ir::FuncRef> = HashMap::new();
@@ -373,9 +378,32 @@ impl CodeGenerator {
             user_func_refs.insert(name.clone(), fref);
         }
 
-        // String constants
+        // String constants, runtime call names, and builtin function names
         let mut string_globals: HashMap<TempId, cranelift_module::DataId> = HashMap::new();
+        let mut call_name_globals: HashMap<String, cranelift_module::DataId> = HashMap::new();
         for inst in &func.instructions {
+            // Collect unique call names from RuntimeCall and CallBuiltin
+            let call_name = match inst {
+                Instruction::RuntimeCall(_, name, _) => Some(name.clone()),
+                Instruction::CallBuiltin(_, name, _) => Some(name.clone()),
+                _ => None,
+            };
+            if let Some(name) = call_name {
+                if !call_name_globals.contains_key(&name) {
+                    let data_name = format!(".call_name.{}.{}", func.name, name);
+                    let data_id = self.module
+                        .declare_data(&data_name, Linkage::Local, false, false)
+                        .map_err(|e| format!("declaring call name data: {e}"))?;
+                    let mut data_desc = DataDescription::new();
+                    let mut bytes = name.as_bytes().to_vec();
+                    bytes.push(0);
+                    data_desc.define(bytes.into_boxed_slice());
+                    self.module
+                        .define_data(data_id, &data_desc)
+                        .map_err(|e| format!("defining call name data: {e}"))?;
+                    call_name_globals.insert(name, data_id);
+                }
+            }
             if let Instruction::LoadConst(tid, Constant::Str(s)) = inst {
                 let name = format!(".str.{}.{}", func.name, tid);
                 let data_id = self.module
@@ -403,9 +431,6 @@ impl CodeGenerator {
 
         // Temp values
         let mut temps: HashMap<TempId, (ClifValue, ClifValue)> = HashMap::new();
-
-        let _out_tag_addr = builder.ins().stack_addr(types::I64, out_tag_slot, 0);
-        let _out_data_addr = builder.ins().stack_addr(types::I64, out_data_slot, 0);
 
         let mut block_terminated = false;
 
@@ -582,18 +607,8 @@ impl CodeGenerator {
                         builder.ins().store(MemFlags::new(), data, addr, 8);
                     }
 
-                    // Create string constant for function name
-                    let name_data_name = format!(".builtin_name.{}.{}", name, result_tid);
-                    let name_data_id = self.module
-                        .declare_data(&name_data_name, Linkage::Local, false, false)
-                        .map_err(|e| format!("declaring builtin name data: {e}"))?;
-                    let mut name_desc = DataDescription::new();
-                    let mut name_bytes = name.as_bytes().to_vec();
-                    name_bytes.push(0);
-                    name_desc.define(name_bytes.into_boxed_slice());
-                    self.module
-                        .define_data(name_data_id, &name_desc)
-                        .map_err(|e| format!("defining builtin name data: {e}"))?;
+                    // Use pre-scanned name data
+                    let name_data_id = call_name_globals[name];
                     let name_gv = self.module.declare_data_in_func(name_data_id, builder.func);
                     let name_ptr = builder.ins().global_value(types::I64, name_gv);
 
@@ -602,6 +617,38 @@ impl CodeGenerator {
                     let ota = builder.ins().stack_addr(types::I64, out_tag_slot, 0);
                     let oda = builder.ins().stack_addr(types::I64, out_data_slot, 0);
                     builder.ins().call(fn_builtin_call, &[name_ptr, argc_val, args_ptr, ota, oda]);
+                    let tag = builder.ins().load(types::I64, MemFlags::new(), ota, 0);
+                    let data = builder.ins().load(types::I64, MemFlags::new(), oda, 0);
+                    temps.insert(*result_tid, (tag, data));
+                }
+
+                Instruction::RuntimeCall(result_tid, name, arg_tids) => {
+                    // Like CallBuiltin but prepends runtime_ptr
+                    let argc = arg_tids.len();
+                    let args_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        (argc as u32) * 16, // 2 * i64 per arg
+                        3,
+                    ));
+
+                    for (i, tid) in arg_tids.iter().enumerate() {
+                        let (tag, data) = temps[tid];
+                        let offset = (i * 16) as i32;
+                        let addr = builder.ins().stack_addr(types::I64, args_slot, offset);
+                        builder.ins().store(MemFlags::new(), tag, addr, 0);
+                        builder.ins().store(MemFlags::new(), data, addr, 8);
+                    }
+
+                    let name_data_id = call_name_globals[name];
+                    let name_gv = self.module.declare_data_in_func(name_data_id, builder.func);
+                    let name_ptr = builder.ins().global_value(types::I64, name_gv);
+
+                    let runtime_ptr = builder.use_var(rt_var);
+                    let argc_val = builder.ins().iconst(types::I32, argc as i64);
+                    let args_ptr = builder.ins().stack_addr(types::I64, args_slot, 0);
+                    let ota = builder.ins().stack_addr(types::I64, out_tag_slot, 0);
+                    let oda = builder.ins().stack_addr(types::I64, out_data_slot, 0);
+                    builder.ins().call(fn_runtime_call, &[runtime_ptr, name_ptr, argc_val, args_ptr, ota, oda]);
                     let tag = builder.ins().load(types::I64, MemFlags::new(), ota, 0);
                     let data = builder.ins().load(types::I64, MemFlags::new(), oda, 0);
                     temps.insert(*result_tid, (tag, data));

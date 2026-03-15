@@ -69,6 +69,9 @@ pub enum Instruction {
     /// Call a builtin function: result = builtin_name(args...)
     CallBuiltin(TempId, String, Vec<TempId>),
 
+    /// Call a runtime function (passes runtime_ptr automatically): result = rt_func_name(args...)
+    RuntimeCall(TempId, String, Vec<TempId>),
+
     /// Return from a function (sets return value)
     ReturnFunc(TempId),
 
@@ -135,6 +138,10 @@ fn format_instruction(inst: &Instruction) -> String {
         Instruction::CallBuiltin(t, name, args) => {
             let arg_str: Vec<String> = args.iter().map(|a| format!("t{a}")).collect();
             format!("t{t} = builtin {}({})", name, arg_str.join(", "))
+        }
+        Instruction::RuntimeCall(t, name, args) => {
+            let arg_str: Vec<String> = args.iter().map(|a| format!("t{a}")).collect();
+            format!("t{t} = runtime {}({})", name, arg_str.join(", "))
         }
         Instruction::ReturnFunc(t) => format!("return t{t}"),
         Instruction::End => "end".to_string(),

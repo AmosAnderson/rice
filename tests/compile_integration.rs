@@ -244,3 +244,181 @@ fn test_compiled_builtin_left() {
 fn test_compiled_builtin_abs() {
     differential("PRINT ABS(-42)\n");
 }
+
+// --- Phase 1: EXIT FOR / EXIT DO ---
+
+#[test]
+fn test_compiled_exit_for() {
+    differential("FOR i = 1 TO 10\n  IF i = 5 THEN EXIT FOR\n  PRINT i\nNEXT\nPRINT \"done\"\n");
+}
+
+#[test]
+fn test_compiled_exit_do() {
+    differential("x = 0\nDO\n  x = x + 1\n  IF x = 3 THEN EXIT DO\nLOOP\nPRINT x\n");
+}
+
+// --- Phase 2: GOTO / GOSUB / RETURN ---
+
+#[test]
+fn test_compiled_goto() {
+    differential("GOTO 20\n10 PRINT \"skip\"\nGOTO 30\n20 PRINT \"target\"\nGOTO 30\n30 PRINT \"done\"\n");
+}
+
+#[test]
+fn test_compiled_gosub_bas() {
+    differential_file("tests/programs/gosub.bas");
+}
+
+#[test]
+fn test_compiled_on_goto_bas() {
+    differential_file("tests/programs/on_goto.bas");
+}
+
+// --- Phase 3: DATA/READ/RESTORE, RANDOMIZE/RND ---
+
+#[test]
+fn test_compiled_data_read_bas() {
+    differential_file("tests/programs/data_read.bas");
+}
+
+#[test]
+fn test_compiled_randomize_bas() {
+    differential_file("tests/programs/randomize.bas");
+}
+
+// --- Phase 5: WRITE ---
+
+#[test]
+fn test_compiled_write_stmt_bas() {
+    differential_file("tests/programs/write_stmt.bas");
+}
+
+// --- Phase 6: Console/System ---
+
+#[test]
+fn test_compiled_deftype_bas() {
+    differential_file("tests/programs/deftype.bas");
+}
+
+// --- Phase 7: File I/O ---
+
+#[test]
+fn test_compiled_file_text_io_bas() {
+    differential_file("tests/programs/file_text_io.bas");
+}
+
+#[test]
+fn test_compiled_file_write_read_bas() {
+    differential_file("tests/programs/file_write_read.bas");
+}
+
+#[test]
+fn test_compiled_file_append_bas() {
+    differential_file("tests/programs/file_append.bas");
+}
+
+#[test]
+fn test_compiled_file_binary_bas() {
+    differential_file("tests/programs/file_binary.bas");
+}
+
+#[test]
+fn test_compiled_file_freefile_bas() {
+    differential_file("tests/programs/file_freefile.bas");
+}
+
+// --- Phase 8: SHARED / STATIC / DEF FN ---
+
+#[test]
+fn test_compiled_shared_test_bas() {
+    differential_file("tests/programs/shared_test.bas");
+}
+
+#[test]
+fn test_compiled_static_test_bas() {
+    differential_file("tests/programs/static_test.bas");
+}
+
+#[test]
+fn test_compiled_static_sub_bas() {
+    differential_file("tests/programs/static_sub.bas");
+}
+
+#[test]
+fn test_compiled_def_fn_bas() {
+    differential_file("tests/programs/def_fn.bas");
+}
+
+// --- Phase 9: TYPE ---
+
+#[test]
+fn test_compiled_type_basic_bas() {
+    differential_file("tests/programs/type_basic.bas");
+}
+
+#[test]
+fn test_compiled_type_array_bas() {
+    differential_file("tests/programs/type_array.bas");
+}
+
+#[test]
+fn test_compiled_type_sub_bas() {
+    differential_file("tests/programs/type_sub.bas");
+}
+
+// --- Phase 10: String ops ---
+
+#[test]
+fn test_compiled_mid_assign_bas() {
+    differential_file("tests/programs/mid_assign.bas");
+}
+
+#[test]
+fn test_compiled_lset_rset_bas() {
+    differential_file("tests/programs/lset_rset.bas");
+}
+
+// --- Helpers ---
+
+/// Differential test using a .bas file
+fn differential_file(path: &str) {
+    let source = std::fs::read_to_string(path).unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let bas_path = dir.path().join("test.bas");
+    let exe_name = if cfg!(target_os = "windows") { "test_exe.exe" } else { "test_exe" };
+    let exe_path = dir.path().join(exe_name);
+
+    std::fs::write(&bas_path, &source).unwrap();
+
+    rice::compiler::compile_file(
+        bas_path.to_str().unwrap(),
+        exe_path.to_str().unwrap(),
+    ).unwrap();
+
+    // Run compiled version in the temp dir (for file I/O tests)
+    let compiled_output = Command::new(&exe_path)
+        .current_dir(dir.path())
+        .output()
+        .expect("failed to run compiled program");
+    assert!(compiled_output.status.success(),
+        "compiled program failed: {}", String::from_utf8_lossy(&compiled_output.stderr));
+    let compiled = String::from_utf8(compiled_output.stdout).unwrap();
+
+    // Run interpreter version in a different temp dir
+    let dir2 = tempfile::tempdir().unwrap();
+    let output = SharedOutput::new();
+    let input = Cursor::new(Vec::<u8>::new());
+    let mut interp = rice::interpreter::Interpreter::with_io(
+        Box::new(output.clone()),
+        Box::new(BufReader::new(input)),
+    );
+    let old_dir = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir2.path()).unwrap();
+    interp.run_source(&source).unwrap();
+    std::env::set_current_dir(&old_dir).unwrap();
+    let interpreted = output.into_string();
+
+    assert_eq!(interpreted, compiled,
+        "Output mismatch for {path}!\nInterpreted:\n{interpreted}\nCompiled:\n{compiled}");
+}

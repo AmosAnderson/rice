@@ -19,10 +19,10 @@ const TAG_SINGLE: i64 = 2;
 const TAG_DOUBLE: i64 = 3;
 const TAG_STRING: i64 = 4;
 
-/// Convert a Value to (tag, data) pair and write to output pointers.
+/// Convert a Value to (tag, data) pair, returning the raw pair.
 /// For strings, allocates a CString that must eventually be freed via rice_value_drop.
-fn write_value(val: &Value, out_tag: *mut i64, out_data: *mut i64) {
-    let (tag, data) = match val {
+pub fn value_to_ffi(val: &Value) -> (i64, i64) {
+    match val {
         Value::Integer(n) => (TAG_INTEGER, *n),
         Value::Long(n) => (TAG_LONG, *n),
         Value::Single(n) => (TAG_SINGLE, n.to_bits() as i64),
@@ -33,7 +33,13 @@ fn write_value(val: &Value, out_tag: *mut i64, out_data: *mut i64) {
             (TAG_STRING, ptr as i64)
         }
         Value::Record { .. } => (TAG_INTEGER, 0),
-    };
+    }
+}
+
+/// Convert a Value to (tag, data) pair and write to output pointers.
+/// For strings, allocates a CString that must eventually be freed via rice_value_drop.
+fn write_value(val: &Value, out_tag: *mut i64, out_data: *mut i64) {
+    let (tag, data) = value_to_ffi(val);
     unsafe {
         *out_tag = tag;
         *out_data = data;
@@ -211,6 +217,10 @@ pub extern "C" fn rice_value_unary_op(
     write_value(&result, out_tag, out_data);
 }
 
+use std::sync::LazyLock;
+
+static BUILTIN_REGISTRY: LazyLock<BuiltinRegistry> = LazyLock::new(BuiltinRegistry::default);
+
 /// Call a builtin function by name.
 /// Args are passed as a flat array: [tag0, data0, tag1, data1, ...]
 #[unsafe(no_mangle)]
@@ -234,8 +244,7 @@ pub extern "C" fn rice_builtin_call(
         args.push(ffi_to_value(tag, data));
     }
 
-    let registry = BuiltinRegistry::default();
-    match registry.call(&name, &args) {
+    match BUILTIN_REGISTRY.call(&name, &args) {
         Ok(Some(val)) => write_value(&val, out_tag, out_data),
         Ok(None) => {
             // SUB-like builtin (no return value) - return 0
