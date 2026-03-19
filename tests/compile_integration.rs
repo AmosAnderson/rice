@@ -422,3 +422,133 @@ fn differential_file(path: &str) {
     assert_eq!(interpreted, compiled,
         "Output mismatch for {path}!\nInterpreted:\n{interpreted}\nCompiled:\n{compiled}");
 }
+
+// --- Phase 1B: SCREEN() function ---
+#[test]
+fn test_compiled_screen_function() {
+    differential("CLS\nPRINT \"AB\"\nPRINT SCREEN(1, 1); SCREEN(1, 2)\n");
+}
+
+// --- Phase 1C: Runtime error codes ---
+#[test]
+fn test_compiled_error_codes() {
+    // Error code should be set after failed operation (use ON ERROR to catch it)
+    differential(r#"
+ON ERROR GOTO handler
+NAME "nonexistent_src_12345.txt" AS "dst.txt"
+PRINT "continued"
+END
+handler:
+PRINT "ERR ="; ERR
+RESUME NEXT
+"#);
+}
+
+// --- Phase 3: REDIM PRESERVE ---
+#[test]
+fn test_compiled_redim_preserve() {
+    differential(r#"
+DIM a(5)
+a(1) = 10
+a(2) = 20
+REDIM PRESERVE a(10)
+PRINT a(1); a(2); a(6)
+"#);
+}
+
+#[test]
+fn test_compiled_redim_no_preserve() {
+    differential(r#"
+DIM a(5)
+a(1) = 10
+a(2) = 20
+REDIM a(10)
+PRINT a(1); a(2); a(6)
+"#);
+}
+
+// --- Phase 4: CHAIN compile-time error ---
+#[test]
+fn test_compiled_chain_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let bas_path = dir.path().join("chain_test.bas");
+    let exe_path = dir.path().join("chain_test");
+    std::fs::write(&bas_path, "CHAIN \"other.bas\"\n").unwrap();
+    let result = rice::compiler::compile_file(
+        bas_path.to_str().unwrap(),
+        exe_path.to_str().unwrap(),
+    );
+    assert!(result.is_err(), "CHAIN should fail at compile time");
+    let err = result.unwrap_err();
+    assert!(err.contains("CHAIN is not supported"), "Error should mention CHAIN: {err}");
+}
+
+// --- Phase 5: DEF FN single-line scope ---
+#[test]
+fn test_compiled_def_fn_scope() {
+    differential(r#"
+x = 10
+DEF FNadd(a) = a + x
+PRINT FNadd(5)
+x = 20
+PRINT FNadd(5)
+"#);
+}
+
+// --- Phase 2: ON ERROR GOTO / RESUME NEXT ---
+#[test]
+fn test_compiled_on_error_resume_next() {
+    differential(r#"
+ON ERROR GOTO handler
+KILL "nonexistent_file_12345.txt"
+PRINT "continued"
+END
+handler:
+PRINT "ERR ="; ERR
+RESUME NEXT
+"#);
+}
+
+#[test]
+fn test_compiled_on_error_goto_0() {
+    // ON ERROR GOTO 0 disables error handling — handler should not be called
+    differential(r#"
+ON ERROR GOTO handler
+KILL "nonexistent_file_12345.txt"
+PRINT "ERR after first ="; ERR
+ON ERROR GOTO 0
+PRINT "disabled handler"
+END
+handler:
+PRINT "caught error"; ERR
+RESUME NEXT
+"#);
+}
+
+#[test]
+fn test_compiled_on_error_err_value() {
+    differential(r#"
+ON ERROR GOTO handler
+KILL "nonexistent_file_12345.txt"
+END
+handler:
+PRINT ERR
+RESUME NEXT
+"#);
+}
+
+#[test]
+fn test_compiled_on_error_resume_label() {
+    differential(r#"
+ON ERROR GOTO handler
+KILL "nonexistent_file_12345.txt"
+PRINT "after kill"
+END
+handler:
+PRINT "caught error"
+RESUME skipover
+skipover:
+PRINT "skipped to label"
+END
+"#);
+}

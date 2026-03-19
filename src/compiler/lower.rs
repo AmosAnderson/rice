@@ -47,6 +47,14 @@ pub struct Lowerer {
     shared_vars: std::collections::HashSet<String>,
     /// STATIC variable names for current function
     static_var_names: Vec<String>,
+    /// Current ON ERROR GOTO handler label (None = no handler)
+    current_error_handler: Option<IrLabel>,
+    /// Resume points: (index, before_label, after_label) for each failable call
+    resume_points: Vec<(i32, IrLabel, IrLabel)>,
+    /// Counter for resume point indices
+    next_resume_point: i32,
+    /// DEF FN single-line definitions to inline at call sites: name -> (params, expr)
+    def_fn_inlines: HashMap<String, (Vec<Param>, Expr)>,
 }
 
 impl Lowerer {
@@ -68,6 +76,10 @@ impl Lowerer {
             array_names: std::collections::HashSet::new(),
             shared_vars: std::collections::HashSet::new(),
             static_var_names: Vec::new(),
+            current_error_handler: None,
+            resume_points: Vec::new(),
+            next_resume_point: 0,
+            def_fn_inlines: HashMap::new(),
         }
     }
 
@@ -103,6 +115,26 @@ impl Lowerer {
         let result = self.alloc_temp();
         self.emit(Instruction::RuntimeCall(result, name.to_string(), args));
         result
+    }
+
+    /// Emit a failable RuntimeCall with error checking (for ON ERROR GOTO support).
+    /// If an error handler is active, emits SetResumePoint before and CheckError after.
+    fn emit_failable_runtime_call(&mut self, name: &str, args: Vec<TempId>) -> TempId {
+        if let Some(handler_label) = self.current_error_handler {
+            let idx = self.next_resume_point;
+            self.next_resume_point += 1;
+            let before_label = self.alloc_label();
+            self.emit(Instruction::Label(before_label));
+            self.emit(Instruction::SetResumePoint(idx));
+            let result = self.emit_runtime_call(name, args);
+            let after_label = self.alloc_label();
+            self.emit(Instruction::CheckError(handler_label));
+            self.emit(Instruction::Label(after_label));
+            self.resume_points.push((idx, before_label, after_label));
+            result
+        } else {
+            self.emit_runtime_call(name, args)
+        }
     }
 
     /// Get or create a variable slot for the given name
@@ -843,7 +875,7 @@ impl Lowerer {
             Stmt::Data(_) => Ok(()),
             Stmt::Read(vars) => {
                 for var in vars {
-                    let result = self.emit_runtime_call("rice_data_read", vec![]);
+                    let result = self.emit_failable_runtime_call("rice_data_read", vec![]);
                     let var_key = self.make_var_key(var);
                     let vid = self.var_id(&var_key);
                     self.emit(Instruction::StoreVar(vid, result));
@@ -911,33 +943,33 @@ impl Lowerer {
             }
             Stmt::Shell(opt_expr) => {
                 let arg = self.lower_optional_expr(opt_expr, Constant::Str(String::new()))?;
-                self.emit_runtime_call("rice_shell", vec![arg]);
+                self.emit_failable_runtime_call("rice_shell", vec![arg]);
                 Ok(())
             }
             Stmt::Name { old, new } => {
                 let old_t = self.lower_expr(old)?;
                 let new_t = self.lower_expr(new)?;
-                self.emit_runtime_call("rice_name", vec![old_t, new_t]);
+                self.emit_failable_runtime_call("rice_name", vec![old_t, new_t]);
                 Ok(())
             }
             Stmt::Kill(expr) => {
                 let t = self.lower_expr(expr)?;
-                self.emit_runtime_call("rice_kill", vec![t]);
+                self.emit_failable_runtime_call("rice_kill", vec![t]);
                 Ok(())
             }
             Stmt::Mkdir(expr) => {
                 let t = self.lower_expr(expr)?;
-                self.emit_runtime_call("rice_mkdir", vec![t]);
+                self.emit_failable_runtime_call("rice_mkdir", vec![t]);
                 Ok(())
             }
             Stmt::Rmdir(expr) => {
                 let t = self.lower_expr(expr)?;
-                self.emit_runtime_call("rice_rmdir", vec![t]);
+                self.emit_failable_runtime_call("rice_rmdir", vec![t]);
                 Ok(())
             }
             Stmt::Chdir(expr) => {
                 let t = self.lower_expr(expr)?;
-                self.emit_runtime_call("rice_chdir", vec![t]);
+                self.emit_failable_runtime_call("rice_chdir", vec![t]);
                 Ok(())
             }
             Stmt::Cls => {
@@ -1024,12 +1056,14 @@ impl Lowerer {
                 self.emit(Instruction::End);
                 Ok(())
             }
-            Stmt::Redim { decls, .. } => {
+            Stmt::Redim { preserve, decls } => {
                 for decl in decls {
                     let name_t = self.alloc_temp();
                     let name_key = decl.name.to_uppercase();
                     self.emit(Instruction::LoadConst(name_t, Constant::Str(name_key)));
-                    self.emit_runtime_call("rice_array_redim", vec![name_t]);
+                    let preserve_t = self.alloc_temp();
+                    self.emit(Instruction::LoadConst(preserve_t, Constant::Integer(if *preserve { 1 } else { 0 })));
+                    self.emit_runtime_call("rice_array_redim", vec![name_t, preserve_t]);
                 }
                 Ok(())
             }
@@ -1050,11 +1084,11 @@ impl Lowerer {
             Stmt::Open(open_stmt) => self.lower_open(open_stmt),
             Stmt::Close(file_nums) => {
                 if file_nums.is_empty() {
-                    self.emit_runtime_call("rice_file_close_all", vec![]);
+                    self.emit_failable_runtime_call("rice_file_close_all", vec![]);
                 } else {
                     for expr in file_nums {
                         let t = self.lower_expr(expr)?;
-                        self.emit_runtime_call("rice_file_close", vec![t]);
+                        self.emit_failable_runtime_call("rice_file_close", vec![t]);
                     }
                 }
                 Ok(())
@@ -1064,7 +1098,7 @@ impl Lowerer {
             Stmt::InputFile(if_stmt) => self.lower_input_file(if_stmt),
             Stmt::LineInputFile { file_num, var } => {
                 let fnum = self.lower_expr(file_num)?;
-                let result = self.emit_runtime_call("rice_file_line_input", vec![fnum]);
+                let result = self.emit_failable_runtime_call("rice_file_line_input", vec![fnum]);
                 let var_key = self.make_var_key(var);
                 let vid = self.var_id(&var_key);
                 self.emit(Instruction::StoreVar(vid, result));
@@ -1083,13 +1117,13 @@ impl Lowerer {
                     args.push(width_t);
                     args.push(name_t);
                 }
-                self.emit_runtime_call("rice_file_field", args);
+                self.emit_failable_runtime_call("rice_file_field", args);
                 Ok(())
             }
             Stmt::Seek { file_num, position } => {
                 let fnum = self.lower_expr(file_num)?;
                 let pos = self.lower_expr(position)?;
-                self.emit_runtime_call("rice_file_seek", vec![fnum, pos]);
+                self.emit_failable_runtime_call("rice_file_seek", vec![fnum, pos]);
                 Ok(())
             }
             Stmt::OnErrorGoto(opt_label) => {
@@ -1097,15 +1131,26 @@ impl Lowerer {
                     let key = label.to_string().to_uppercase();
                     if key == "0" {
                         // ON ERROR GOTO 0 disables error handling
+                        self.current_error_handler = None;
                         let t = self.alloc_temp();
                         self.emit(Instruction::LoadConst(t, Constant::Integer(0)));
                         t
                     } else {
+                        // Resolve the BASIC label to an IR label
+                        let ir_label = if let Some(&existing) = self.basic_labels.get(&key) {
+                            existing
+                        } else {
+                            let l = self.alloc_label();
+                            self.basic_labels.insert(key.clone(), l);
+                            l
+                        };
+                        self.current_error_handler = Some(ir_label);
                         let t = self.alloc_temp();
                         self.emit(Instruction::LoadConst(t, Constant::Str(key)));
                         t
                     }
                 } else {
+                    self.current_error_handler = None;
                     let t = self.alloc_temp();
                     self.emit(Instruction::LoadConst(t, Constant::Integer(0)));
                     t
@@ -1117,9 +1162,23 @@ impl Lowerer {
                 match target {
                     ResumeTarget::Default => {
                         self.emit_runtime_call("rice_resume", vec![]);
+                        // Emit dispatch to retry the failable call
+                        let targets: Vec<(i32, IrLabel)> = self.resume_points.iter()
+                            .map(|&(idx, before, _)| (idx, before))
+                            .collect();
+                        if !targets.is_empty() {
+                            self.emit(Instruction::ResumeDispatch(targets));
+                        }
                     }
                     ResumeTarget::Next => {
                         self.emit_runtime_call("rice_resume_next", vec![]);
+                        // Emit dispatch to continue after the failable call
+                        let targets: Vec<(i32, IrLabel)> = self.resume_points.iter()
+                            .map(|&(idx, _, after)| (idx, after))
+                            .collect();
+                        if !targets.is_empty() {
+                            self.emit(Instruction::ResumeDispatch(targets));
+                        }
                     }
                     ResumeTarget::Label(label) => {
                         let key = label.to_string().to_uppercase();
@@ -1222,29 +1281,31 @@ impl Lowerer {
                 Ok(())
             }
             Stmt::DefFn { name, params, body } => {
-                // Lower as a regular function
-                let body_stmts = match body {
-                    DefFnBody::SingleLine(expr) => vec![LabeledStmt {
-                        label: None,
-                        stmt: Stmt::Let {
-                            var: Variable { name: name.clone(), suffix: None },
-                            expr: expr.clone(),
-                        },
-                        line: 0,
-                    }],
-                    DefFnBody::MultiLine(stmts) => stmts.clone(),
-                };
-                let fdef = FunctionDef {
-                    name: name.clone(),
-                    suffix: None,
-                    params: params.clone(),
-                    as_type: None,
-                    body: body_stmts,
-                    is_static: false,
-                };
-                let func = self.lower_function(&fdef)?;
-                self.functions.push(func);
-                self.func_names.insert(name.to_uppercase());
+                match body {
+                    DefFnBody::SingleLine(expr) => {
+                        // Store for inlining at call sites (shares caller scope)
+                        self.def_fn_inlines.insert(
+                            name.to_uppercase(),
+                            (params.clone(), expr.clone()),
+                        );
+                        self.func_names.insert(name.to_uppercase());
+                    }
+                    DefFnBody::MultiLine(stmts) => {
+                        // Multi-line: lower as a separate function (correct behavior)
+                        let body_stmts = stmts.clone();
+                        let fdef = FunctionDef {
+                            name: name.clone(),
+                            suffix: None,
+                            params: params.clone(),
+                            as_type: None,
+                            body: body_stmts,
+                            is_static: false,
+                        };
+                        let func = self.lower_function(&fdef)?;
+                        self.functions.push(func);
+                        self.func_names.insert(name.to_uppercase());
+                    }
+                }
                 Ok(())
             }
             Stmt::TypeDef { .. } => Ok(()), // Handled during prescan
@@ -1254,10 +1315,8 @@ impl Lowerer {
                 self.emit_runtime_call("rice_member_set_dynamic", vec![obj_temp, val_t]);
                 Ok(())
             }
-            Stmt::Chain { filespec } => {
-                let path = self.lower_expr(filespec)?;
-                self.emit_runtime_call("rice_chain", vec![path]);
-                Ok(())
+            Stmt::Chain { .. } => {
+                return Err("CHAIN is not supported in compiled mode; use the interpreter instead".to_string());
             }
             Stmt::Common(common) => {
                 // Register COMMON variables for CHAIN
@@ -1690,7 +1749,7 @@ impl Lowerer {
                     Ok(t)
                 }
             }
-            Expr::FunctionCall { name, args, .. } => {
+            Expr::FunctionCall { name, suffix, args } => {
                 let uname = name.to_uppercase();
                 let base_name = strip_suffix(&uname).to_string();
                 let mut arg_temps = Vec::new();
@@ -1701,6 +1760,34 @@ impl Lowerer {
                 // Check if this is a runtime function that needs RiceRuntime state
                 if Self::is_runtime_function(&base_name) {
                     Ok(self.emit_runtime_call(&format!("rice_fn_{}", base_name.to_lowercase()), arg_temps))
+                } else if self.array_names.contains(&base_name) {
+                    // Known array — use runtime array access (same as ArrayIndex)
+                    let suffix_char = suffix.as_ref().map_or(' ', |s| s.to_char());
+                    let name_t = self.alloc_temp();
+                    self.emit(Instruction::LoadConst(name_t, Constant::Str(format!("{}{}", base_name, suffix_char).trim().to_string())));
+                    let mut rt_args = vec![name_t];
+                    rt_args.extend(arg_temps);
+                    Ok(self.emit_runtime_call("rice_array_get", rt_args))
+                } else if let Some((params, expr)) = self.def_fn_inlines.get(&base_name).cloned() {
+                    // Inline single-line DEF FN at call site (shares caller scope)
+                    // Save old param values, bind args to params, eval expr, restore
+                    let mut saved = Vec::new();
+                    for (i, param) in params.iter().enumerate() {
+                        let param_key = param.name.to_uppercase();
+                        let vid = self.var_id(&param_key);
+                        let save_t = self.alloc_temp();
+                        self.emit(Instruction::LoadVar(save_t, vid));
+                        saved.push((vid, save_t));
+                        if let Some(&arg_t) = arg_temps.get(i) {
+                            self.emit(Instruction::StoreVar(vid, arg_t));
+                        }
+                    }
+                    let result = self.lower_expr(&expr)?;
+                    // Restore old param values
+                    for (vid, save_t) in saved {
+                        self.emit(Instruction::StoreVar(vid, save_t));
+                    }
+                    Ok(result)
                 } else if self.func_names.contains(&base_name) {
                     let result = self.alloc_temp();
                     self.emit(Instruction::CallFunc(result, base_name, arg_temps));
@@ -1890,7 +1977,7 @@ impl Lowerer {
             self.emit(Instruction::LoadConst(t, Constant::Integer(128)));
             t
         };
-        self.emit_runtime_call("rice_file_open", vec![filename, file_num, mode_t, rec_len]);
+        self.emit_failable_runtime_call("rice_file_open", vec![filename, file_num, mode_t, rec_len]);
         Ok(())
     }
 
@@ -1910,7 +1997,7 @@ impl Lowerer {
             let trailing_t = self.alloc_temp();
             self.emit(Instruction::LoadConst(trailing_t, Constant::Integer(trailing)));
             args.push(trailing_t);
-            self.emit_runtime_call("rice_file_print_using", args);
+            self.emit_failable_runtime_call("rice_file_print_using", args);
         } else {
             // Regular PRINT#
             let mut args = vec![fnum];
@@ -1952,7 +2039,7 @@ impl Lowerer {
             let trailing_t = self.alloc_temp();
             self.emit(Instruction::LoadConst(trailing_t, Constant::Integer(trailing)));
             args.push(trailing_t);
-            self.emit_runtime_call("rice_file_print", args);
+            self.emit_failable_runtime_call("rice_file_print", args);
         }
         Ok(())
     }
@@ -1964,7 +2051,7 @@ impl Lowerer {
             let t = self.lower_expr(expr)?;
             args.push(t);
         }
-        self.emit_runtime_call("rice_file_write", args);
+        self.emit_failable_runtime_call("rice_file_write", args);
         Ok(())
     }
 
@@ -1974,7 +2061,7 @@ impl Lowerer {
             let suffix_char = var.suffix.as_ref().map_or(' ', |s| s.to_char());
             let suffix_t = self.alloc_temp();
             self.emit(Instruction::LoadConst(suffix_t, Constant::Str(suffix_char.to_string())));
-            let result = self.emit_runtime_call("rice_file_input_var", vec![fnum, suffix_t]);
+            let result = self.emit_failable_runtime_call("rice_file_input_var", vec![fnum, suffix_t]);
             let var_key = self.make_var_key(var);
             let vid = self.var_id(&var_key);
             self.emit(Instruction::StoreVar(vid, result));
@@ -1997,20 +2084,20 @@ impl Lowerer {
             let var_name_t = self.alloc_temp();
             self.emit(Instruction::LoadConst(var_name_t, Constant::Str(var_key.clone())));
             if gp.is_get {
-                let result = self.emit_runtime_call("rice_file_get", vec![fnum, rec, var_name_t]);
+                let result = self.emit_failable_runtime_call("rice_file_get", vec![fnum, rec, var_name_t]);
                 let vid = self.var_id(&var_key);
                 self.emit(Instruction::StoreVar(vid, result));
             } else {
                 let vid = self.var_id(&var_key);
                 let val = self.alloc_temp();
                 self.emit(Instruction::LoadVar(val, vid));
-                self.emit_runtime_call("rice_file_put", vec![fnum, rec, var_name_t, val]);
+                self.emit_failable_runtime_call("rice_file_put", vec![fnum, rec, var_name_t, val]);
             }
         } else {
             if gp.is_get {
-                self.emit_runtime_call("rice_file_get_fielded", vec![fnum, rec]);
+                self.emit_failable_runtime_call("rice_file_get_fielded", vec![fnum, rec]);
             } else {
-                self.emit_runtime_call("rice_file_put_fielded", vec![fnum, rec]);
+                self.emit_failable_runtime_call("rice_file_put_fielded", vec![fnum, rec]);
             }
         }
         Ok(())

@@ -56,6 +56,8 @@ pub enum RuntimeError {
     NextWithoutFor,
     #[error("RESUME without error")]
     ResumeWithoutError,
+    #[error("{msg}")]
+    IoError { msg: String, code: i32 },
 }
 
 impl RuntimeError {
@@ -75,6 +77,25 @@ impl RuntimeError {
             RuntimeError::ArityMismatch { .. } => 5,
             RuntimeError::UndefinedVariable { .. } => 5,
             RuntimeError::General { .. } => 5,
+            RuntimeError::IoError { code, .. } => *code,
         }
+    }
+
+    /// Create an IoError from a std::io::Error with appropriate QBasic error code.
+    pub fn from_io(context: &str, e: std::io::Error) -> Self {
+        RuntimeError::IoError {
+            msg: format!("{} error: {}", context, e),
+            code: io_error_to_qbasic_code(&e),
+        }
+    }
+}
+
+/// Map a std::io::Error to a QBasic-compatible error code number.
+pub fn io_error_to_qbasic_code(e: &std::io::Error) -> i32 {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => 53,
+        std::io::ErrorKind::PermissionDenied => 70,
+        std::io::ErrorKind::AlreadyExists => 58,
+        _ => 76,
     }
 }

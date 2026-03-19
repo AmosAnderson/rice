@@ -522,7 +522,7 @@ impl Interpreter {
                 self.env.borrow_mut().option_base = *n;
                 Ok(ControlFlow::Normal)
             }
-            Stmt::Redim { decls, .. } => self.exec_redim(decls),
+            Stmt::Redim { preserve, decls } => self.exec_redim(decls, *preserve),
             Stmt::Erase(names) => self.exec_erase(names),
             Stmt::Open(open) => {
                 self.exec_open(open)?;
@@ -637,45 +637,40 @@ impl Interpreter {
             Stmt::Name { old, new } => {
                 let old_path = self.eval_expr(old)?.to_string_val()?;
                 let new_path = self.eval_expr(new)?.to_string_val()?;
-                std::fs::rename(&old_path, &new_path).map_err(|e| RuntimeError::General {
-                    msg: format!("NAME error: {}", e),
-                })?;
+                std::fs::rename(&old_path, &new_path)
+                    .map_err(|e| RuntimeError::from_io("NAME", e))?;
                 Ok(ControlFlow::Normal)
             }
 
             // Phase 1: KILL
             Stmt::Kill(expr) => {
                 let path = self.eval_expr(expr)?.to_string_val()?;
-                std::fs::remove_file(&path).map_err(|e| RuntimeError::General {
-                    msg: format!("KILL error: {}", e),
-                })?;
+                std::fs::remove_file(&path)
+                    .map_err(|e| RuntimeError::from_io("KILL", e))?;
                 Ok(ControlFlow::Normal)
             }
 
             // Phase 1: MKDIR
             Stmt::Mkdir(expr) => {
                 let path = self.eval_expr(expr)?.to_string_val()?;
-                std::fs::create_dir(&path).map_err(|e| RuntimeError::General {
-                    msg: format!("MKDIR error: {}", e),
-                })?;
+                std::fs::create_dir(&path)
+                    .map_err(|e| RuntimeError::from_io("MKDIR", e))?;
                 Ok(ControlFlow::Normal)
             }
 
             // Phase 1: RMDIR
             Stmt::Rmdir(expr) => {
                 let path = self.eval_expr(expr)?.to_string_val()?;
-                std::fs::remove_dir(&path).map_err(|e| RuntimeError::General {
-                    msg: format!("RMDIR error: {}", e),
-                })?;
+                std::fs::remove_dir(&path)
+                    .map_err(|e| RuntimeError::from_io("RMDIR", e))?;
                 Ok(ControlFlow::Normal)
             }
 
             // Phase 1: CHDIR
             Stmt::Chdir(expr) => {
                 let path = self.eval_expr(expr)?.to_string_val()?;
-                std::env::set_current_dir(&path).map_err(|e| RuntimeError::General {
-                    msg: format!("CHDIR error: {}", e),
-                })?;
+                std::env::set_current_dir(&path)
+                    .map_err(|e| RuntimeError::from_io("CHDIR", e))?;
                 Ok(ControlFlow::Normal)
             }
 
@@ -938,17 +933,19 @@ impl Interpreter {
         Ok(ControlFlow::Normal)
     }
 
-    fn exec_redim(&mut self, decls: &[DimDecl]) -> Result<ControlFlow, RuntimeError> {
+    fn exec_redim(&mut self, decls: &[DimDecl], preserve: bool) -> Result<ControlFlow, RuntimeError> {
         for decl in decls {
             let default = Value::default_for(Self::resolve_decl_type(decl));
             self.env.borrow_mut().set(&decl.name, decl.suffix, default);
-            let prefix = format!("{}(", decl.name);
-            let keys: Vec<String> = self.env.borrow().var_keys()
-                .into_iter()
-                .filter(|k| k.starts_with(&prefix))
-                .collect();
-            for key in keys {
-                self.env.borrow_mut().vars_mut().remove(&key);
+            if !preserve {
+                let prefix = format!("{}_", decl.name);
+                let keys: Vec<String> = self.env.borrow().var_keys()
+                    .into_iter()
+                    .filter(|k| k.starts_with(&prefix))
+                    .collect();
+                for key in keys {
+                    self.env.borrow_mut().vars_mut().remove(&key);
+                }
             }
         }
         Ok(ControlFlow::Normal)
@@ -957,7 +954,7 @@ impl Interpreter {
     fn exec_erase(&mut self, names: &[String]) -> Result<ControlFlow, RuntimeError> {
         for name in names {
             self.env.borrow_mut().set(name, None, Value::Integer(0));
-            let prefix = format!("{name}(");
+            let prefix = format!("{name}_");
             let keys: Vec<String> = self.env.borrow().var_keys()
                 .into_iter()
                 .filter(|k| k.starts_with(&prefix))
@@ -2421,21 +2418,12 @@ impl Interpreter {
     /// Write visible text to output and update screen buffer.
     fn write_text(&mut self, text: &str) {
         write!(self.output, "{}", text).ok();
-        for ch in text.bytes() {
-            if ch == b'\n' {
-                self.print_col = 0;
-                self.print_row += 1;
-            } else if ch == b'\r' {
-                self.print_col = 0;
-            } else {
-                let row = self.print_row.saturating_sub(1);
-                let col = self.print_col;
-                if row < self.screen_buffer.len() && col < self.screen_buffer[row].len() {
-                    self.screen_buffer[row][col] = ch;
-                }
-                self.print_col += 1;
-            }
-        }
+        crate::update_screen_buffer(
+            &mut self.screen_buffer,
+            &mut self.print_row,
+            &mut self.print_col,
+            text,
+        );
     }
 
     /// Map QBasic foreground color index (0–15) to ANSI SGR code.
@@ -2446,53 +2434,7 @@ impl Interpreter {
         if !self.interactive {
             return Ok(String::new());
         }
-        use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
-        use std::time::Duration;
-        crossterm::terminal::enable_raw_mode().map_err(|e| RuntimeError::General {
-            msg: format!("INKEY$: failed to enable raw mode: {e}"),
-        })?;
-        let result = if event::poll(Duration::ZERO).unwrap_or(false) {
-            match event::read() {
-                Ok(Event::Key(KeyEvent { code, modifiers, .. })) => {
-                    match code {
-                        KeyCode::Char(c) => {
-                            if modifiers.contains(KeyModifiers::CONTROL) {
-                                // Ctrl+C → CHR$(3), etc.
-                                let ctrl = (c as u8).wrapping_sub(b'a').wrapping_add(1);
-                                String::from(ctrl as char)
-                            } else {
-                                String::from(c)
-                            }
-                        }
-                        KeyCode::Enter => String::from('\r'),
-                        KeyCode::Esc => String::from(27 as char),
-                        KeyCode::Backspace => String::from(8 as char),
-                        KeyCode::Tab => String::from(9 as char),
-                        // Extended keys: CHR$(0) + scan code
-                        KeyCode::Up => format!("\0H"),
-                        KeyCode::Down => format!("\0P"),
-                        KeyCode::Left => format!("\0K"),
-                        KeyCode::Right => format!("\0M"),
-                        KeyCode::Home => format!("\0G"),
-                        KeyCode::End => format!("\0O"),
-                        KeyCode::PageUp => format!("\0I"),
-                        KeyCode::PageDown => format!("\0Q"),
-                        KeyCode::Insert => format!("\0R"),
-                        KeyCode::Delete => format!("\0S"),
-                        KeyCode::F(n) if n >= 1 && n <= 10 => {
-                            // F1=59, F2=60, ..., F10=68
-                            format!("\0{}", (58 + n) as char)
-                        }
-                        _ => String::new(),
-                    }
-                }
-                _ => String::new(),
-            }
-        } else {
-            String::new()
-        };
-        crossterm::terminal::disable_raw_mode().ok();
-        Ok(result)
+        Ok(crate::poll_inkey())
     }
 
     /// INPUT$(n) — read n characters from keyboard; INPUT$(n, #filenum) — read n bytes from file.

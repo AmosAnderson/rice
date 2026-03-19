@@ -77,6 +77,16 @@ pub enum Instruction {
 
     /// Terminate the program
     End,
+
+    /// Check runtime error flag; if set, branch to label (for ON ERROR GOTO)
+    CheckError(IrLabel),
+
+    /// Set resume point index before a failable call
+    SetResumePoint(i32),
+
+    /// Resume dispatch: given resume target from runtime, jump to matching label
+    /// Vec of (resume_point_index, target_label)
+    ResumeDispatch(Vec<(i32, IrLabel)>),
 }
 
 /// An IR function (main program or SUB/FUNCTION)
@@ -145,5 +155,11 @@ fn format_instruction(inst: &Instruction) -> String {
         }
         Instruction::ReturnFunc(t) => format!("return t{t}"),
         Instruction::End => "end".to_string(),
+        Instruction::CheckError(l) => format!("check_error L{l}"),
+        Instruction::SetResumePoint(idx) => format!("set_resume_point {idx}"),
+        Instruction::ResumeDispatch(targets) => {
+            let pairs: Vec<String> = targets.iter().map(|(idx, l)| format!("{idx}→L{l}")).collect();
+            format!("resume_dispatch [{}]", pairs.join(", "))
+        }
     }
 }

@@ -31,6 +31,9 @@ struct RuntimeFuncIds {
     value_is_truthy: FuncId,
     builtin_call: FuncId,
     runtime_call: FuncId,
+    check_error: FuncId,
+    set_resume_point: FuncId,
+    get_resume_target: FuncId,
 }
 
 /// Code generator that translates RiceIR to a native object file
@@ -77,22 +80,26 @@ impl CodeGenerator {
         let f64t = types::F64;
 
         let sigs = vec![
-            ("rice_runtime_init",     make_sig(&module, &[],                                    &[i64])),
-            ("rice_runtime_shutdown",  make_sig(&module, &[i64],                                 &[])),
-            ("rice_value_new_int",     make_sig(&module, &[i64, i64, i64],                       &[])),
-            ("rice_value_new_double",  make_sig(&module, &[f64t, i64, i64],                      &[])),
-            ("rice_value_new_string",  make_sig(&module, &[i64, i64, i64],                       &[])),
-            ("rice_value_drop",        make_sig(&module, &[i64, i64],                            &[])),
-            ("rice_print",             make_sig(&module, &[i64, i64, i64, i32t],                 &[])),
-            ("rice_print_newline",     make_sig(&module, &[i64],                                 &[])),
-            ("rice_print_comma",       make_sig(&module, &[i64],                                 &[])),
-            ("rice_value_binop",       make_sig(&module, &[i64, i64, i32t, i64, i64, i64, i64],  &[])),
-            ("rice_value_unary_op",    make_sig(&module, &[i64, i64, i32t, i64, i64],            &[])),
-            ("rice_value_is_truthy",   make_sig(&module, &[i64, i64],                            &[i32t])),
+            ("rice_runtime_init",       make_sig(&module, &[],                                    &[i64])),
+            ("rice_runtime_shutdown",   make_sig(&module, &[i64],                                 &[])),
+            ("rice_value_new_int",      make_sig(&module, &[i64, i64, i64],                       &[])),
+            ("rice_value_new_double",   make_sig(&module, &[f64t, i64, i64],                      &[])),
+            ("rice_value_new_string",   make_sig(&module, &[i64, i64, i64],                       &[])),
+            ("rice_value_drop",         make_sig(&module, &[i64, i64],                            &[])),
+            ("rice_print",              make_sig(&module, &[i64, i64, i64, i32t],                 &[])),
+            ("rice_print_newline",      make_sig(&module, &[i64],                                 &[])),
+            ("rice_print_comma",        make_sig(&module, &[i64],                                 &[])),
+            ("rice_value_binop",        make_sig(&module, &[i64, i64, i32t, i64, i64, i64, i64],  &[])),
+            ("rice_value_unary_op",     make_sig(&module, &[i64, i64, i32t, i64, i64],            &[])),
+            ("rice_value_is_truthy",    make_sig(&module, &[i64, i64],                            &[i32t])),
             // rice_builtin_call(name: *const c_char, argc: i32, args: *const i64, out_tag: *i64, out_data: *i64)
-            ("rice_builtin_call",      make_sig(&module, &[i64, i32t, i64, i64, i64],           &[])),
+            ("rice_builtin_call",       make_sig(&module, &[i64, i32t, i64, i64, i64],           &[])),
             // rice_runtime_call(rt: *mut RiceRuntime, name: *const c_char, argc: i32, args: *const i64, out_tag: *i64, out_data: *i64)
-            ("rice_runtime_call",      make_sig(&module, &[i64, i64, i32t, i64, i64, i64],      &[])),
+            ("rice_runtime_call",       make_sig(&module, &[i64, i64, i32t, i64, i64, i64],      &[])),
+            // Error handling functions
+            ("rice_check_error",        make_sig(&module, &[i64],                                 &[i32t])),
+            ("rice_set_resume_point",   make_sig(&module, &[i64, i32t],                           &[])),
+            ("rice_get_resume_target",  make_sig(&module, &[i64],                                 &[i32t])),
         ];
 
         let mut ids: HashMap<&str, FuncId> = HashMap::new();
@@ -118,6 +125,9 @@ impl CodeGenerator {
             value_is_truthy:   ids["rice_value_is_truthy"],
             builtin_call:      ids["rice_builtin_call"],
             runtime_call:      ids["rice_runtime_call"],
+            check_error:       ids["rice_check_error"],
+            set_resume_point:  ids["rice_set_resume_point"],
+            get_resume_target: ids["rice_get_resume_target"],
         };
 
         Ok(Self { module, rt })
@@ -370,6 +380,9 @@ impl CodeGenerator {
         let fn_is_truthy = self.module.declare_func_in_func(self.rt.value_is_truthy, builder.func);
         let fn_builtin_call = self.module.declare_func_in_func(self.rt.builtin_call, builder.func);
         let fn_runtime_call = self.module.declare_func_in_func(self.rt.runtime_call, builder.func);
+        let fn_check_error = self.module.declare_func_in_func(self.rt.check_error, builder.func);
+        let fn_set_resume_point = self.module.declare_func_in_func(self.rt.set_resume_point, builder.func);
+        let fn_get_resume_target = self.module.declare_func_in_func(self.rt.get_resume_target, builder.func);
 
         // Resolve user function refs
         let mut user_func_refs: HashMap<String, cranelift_codegen::ir::FuncRef> = HashMap::new();
@@ -690,6 +703,49 @@ impl CodeGenerator {
                             builder.ins().return_(&[]);
                         }
                         block_terminated = true;
+                    }
+                }
+
+                Instruction::CheckError(label) => {
+                    let runtime_ptr = builder.use_var(rt_var);
+                    let call = builder.ins().call(fn_check_error, &[runtime_ptr]);
+                    let has_error = builder.inst_results(call)[0];
+                    let target_block = label_blocks[label];
+                    let fall_through = builder.create_block();
+                    builder.ins().brif(has_error, target_block, &[], fall_through, &[]);
+                    builder.switch_to_block(fall_through);
+                }
+
+                Instruction::SetResumePoint(idx) => {
+                    let runtime_ptr = builder.use_var(rt_var);
+                    let idx_val = builder.ins().iconst(types::I32, *idx as i64);
+                    builder.ins().call(fn_set_resume_point, &[runtime_ptr, idx_val]);
+                }
+
+                Instruction::ResumeDispatch(targets) => {
+                    if targets.is_empty() {
+                        // No targets — fall through
+                    } else {
+                        let runtime_ptr = builder.use_var(rt_var);
+                        let call = builder.ins().call(fn_get_resume_target, &[runtime_ptr]);
+                        let target_idx = builder.inst_results(call)[0];
+
+                        // Chain of icmp + brif for each target
+                        for (i, (idx, label)) in targets.iter().enumerate() {
+                            let cmp_val = builder.ins().iconst(types::I32, *idx as i64);
+                            let cmp = builder.ins().icmp(cranelift_codegen::ir::condcodes::IntCC::Equal, target_idx, cmp_val);
+                            let target_block = label_blocks[label];
+                            if i == targets.len() - 1 {
+                                // Last one — jump to target if match, otherwise fall through
+                                let fall_through = builder.create_block();
+                                builder.ins().brif(cmp, target_block, &[], fall_through, &[]);
+                                builder.switch_to_block(fall_through);
+                            } else {
+                                let next_check = builder.create_block();
+                                builder.ins().brif(cmp, target_block, &[], next_check, &[]);
+                                builder.switch_to_block(next_check);
+                            }
+                        }
                     }
                 }
             }

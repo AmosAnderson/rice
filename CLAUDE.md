@@ -16,26 +16,28 @@ RICE BASIC is a structured BASIC interpreter written in Rust (QBasic/FreeBASIC d
 cargo build                    # Build
 cargo run                     # Start REPL
 cargo run -- file.bas          # Execute a .bas file
+cargo run -- --compile file.bas        # Compile to native executable (outputs ./file)
+cargo run -- --compile file.bas -o out # Compile with custom output path
+cargo run -- --emit-ir file.bas        # Dump intermediate representation
 cargo test                    # Run all tests (unit + integration)
 cargo test --lib              # Run unit tests only
 cargo test --test integration  # Run integration tests only
 cargo test test_hello          # Run a single test by name
-```
-
-Rust edition 2024 (`Cargo.toml`). Uses `thiserror` for error types, `rustyline` for REPL, `crossterm` for terminal manipulation, `pretty_assertions` and `tempfile` for tests, `tower-lsp`/`tokio`/`serde_json` for the LSP server.
-
-There is also an LSP binary:
-```bash
 cargo build --bin rice-lsp     # Build the language server (stdio-based)
 ```
+
+Rust edition 2024 (`Cargo.toml`). Uses `thiserror` for error types, `rustyline` for REPL, `crossterm` for terminal manipulation, `pretty_assertions` and `tempfile` for tests, `tower-lsp`/`tokio`/`serde_json` for the LSP server, `cranelift-*` crates for the native compiler backend.
 
 REPL and file execution share interpreter code paths; keep behavior parity between them.
 
 ## Architecture
 
-Classic interpreter pipeline: `Source → Lexer → Tokens → Parser → AST → Tree-Walking Interpreter → Output`
+Two execution paths from a shared frontend:
 
-All hand-written (no parser generators).
+1. **Interpreter**: `Source → Lexer → Tokens → Parser → AST → Tree-Walking Interpreter → Output`
+2. **Compiler**: `Source → Lexer → Tokens → Parser → AST → RiceIR → Cranelift → Native Executable`
+
+All hand-written (no parser generators). The compiler is feature-incomplete relative to the interpreter (see compiler modules below).
 
 ### Module Map
 
@@ -50,7 +52,17 @@ All hand-written (no parser generators).
 - **`builtins.rs`** — Built-in function registry. Math (ABS, INT, SQR, SIN, etc.), string (LEFT$, MID$, LEN, etc.), conversion (CINT, VAL, STR$, etc.), binary conversion (MKI$/MKL$/MKS$/MKD$/CVI/CVL/CVS/CVD), system (ENVIRON$, TIMER, DATE$, TIME$).
 - **`repl.rs`** — Interactive REPL using rustyline. Environment persists across lines.
 - **`error.rs`** — `LexError`, `ParseError`, `RuntimeError` enums via `thiserror`. These are the public error types returned through the pipeline.
-- **`main.rs`** — CLI: no args → REPL, one arg → execute file.
+- **`bin/rice_lsp.rs`** — LSP server binary (stdio transport, `tower-lsp`).
+- **`main.rs`** — CLI: no args → REPL, one arg → execute file, `--compile` → native compilation, `--emit-ir` → dump IR.
+- **`compiler/`** — Native compiler backend (AST → machine code via Cranelift):
+  - `mod.rs` — Public API (`compile_file`, `compile_source`, `emit_ir`); shared parse step.
+  - `ir.rs` — `RiceIR`, a flat intermediate representation (typed instructions, basic blocks).
+  - `lower.rs` — `Lowerer`: AST → RiceIR translation.
+  - `cranelift_codegen.rs` — `CodeGenerator`: RiceIR → Cranelift IR → object file bytes.
+  - `linker.rs` — Invokes system linker (`cc`) to produce final executable from object file.
+- **`runtime/`** — C-ABI runtime library linked into compiled executables:
+  - `value_ffi.rs` — extern "C" functions for Value creation, arithmetic, string ops, type coercion.
+  - `io_ffi.rs` — extern "C" functions for PRINT, file I/O, and console operations.
 
 ### Key Design Decisions
 
@@ -61,6 +73,8 @@ All hand-written (no parser generators).
 - **GOTO/GOSUB**: label map built during prescan; ControlFlow::Goto bubbles up to exec_block which resolves it
 - **Truth values**: true = `-1`, false = `0` (QBasic convention); do not change
 - **Prescan ordering**: `Interpreter::run_source` pre-scans labels, DATA, SUB/FUNCTION, and DEF FN definitions before execution; prescan recurses into nested blocks (IF, FOR, WHILE, DO, SELECT CASE); preserve this ordering
+- **Compiler runtime**: compiled executables link against `runtime/` (exposed as `staticlib`). Runtime functions use `extern "C"` ABI and are `#[no_mangle]` so the linker can resolve symbols emitted by Cranelift codegen
+- **Stack size**: `main.rs` spawns an 8MB-stack thread because debug-mode `match` arms in the interpreter create ~100KB frames, exhausting the default Windows 1MB stack
 
 ### Code Conventions
 

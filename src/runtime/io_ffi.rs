@@ -79,6 +79,12 @@ pub struct RiceRuntime {
     // Error handling
     error_code: i64,
     error_line: i64,
+    error_handler_active: bool,
+    error_flag: bool,
+    resume_point: i32,
+
+    // Screen buffer for SCREEN() function
+    screen_buffer: Vec<Vec<u8>>,
 
     // COMMON variables for CHAIN
     common_vars: Vec<(String, Value)>,
@@ -111,6 +117,10 @@ impl RiceRuntime {
             type_instances: HashMap::new(),
             error_code: 0,
             error_line: 0,
+            error_handler_active: false,
+            error_flag: false,
+            resume_point: 0,
+            screen_buffer: vec![vec![b' '; 80]; 25],
             common_vars: Vec::new(),
         }
     }
@@ -118,7 +128,16 @@ impl RiceRuntime {
     fn print_value(&mut self, val: &Value) {
         let s = val.format_for_print();
         let _ = write!(self.output, "{s}");
-        self.print_col += s.len();
+        self.write_to_screen_buffer(&s);
+    }
+
+    fn write_to_screen_buffer(&mut self, text: &str) {
+        crate::update_screen_buffer(
+            &mut self.screen_buffer,
+            &mut self.print_row,
+            &mut self.print_col,
+            text,
+        );
     }
 
     fn print_comma(&mut self) {
@@ -126,13 +145,20 @@ impl RiceRuntime {
         let spaces = next_zone - self.print_col;
         let pad = " ".repeat(spaces);
         let _ = write!(self.output, "{pad}");
-        self.print_col = next_zone;
+        self.write_to_screen_buffer(&pad);
     }
 
     fn print_newline(&mut self) {
         let _ = writeln!(self.output);
-        self.print_col = 0;
-        self.print_row += 1;
+        self.write_to_screen_buffer("\n");
+    }
+
+    /// Set error state when error handler is active, or print to stderr when not
+    fn set_runtime_error(&mut self, code: i64) {
+        self.error_code = code;
+        if self.error_handler_active {
+            self.error_flag = true;
+        }
     }
 
     /// Dispatch a runtime call by name, returning (tag, data)
@@ -165,7 +191,10 @@ impl RiceRuntime {
                     self.data_pos += 1;
                     val
                 } else {
-                    eprintln!("rice runtime: READ past end of DATA");
+                    self.set_runtime_error(4); // Out of DATA
+                    if !self.error_handler_active {
+                        eprintln!("rice runtime: READ past end of DATA");
+                    }
                     Value::Integer(0)
                 }
             }
@@ -269,15 +298,18 @@ impl RiceRuntime {
                 Value::Integer(0)
             }
             "rice_array_redim" => {
+                let preserve = args_vals.get(1).and_then(|v| v.to_i64().ok()).unwrap_or(0) != 0;
                 if let Some(name_val) = args_vals.first() {
                     let name = name_val.to_string_val().unwrap_or_default();
-                    let prefix = format!("{}_", name);
-                    let keys: Vec<String> = self.arrays.keys()
-                        .filter(|k| k.starts_with(&prefix))
-                        .cloned()
-                        .collect();
-                    for k in keys {
-                        self.arrays.remove(&k);
+                    if !preserve {
+                        let prefix = format!("{}_", name);
+                        let keys: Vec<String> = self.arrays.keys()
+                            .filter(|k| k.starts_with(&prefix))
+                            .cloned()
+                            .collect();
+                        for k in keys {
+                            self.arrays.remove(&k);
+                        }
                     }
                 }
                 Value::Integer(0)
@@ -444,38 +476,28 @@ impl RiceRuntime {
                 if args_vals.len() >= 2 {
                     let old = args_vals[0].to_string_val().unwrap_or_default();
                     let new = args_vals[1].to_string_val().unwrap_or_default();
-                    if let Err(e) = std::fs::rename(&old, &new) {
-                        eprintln!("rice runtime: NAME error: {}", e);
-                    }
+                    self.handle_fs_error(std::fs::rename(&old, &new), "NAME");
                 }
                 Value::Integer(0)
             }
             "rice_kill" => {
                 let path = args_vals.first().map(|v| v.to_string_val().unwrap_or_default()).unwrap_or_default();
-                if let Err(e) = std::fs::remove_file(&path) {
-                    eprintln!("rice runtime: KILL error: {}", e);
-                }
+                self.handle_fs_error(std::fs::remove_file(&path), "KILL");
                 Value::Integer(0)
             }
             "rice_mkdir" => {
                 let path = args_vals.first().map(|v| v.to_string_val().unwrap_or_default()).unwrap_or_default();
-                if let Err(e) = std::fs::create_dir(&path) {
-                    eprintln!("rice runtime: MKDIR error: {}", e);
-                }
+                self.handle_fs_error(std::fs::create_dir(&path), "MKDIR");
                 Value::Integer(0)
             }
             "rice_rmdir" => {
                 let path = args_vals.first().map(|v| v.to_string_val().unwrap_or_default()).unwrap_or_default();
-                if let Err(e) = std::fs::remove_dir(&path) {
-                    eprintln!("rice runtime: RMDIR error: {}", e);
-                }
+                self.handle_fs_error(std::fs::remove_dir(&path), "RMDIR");
                 Value::Integer(0)
             }
             "rice_chdir" => {
                 let path = args_vals.first().map(|v| v.to_string_val().unwrap_or_default()).unwrap_or_default();
-                if let Err(e) = std::env::set_current_dir(&path) {
-                    eprintln!("rice runtime: CHDIR error: {}", e);
-                }
+                self.handle_fs_error(std::env::set_current_dir(&path), "CHDIR");
                 Value::Integer(0)
             }
 
@@ -485,6 +507,9 @@ impl RiceRuntime {
                 let _ = self.output.flush();
                 self.print_row = 1;
                 self.print_col = 0;
+                for row in &mut self.screen_buffer {
+                    row.fill(b' ');
+                }
                 Value::Integer(0)
             }
             "rice_beep" => {
@@ -546,7 +571,7 @@ impl RiceRuntime {
             }
             "rice_fn_csrlin" => Value::Integer(self.print_row as i64),
             "rice_fn_pos" => Value::Integer((self.print_col + 1) as i64),
-            "rice_fn_inkey" | "rice_fn_inkey$" => Value::Str(String::new()),
+            "rice_fn_inkey" | "rice_fn_inkey$" => Value::Str(crate::poll_inkey()),
             "rice_fn_input$" => {
                 // INPUT$(n) - read n characters
                 let n = args_vals.first().and_then(|v| v.to_i64().ok()).unwrap_or(1) as usize;
@@ -554,15 +579,45 @@ impl RiceRuntime {
                 let _ = std::io::stdin().read_exact(&mut buf);
                 Value::Str(String::from_utf8_lossy(&buf).to_string())
             }
-            "rice_fn_screen" => Value::Integer(0), // stub
+            "rice_fn_screen" => {
+                let row = args_vals.first().and_then(|v| v.to_i64().ok()).unwrap_or(1) as usize;
+                let col = args_vals.get(1).and_then(|v| v.to_i64().ok()).unwrap_or(1) as usize;
+                let attr = args_vals.get(2).and_then(|v| v.to_i64().ok()).unwrap_or(0);
+                if attr != 0 {
+                    Value::Integer(7) // default color attribute
+                } else if row >= 1 && col >= 1 {
+                    let r = row - 1;
+                    let c = col - 1;
+                    let ch = if r < self.screen_buffer.len() && c < self.screen_buffer[r].len() {
+                        self.screen_buffer[r][c]
+                    } else {
+                        b' '
+                    };
+                    Value::Integer(ch as i64)
+                } else {
+                    Value::Integer(b' ' as i64)
+                }
+            }
 
             // --- Error handling ---
             "rice_fn_err" => Value::Integer(self.error_code),
             "rice_fn_erl" => Value::Integer(self.error_line),
-            "rice_set_error_handler" | "rice_resume" | "rice_resume_next" | "rice_resume_label" => {
-                // Simplified: just clear error state
-                self.error_code = 0;
-                self.error_line = 0;
+            "rice_set_error_handler" => {
+                // args[0]: 0 to disable, or label string to enable
+                let arg = args_vals.first().cloned().unwrap_or(Value::Integer(0));
+                match &arg {
+                    Value::Integer(0) => {
+                        self.error_handler_active = false;
+                    }
+                    _ => {
+                        self.error_handler_active = true;
+                    }
+                }
+                Value::Integer(0)
+            }
+            "rice_resume" | "rice_resume_next" | "rice_resume_label" => {
+                // Don't clear error_code — it persists until next error (QBasic behavior)
+                self.error_flag = false;
                 Value::Integer(0)
             }
 
@@ -909,10 +964,8 @@ impl RiceRuntime {
                 Value::Integer(0)
             }
             "rice_chain" => {
-                let _filespec = args_vals.first().map(|v| v.to_string_val().unwrap_or_default()).unwrap_or_default();
-                // CHAIN requires embedding the interpreter — simplified stub
-                eprintln!("rice runtime: CHAIN not fully supported in compiled mode");
-                Value::Integer(0)
+                eprintln!("rice runtime error: CHAIN is not supported in compiled mode; use the interpreter instead");
+                std::process::exit(1);
             }
 
             _ => {
@@ -925,6 +978,18 @@ impl RiceRuntime {
     }
 
     // --- Helper methods ---
+
+    /// Handle a filesystem operation result: set error code and optionally log.
+    fn handle_fs_error(&mut self, result: std::io::Result<()>, op_name: &str) {
+        if let Err(e) = result {
+            let code = crate::error::io_error_to_qbasic_code(&e) as i64;
+            self.set_runtime_error(code);
+            if !self.error_handler_active {
+                eprintln!("rice runtime: {} error: {}", op_name, e);
+            }
+        }
+    }
+
 
     /// Format a single value for WRITE output (quoted strings, raw numbers)
     fn format_write_item(val: &Value) -> String {
@@ -1449,6 +1514,35 @@ pub extern "C" fn rice_print_newline(rt: *mut RiceRuntime) {
     if rt.is_null() { return; }
     let rt = unsafe { &mut *rt };
     rt.print_newline();
+}
+
+/// Check if an error flag is set (for ON ERROR GOTO). Returns 1 and clears flag if set, else 0.
+#[unsafe(no_mangle)]
+pub extern "C" fn rice_check_error(rt: *mut RiceRuntime) -> i32 {
+    if rt.is_null() { return 0; }
+    let rt = unsafe { &mut *rt };
+    if rt.error_flag {
+        rt.error_flag = false;
+        1
+    } else {
+        0
+    }
+}
+
+/// Set the resume point index before a failable operation.
+#[unsafe(no_mangle)]
+pub extern "C" fn rice_set_resume_point(rt: *mut RiceRuntime, point: i32) {
+    if rt.is_null() { return; }
+    let rt = unsafe { &mut *rt };
+    rt.resume_point = point;
+}
+
+/// Get the resume target index (for RESUME/RESUME NEXT dispatch).
+#[unsafe(no_mangle)]
+pub extern "C" fn rice_get_resume_target(rt: *mut RiceRuntime) -> i32 {
+    if rt.is_null() { return 0; }
+    let rt = unsafe { &mut *rt };
+    rt.resume_point
 }
 
 /// Generic runtime call dispatcher.
