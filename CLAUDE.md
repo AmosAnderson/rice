@@ -37,7 +37,7 @@ Two execution paths from a shared frontend:
 1. **Interpreter**: `Source → Lexer → Tokens → Parser → AST → Tree-Walking Interpreter → Output`
 2. **Compiler**: `Source → Lexer → Tokens → Parser → AST → RiceIR → Cranelift → Native Executable`
 
-All hand-written (no parser generators). The compiler is feature-incomplete relative to the interpreter (see compiler modules below).
+All hand-written (no parser generators). The compiler is at near-parity with the interpreter; the main exception is CHAIN (requires the interpreter).
 
 ### Module Map
 
@@ -51,18 +51,19 @@ All hand-written (no parser generators). The compiler is feature-incomplete rela
 - **`value.rs`** — `Value` enum (Integer, Long, Single, Double, Str). QBasic-style PRINT formatting (leading space for positive numbers). Type coercion ladder: Integer < Long < Single < Double.
 - **`builtins.rs`** — Built-in function registry. Math (ABS, INT, SQR, SIN, etc.), string (LEFT$, MID$, LEN, etc.), conversion (CINT, VAL, STR$, etc.), binary conversion (MKI$/MKL$/MKS$/MKD$/CVI/CVL/CVS/CVD), system (ENVIRON$, TIMER, DATE$, TIME$).
 - **`repl.rs`** — Interactive REPL using rustyline. Environment persists across lines.
-- **`error.rs`** — `LexError`, `ParseError`, `RuntimeError` enums via `thiserror`. These are the public error types returned through the pipeline.
+- **`error.rs`** — `LexError`, `ParseError`, `RuntimeError` enums via `thiserror`. `RuntimeError::IoError` carries QBasic-compatible error codes for file/directory operations. `io_error_to_qbasic_code()` is the shared mapping function used by both interpreter and runtime.
 - **`bin/rice_lsp.rs`** — LSP server binary (stdio transport, `tower-lsp`).
 - **`main.rs`** — CLI: no args → REPL, one arg → execute file, `--compile` → native compilation, `--emit-ir` → dump IR.
+- **`lib.rs`** — Module declarations. Also provides shared utility functions: `poll_inkey()` for non-blocking key reading via crossterm, `update_screen_buffer()` for tracking printed characters in an 80×25 buffer (used by both interpreter and runtime for `SCREEN()` support).
 - **`compiler/`** — Native compiler backend (AST → machine code via Cranelift):
   - `mod.rs` — Public API (`compile_file`, `compile_source`, `emit_ir`); shared parse step.
-  - `ir.rs` — `RiceIR`, a flat intermediate representation (typed instructions, basic blocks).
-  - `lower.rs` — `Lowerer`: AST → RiceIR translation.
+  - `ir.rs` — `RiceIR`, a flat intermediate representation (typed instructions, basic blocks). Includes `CheckError`, `SetResumePoint`, and `ResumeDispatch` instructions for ON ERROR GOTO support.
+  - `lower.rs` — `Lowerer`: AST → RiceIR translation. Inlines single-line DEF FN at call sites. Emits failable runtime calls with error checking when ON ERROR GOTO is active. CHAIN returns a compile-time error.
   - `cranelift_codegen.rs` — `CodeGenerator`: RiceIR → Cranelift IR → object file bytes.
   - `linker.rs` — Invokes system linker (`cc`) to produce final executable from object file.
 - **`runtime/`** — C-ABI runtime library linked into compiled executables:
   - `value_ffi.rs` — extern "C" functions for Value creation, arithmetic, string ops, type coercion.
-  - `io_ffi.rs` — extern "C" functions for PRINT, file I/O, and console operations.
+  - `io_ffi.rs` — extern "C" functions for PRINT, file I/O, console operations, error handling (error flag/resume point), and screen buffer tracking for SCREEN().
 
 ### Key Design Decisions
 
@@ -121,4 +122,4 @@ The interpreter's `SharedOutput` captures PRINT output for assertion.
 
 **Working**: PRINT, PRINT USING, LET, DIM, CONST, INPUT, LINE INPUT, IF/ELSEIF/ELSE, FOR/NEXT, WHILE/WEND, DO/LOOP, SELECT CASE, GOTO, GOSUB/RETURN, EXIT FOR/DO/SUB/FUNCTION, SUB/FUNCTION definitions, CALL, DECLARE, DATA/READ/RESTORE, SWAP, all string/math/conversion builtins, ERR/ERL, OPTION BASE, REDIM, ERASE, File I/O (OPEN, CLOSE, PRINT#, WRITE#, INPUT#, LINE INPUT#, GET, PUT, FIELD, SEEK), file functions (FREEFILE, EOF, LOF, LOC, SEEK), ON ERROR GOTO/RESUME, ON n GOTO/GOSUB, RANDOMIZE/RND, WRITE (console), SLEEP, CLEAR, NAME/KILL/MKDIR/RMDIR/CHDIR, SHELL, ENVIRON$, MID$ (statement form), LSET/RSET, SHARED, STATIC, DEFtype (DEFINT/DEFLNG/DEFSNG/DEFDBL/DEFSTR), DEF FN, MKI$/MKL$/MKS$/MKD$/CVI/CVL/CVS/CVD, TYPE (user-defined types with dot-notation, STRING * n, arrays of TYPE), CHAIN/COMMON (multi-module programming), text/console features (CLS, LOCATE, COLOR, BEEP, WIDTH, VIEW PRINT, CSRLIN, POS, INKEY$, INPUT$, SCREEN()), BYVAL parameter semantics.
 
-**Not implemented**: proper array storage (currently uses flattened key hack), LBOUND/UBOUND (stubs only).
+**Not implemented**: proper array storage (currently uses flattened key hack), LBOUND/UBOUND (stubs only), CHAIN in compiled mode (compile-time error; use interpreter).

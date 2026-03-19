@@ -1,10 +1,10 @@
 # Native Compiler
 
-RICE BASIC includes an experimental native compiler powered by Cranelift. This compiles BASIC programs directly to machine code, producing standalone executables.
+RICE BASIC includes a native compiler powered by Cranelift. This compiles BASIC programs directly to machine code, producing standalone executables.
 
 ## Status
 
-The compiler is in Phase 1 and supports a subset of the language. For full compatibility, use the interpreter (`cargo run -- program.bas`). The compiler is best suited for programs using core features: arithmetic, control flow, PRINT, and simple variables.
+The compiler is at near-parity with the interpreter and supports most language features: arithmetic, control flow, PRINT, variables, arrays, SUB/FUNCTION, DEF FN, file I/O, user-defined types (TYPE), error handling (ON ERROR GOTO/RESUME), REDIM PRESERVE, console features (CLS, LOCATE, COLOR, INKEY$, SCREEN()), and more.
 
 ## Usage
 
@@ -56,12 +56,8 @@ rice --compile hello.bas
 
 ## Limitations
 
-Phase 1 of the compiler does not yet support all interpreter features. Currently unsupported:
+The compiler supports nearly all interpreter features. Currently unsupported in compiled mode:
 
-- File I/O
-- User-defined types (TYPE)
-- CHAIN/COMMON
-- Error handling (ON ERROR)
-- Some built-in functions
-
-For programs using these features, use the interpreter instead.
+- **CHAIN** — dynamically loads and executes another .bas file, which is fundamentally incompatible with ahead-of-time compilation. Using CHAIN in compiled mode produces a compile-time error. Use the interpreter for multi-module programs that rely on CHAIN.
+- **LBOUND/UBOUND** — stubs only (same as interpreter).
+- Proper array storage — uses flattened keys (same as interpreter).

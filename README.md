@@ -42,7 +42,7 @@ cargo run -- --compile myprogram.bas -o out     # Specify output name
 cargo run -- --emit-ir myprogram.bas            # Print intermediate representation
 ```
 
-Native compilation uses Cranelift and is currently Phase 1 -- it supports a subset of the language. The interpreter remains the most complete way to run programs.
+Native compilation uses Cranelift and is at near-parity with the interpreter. The main exception is CHAIN (multi-module), which requires the interpreter.
 
 ### Run Tests
 
@@ -184,10 +184,11 @@ Replace `"rice-lsp"` in `binary.path` with the full path to the binary if it is 
 
 ## Architecture
 
-Classic interpreter pipeline, entirely hand-written (no parser generators):
+Two execution paths from a shared frontend, entirely hand-written (no parser generators):
 
 ```
-Source -> Lexer -> Tokens -> Parser -> AST -> Tree-Walking Interpreter -> Output
+Interpreter: Source -> Lexer -> Tokens -> Parser -> AST -> Tree-Walking Interpreter -> Output
+Compiler:    Source -> Lexer -> Tokens -> Parser -> AST -> RiceIR -> Cranelift -> Native Executable
 ```
 
 ### Module Map

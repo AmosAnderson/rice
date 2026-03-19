@@ -128,3 +128,4 @@ PRINT "Score: "; score
 - Array transfer via `COMMON` follows the same positional/named block rules
 - `CHAIN` loads the file relative to the current working directory
 - A chained program can `CHAIN` back to the original or to another program
+- **Compiled mode:** CHAIN is not supported when compiling with `--compile` (it produces a compile-time error). CHAIN dynamically loads and parses .bas files at runtime, which is incompatible with ahead-of-time compilation. Use the interpreter for programs that rely on CHAIN.

@@ -130,6 +130,10 @@ RICE BASIC uses QBasic-compatible error codes:
 | 11   | Division by zero         |
 | 13   | Type mismatch            |
 | 20   | RESUME without error     |
+| 53   | File not found           |
+| 58   | File already exists      |
+| 70   | Permission denied        |
+| 76   | Path not found           |
 
 ---
 
