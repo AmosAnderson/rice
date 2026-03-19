@@ -380,33 +380,29 @@ fn test_compiled_lset_rset_bas() {
 
 // --- Helpers ---
 
-/// Differential test using a .bas file
-fn differential_file(path: &str) {
-    let source = std::fs::read_to_string(path).unwrap();
-
-    let dir = tempfile::tempdir().unwrap();
-    let bas_path = dir.path().join("test.bas");
+/// Compile source in `compile_dir`, run compiled binary there, return stdout.
+fn compile_and_run_in(source: &str, compile_dir: &std::path::Path) -> String {
+    let bas_path = compile_dir.join("test.bas");
     let exe_name = if cfg!(target_os = "windows") { "test_exe.exe" } else { "test_exe" };
-    let exe_path = dir.path().join(exe_name);
+    let exe_path = compile_dir.join(exe_name);
 
-    std::fs::write(&bas_path, &source).unwrap();
-
+    std::fs::write(&bas_path, source).unwrap();
     rice::compiler::compile_file(
         bas_path.to_str().unwrap(),
         exe_path.to_str().unwrap(),
     ).unwrap();
 
-    // Run compiled version in the temp dir (for file I/O tests)
-    let compiled_output = Command::new(&exe_path)
-        .current_dir(dir.path())
+    let output = Command::new(&exe_path)
+        .current_dir(compile_dir)
         .output()
         .expect("failed to run compiled program");
-    assert!(compiled_output.status.success(),
-        "compiled program failed: {}", String::from_utf8_lossy(&compiled_output.stderr));
-    let compiled = String::from_utf8(compiled_output.stdout).unwrap();
+    assert!(output.status.success(),
+        "compiled program failed: {}", String::from_utf8_lossy(&output.stderr));
+    String::from_utf8(output.stdout).unwrap()
+}
 
-    // Run interpreter version in a different temp dir
-    let dir2 = tempfile::tempdir().unwrap();
+/// Run source through the interpreter in `interp_dir`, return captured output.
+fn interpret_in(source: &str, interp_dir: &std::path::Path) -> String {
     let output = SharedOutput::new();
     let input = Cursor::new(Vec::<u8>::new());
     let mut interp = rice::interpreter::Interpreter::with_io(
@@ -414,13 +410,40 @@ fn differential_file(path: &str) {
         Box::new(BufReader::new(input)),
     );
     let old_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir2.path()).unwrap();
-    interp.run_source(&source).unwrap();
+    std::env::set_current_dir(interp_dir).unwrap();
+    interp.run_source(source).unwrap();
     std::env::set_current_dir(&old_dir).unwrap();
-    let interpreted = output.into_string();
+    output.into_string()
+}
+
+/// Differential test using a .bas file
+fn differential_file(path: &str) {
+    let source = std::fs::read_to_string(path).unwrap();
+
+    let dir1 = tempfile::tempdir().unwrap();
+    let compiled = compile_and_run_in(&source, dir1.path());
+
+    let dir2 = tempfile::tempdir().unwrap();
+    let interpreted = interpret_in(&source, dir2.path());
 
     assert_eq!(interpreted, compiled,
         "Output mismatch for {path}!\nInterpreted:\n{interpreted}\nCompiled:\n{compiled}");
+}
+
+/// Differential test with {DIR} placeholder for temp directory file I/O
+fn differential_tmpdir(source_template: &str) {
+    let dir1 = tempfile::tempdir().unwrap();
+    let dir1_str = dir1.path().to_str().unwrap().replace('\\', "/");
+    let source1 = source_template.replace("{DIR}", &dir1_str);
+    let compiled = compile_and_run_in(&source1, dir1.path());
+
+    let dir2 = tempfile::tempdir().unwrap();
+    let dir2_str = dir2.path().to_str().unwrap().replace('\\', "/");
+    let source2 = source_template.replace("{DIR}", &dir2_str);
+    let interpreted = interpret_in(&source2, dir2.path());
+
+    assert_eq!(interpreted, compiled,
+        "Output mismatch!\nInterpreted:\n{interpreted}\nCompiled:\n{compiled}");
 }
 
 // --- Phase 1B: SCREEN() function ---
@@ -550,5 +573,316 @@ RESUME skipover
 skipover:
 PRINT "skipped to label"
 END
+"#);
+}
+
+// --- BYREF / BYVAL ---
+
+#[test]
+fn test_compiled_byref_sub() {
+    differential(r#"
+DIM x AS INTEGER
+x = 10
+CALL AddFive(x)
+PRINT x
+
+SUB AddFive(n AS INTEGER)
+    n = n + 5
+END SUB
+"#);
+}
+
+#[test]
+fn test_compiled_byval_sub() {
+    differential(r#"
+DIM x AS INTEGER
+x = 10
+CALL AddFive(x)
+PRINT x
+
+SUB AddFive(BYVAL n AS INTEGER)
+    n = n + 5
+END SUB
+"#);
+}
+
+#[test]
+fn test_compiled_byval_paren_forces_byval() {
+    differential(r#"
+DIM x AS INTEGER
+x = 10
+CALL AddFive((x))
+PRINT x
+
+SUB AddFive(n AS INTEGER)
+    n = n + 5
+END SUB
+"#);
+}
+
+#[test]
+fn test_compiled_byval_expression_arg() {
+    differential(r#"
+DIM x AS INTEGER
+x = 10
+CALL AddFive(x + 0)
+PRINT x
+
+SUB AddFive(n AS INTEGER)
+    n = n + 5
+END SUB
+"#);
+}
+
+#[test]
+fn test_compiled_byref_function() {
+    differential(r#"
+DIM x AS INTEGER
+x = 10
+DIM r AS INTEGER
+r = Dbl(x)
+PRINT x
+PRINT r
+
+FUNCTION Dbl(n AS INTEGER)
+    n = n * 2
+    Dbl = n
+END FUNCTION
+"#);
+}
+
+#[test]
+fn test_compiled_byval_function() {
+    differential(r#"
+DIM x AS INTEGER
+x = 10
+DIM r AS INTEGER
+r = Dbl(x)
+PRINT x
+PRINT r
+
+FUNCTION Dbl(BYVAL n AS INTEGER)
+    n = n * 2
+    Dbl = n
+END FUNCTION
+"#);
+}
+
+// --- EXIT SUB ---
+
+#[test]
+fn test_compiled_exit_sub() {
+    differential(r#"
+CALL TestExit(5)
+CALL TestExit(15)
+
+SUB TestExit(n AS INTEGER)
+    IF n > 10 THEN EXIT SUB
+    PRINT n
+END SUB
+"#);
+}
+
+// --- CONST ---
+
+#[test]
+fn test_compiled_const() {
+    differential(r#"
+CONST PI = 3.14159
+PRINT PI
+"#);
+}
+
+// --- Single-line IF ---
+
+#[test]
+fn test_compiled_single_line_if() {
+    differential("IF 5 > 3 THEN PRINT \"yes\" ELSE PRINT \"no\"\n");
+}
+
+// --- PRINT USING ---
+
+#[test]
+fn test_compiled_print_using_digits() {
+    differential(r####"
+PRINT USING "###.##"; 1.5
+PRINT USING "###.##"; 123.456
+PRINT USING "###.##"; -1.5
+"####);
+}
+
+#[test]
+fn test_compiled_print_using_dollar() {
+    differential(r####"
+PRINT USING "$$###.##"; 1.5
+PRINT USING "$$###.##"; 123.45
+"####);
+}
+
+#[test]
+fn test_compiled_print_using_sign() {
+    differential(r####"
+PRINT USING "+###"; 5
+PRINT USING "+###"; -5
+PRINT USING "###-"; 5
+PRINT USING "###-"; -5
+"####);
+}
+
+#[test]
+fn test_compiled_print_using_asterisk() {
+    differential(r####"
+PRINT USING "**###.##"; 1.5
+PRINT USING "**$###.##"; 1.5
+"####);
+}
+
+#[test]
+fn test_compiled_print_using_comma() {
+    differential(r####"
+PRINT USING "#,###.##"; 1234.56
+"####);
+}
+
+#[test]
+fn test_compiled_print_using_scientific() {
+    differential(r####"
+PRINT USING "##.##^^^^"; 1234.5
+"####);
+}
+
+#[test]
+fn test_compiled_print_using_string() {
+    differential(r####"
+PRINT USING "!"; "Hello"
+PRINT USING "\   \"; "Hello"
+PRINT USING "&"; "Hello"
+"####);
+}
+
+#[test]
+fn test_compiled_print_using_repeat() {
+    differential(r####"
+PRINT USING "###"; 1; 2; 3
+"####);
+}
+
+// --- Console operations ---
+
+#[test]
+fn test_compiled_cls() {
+    differential("CLS\n");
+}
+
+#[test]
+fn test_compiled_beep() {
+    differential("BEEP\n");
+}
+
+#[test]
+fn test_compiled_locate() {
+    differential("LOCATE 5, 10\nPRINT \"X\"\n");
+}
+
+#[test]
+fn test_compiled_color() {
+    differential("COLOR 4, 1\nPRINT \"red on blue\"\n");
+}
+
+#[test]
+fn test_compiled_width() {
+    differential("WIDTH 40\nPRINT \"ok\"\n");
+}
+
+// --- Binary conversion ---
+
+#[test]
+fn test_compiled_binary_conversion() {
+    differential(r#"
+a$ = MKI$(1000)
+PRINT LEN(a$)
+PRINT CVI(a$)
+b$ = MKL$(123456)
+PRINT LEN(b$)
+PRINT CVL(b$)
+"#);
+}
+
+// --- ENVIRON$ ---
+
+#[test]
+fn test_compiled_environ() {
+    // Only test NONEXISTENT to avoid env var differences between interpreter and compiled
+    differential(r#"
+y$ = ENVIRON$("NONEXISTENT_VAR_12345")
+PRINT LEN(y$)
+"#);
+}
+
+// --- CLEAR ---
+// Note: CLEAR in compiled mode clears runtime-managed state (arrays, DATA) but
+// not SSA local variables. This is a known limitation.
+#[test]
+fn test_compiled_clear() {
+    // Just verify CLEAR doesn't crash the compiled program
+    compile_and_verify("x = 42\nCLEAR\nPRINT \"ok\"\n", "ok");
+}
+
+// --- FIELD / SEEK ---
+
+#[test]
+fn test_compiled_field_basic() {
+    differential_tmpdir(r#"
+OPEN "{DIR}/field.dat" FOR RANDOM AS #1 LEN = 30
+FIELD #1, 10 AS N$, 15 AS A$, 5 AS Z$
+LSET N$ = "Alice"
+LSET A$ = "123 Main St"
+LSET Z$ = "12345"
+PUT #1, 1
+LSET N$ = "Bob"
+LSET A$ = "456 Oak Ave"
+LSET Z$ = "67890"
+PUT #1, 2
+GET #1, 1
+PRINT RTRIM$(N$)
+PRINT RTRIM$(A$)
+PRINT RTRIM$(Z$)
+GET #1, 2
+PRINT RTRIM$(N$)
+PRINT RTRIM$(A$)
+PRINT RTRIM$(Z$)
+CLOSE #1
+"#);
+}
+
+#[test]
+fn test_compiled_seek_binary() {
+    differential_tmpdir(r#"
+OPEN "{DIR}/seek.dat" FOR BINARY AS #1
+DIM s$
+s$ = "ABCDEFGHIJ"
+PUT #1, 1, s$
+PRINT SEEK(1)
+SEEK #1, 1
+PRINT SEEK(1)
+CLOSE #1
+"#);
+}
+
+#[test]
+fn test_compiled_file_eof_loop() {
+    differential_tmpdir(r#"
+OPEN "{DIR}/test.txt" FOR OUTPUT AS #1
+PRINT #1, "alpha"
+PRINT #1, "beta"
+PRINT #1, "gamma"
+CLOSE #1
+
+OPEN "{DIR}/test.txt" FOR INPUT AS #1
+DO WHILE NOT EOF(1)
+    LINE INPUT #1, x$
+    PRINT x$
+LOOP
+CLOSE #1
 "#);
 }

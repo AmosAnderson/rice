@@ -55,6 +55,10 @@ pub struct Lowerer {
     next_resume_point: i32,
     /// DEF FN single-line definitions to inline at call sites: name -> (params, expr)
     def_fn_inlines: HashMap<String, (Vec<Param>, Expr)>,
+    /// BYREF-eligible params for the current function/sub: (param_name, VarId)
+    current_byref_params: Vec<(String, VarId)>,
+    /// Variables bound to FIELD (need runtime sync for GET/PUT)
+    field_var_names: Vec<String>,
 }
 
 impl Lowerer {
@@ -80,6 +84,8 @@ impl Lowerer {
             resume_points: Vec::new(),
             next_resume_point: 0,
             def_fn_inlines: HashMap::new(),
+            current_byref_params: Vec::new(),
+            field_var_names: Vec::new(),
         }
     }
 
@@ -405,6 +411,7 @@ impl Lowerer {
         let saved_vars = std::mem::take(&mut self.vars);
         let saved_next_var = self.next_var;
         let saved_next_temp = self.next_temp;
+        let saved_byref_params = std::mem::take(&mut self.current_byref_params);
         self.next_var = 0;
         self.next_temp = 0;
 
@@ -417,6 +424,16 @@ impl Lowerer {
             let var_key = p.name.to_uppercase();
             self.var_id(&var_key);
             param_names.push(var_key);
+        }
+
+        // Track BYREF-eligible params
+        self.current_byref_params.clear();
+        for p in &fdef.params {
+            if !p.by_val && !p.is_array {
+                let var_key = p.name.to_uppercase();
+                let vid = self.vars[&var_key];
+                self.current_byref_params.push((var_key, vid));
+            }
         }
 
         // Allocate slot for the return value (function name = variable)
@@ -433,7 +450,8 @@ impl Lowerer {
             self.lower_stmt(&ls.stmt)?;
         }
 
-        // Save STATIC variables before return
+        // Save BYREF params and STATIC variables before return
+        self.emit_byref_stores();
         self.emit_static_saves(&func_name);
 
         // Load return value and emit return
@@ -456,6 +474,7 @@ impl Lowerer {
         self.next_temp = saved_next_temp;
         self.current_func_name = None;
         self.static_var_names.clear();
+        self.current_byref_params = saved_byref_params;
 
         Ok(func)
     }
@@ -465,6 +484,7 @@ impl Lowerer {
         let saved_vars = std::mem::take(&mut self.vars);
         let saved_next_var = self.next_var;
         let saved_next_temp = self.next_temp;
+        let saved_byref_params = std::mem::take(&mut self.current_byref_params);
         self.next_var = 0;
         self.next_temp = 0;
 
@@ -476,6 +496,16 @@ impl Lowerer {
             let var_key = p.name.to_uppercase();
             self.var_id(&var_key);
             param_names.push(var_key);
+        }
+
+        // Track BYREF-eligible params
+        self.current_byref_params.clear();
+        for p in &sdef.params {
+            if !p.by_val && !p.is_array {
+                let var_key = p.name.to_uppercase();
+                let vid = self.vars[&var_key];
+                self.current_byref_params.push((var_key, vid));
+            }
         }
 
         self.static_var_names.clear();
@@ -496,7 +526,8 @@ impl Lowerer {
             }
         }
 
-        // Save STATIC variables before return
+        // Save BYREF params and STATIC variables before return
+        self.emit_byref_stores();
         self.emit_static_saves(&sub_name);
 
         // For STATIC subs, prepend static loads at the beginning of instructions
@@ -540,6 +571,7 @@ impl Lowerer {
         self.next_temp = saved_next_temp;
         self.current_func_name = None;
         self.static_var_names.clear();
+        self.current_byref_params = saved_byref_params;
 
         Ok(func)
     }
@@ -557,6 +589,103 @@ impl Lowerer {
                 self.emit(Instruction::LoadVar(val_t, vid));
                 self.emit_runtime_call("rice_static_save", vec![func_t, name_t, val_t]);
             }
+        }
+    }
+
+    /// Emit rice_byref_store for each BYREF-eligible param in the current function
+    fn emit_byref_stores(&mut self) {
+        let params = self.current_byref_params.clone();
+        for (param_name, vid) in &params {
+            let key_t = self.alloc_temp();
+            self.emit(Instruction::LoadConst(key_t, Constant::Str(param_name.clone())));
+            let val_t = self.alloc_temp();
+            self.emit(Instruction::LoadVar(val_t, *vid));
+            self.emit_runtime_call("rice_byref_store", vec![key_t, val_t]);
+        }
+    }
+
+    /// Check if a function call has BYREF-eligible args and emit rice_byref_begin.
+    /// Returns true if BYREF wrapping was emitted (caller must call `emit_byref_copyback`).
+    fn emit_byref_begin_if_needed(&mut self, func_name: &str, args: &[Expr]) -> bool {
+        let has_byref = self.func_params.get(func_name).is_some_and(|ps| {
+            ps.iter().enumerate().any(|(i, p)| {
+                !p.by_val && !p.is_array
+                    && matches!(args.get(i), Some(Expr::Variable(_)))
+            })
+        });
+        if has_byref {
+            self.emit_runtime_call("rice_byref_begin", vec![]);
+        }
+        has_byref
+    }
+
+    /// After a user function call, copy BYREF-modified values back to caller variables.
+    /// Only call this when `emit_byref_begin_if_needed` returned true.
+    fn emit_byref_copyback(&mut self, func_name: &str, args: &[Expr]) {
+        let params = match self.func_params.get(func_name).cloned() {
+            Some(p) => p,
+            None => return,
+        };
+        for (i, param) in params.iter().enumerate() {
+            if param.by_val || param.is_array {
+                continue;
+            }
+            if let Some(Expr::Variable(caller_var)) = args.get(i) {
+                let param_name = param.name.to_uppercase();
+                let key_t = self.alloc_temp();
+                self.emit(Instruction::LoadConst(key_t, Constant::Str(param_name)));
+                let loaded = self.emit_runtime_call("rice_byref_load", vec![key_t]);
+                let var_key = self.make_var_key(caller_var);
+                if self.shared_vars.contains(&var_key) {
+                    let name_t = self.alloc_temp();
+                    self.emit(Instruction::LoadConst(name_t, Constant::Str(var_key)));
+                    self.emit_runtime_call("rice_shared_set", vec![name_t, loaded]);
+                } else {
+                    let vid = self.var_id(&var_key);
+                    self.emit(Instruction::StoreVar(vid, loaded));
+                }
+            }
+        }
+        self.emit_runtime_call("rice_byref_end", vec![]);
+    }
+
+    /// Lower LSET or RSET statement, syncing to runtime field_vars if needed
+    fn lower_lset_rset(&mut self, var: &Variable, expr: &Expr, runtime_fn: &str) -> Result<(), String> {
+        let var_key = self.make_var_key(var);
+        let vid = self.var_id(&var_key);
+        let var_temp = self.alloc_temp();
+        self.emit(Instruction::LoadVar(var_temp, vid));
+        let src = self.lower_expr(expr)?;
+        let result = self.emit_runtime_call(runtime_fn, vec![var_temp, src]);
+        self.emit(Instruction::StoreVar(vid, result));
+        if self.field_var_names.contains(&var_key) {
+            let key_t = self.alloc_temp();
+            self.emit(Instruction::LoadConst(key_t, Constant::Str(var_key)));
+            self.emit_runtime_call("rice_field_var_set", vec![key_t, result]);
+        }
+        Ok(())
+    }
+
+    /// Sync all field variables from runtime field_vars to local compiler variables
+    fn emit_field_vars_from_runtime(&mut self) {
+        for var_name in self.field_var_names.clone() {
+            let key_t = self.alloc_temp();
+            self.emit(Instruction::LoadConst(key_t, Constant::Str(var_name.clone())));
+            let result = self.emit_runtime_call("rice_field_var_get", vec![key_t]);
+            let vid = self.var_id(&var_name);
+            self.emit(Instruction::StoreVar(vid, result));
+        }
+    }
+
+    /// Sync all field variables from local compiler variables to runtime field_vars
+    fn emit_field_vars_to_runtime(&mut self) {
+        for var_name in self.field_var_names.clone() {
+            let vid = self.var_id(&var_name);
+            let val_t = self.alloc_temp();
+            self.emit(Instruction::LoadVar(val_t, vid));
+            let key_t = self.alloc_temp();
+            self.emit(Instruction::LoadConst(key_t, Constant::Str(var_name)));
+            self.emit_runtime_call("rice_field_var_set", vec![key_t, val_t]);
         }
     }
 
@@ -681,6 +810,8 @@ impl Lowerer {
                 }
             }
             Stmt::ExitFunction => {
+                // Emit BYREF stores before early return
+                self.emit_byref_stores();
                 // Load function return value and return
                 if let Some(ref fname) = self.current_func_name.clone() {
                     let ret_var = self.vars[fname];
@@ -688,6 +819,14 @@ impl Lowerer {
                     self.emit(Instruction::LoadVar(ret_temp, ret_var));
                     self.emit(Instruction::ReturnFunc(ret_temp));
                 }
+                Ok(())
+            }
+            Stmt::ExitSub => {
+                // Emit BYREF stores before early return
+                self.emit_byref_stores();
+                let zero = self.alloc_temp();
+                self.emit(Instruction::LoadConst(zero, Constant::Integer(0)));
+                self.emit(Instruction::ReturnFunc(zero));
                 Ok(())
             }
             Stmt::Call { name, args } => {
@@ -716,11 +855,18 @@ impl Lowerer {
                     }
                 }
 
+                let is_user_func = self.func_names.contains(&uname);
+                let needs_byref = is_user_func && self.emit_byref_begin_if_needed(&uname, args);
+
                 let result = self.alloc_temp();
-                if self.func_names.contains(&uname) {
-                    self.emit(Instruction::CallFunc(result, uname, arg_temps));
+                if is_user_func {
+                    self.emit(Instruction::CallFunc(result, uname.clone(), arg_temps));
                 } else {
-                    self.emit(Instruction::CallBuiltin(result, uname, arg_temps));
+                    self.emit(Instruction::CallBuiltin(result, uname.clone(), arg_temps));
+                }
+
+                if needs_byref {
+                    self.emit_byref_copyback(&uname, args);
                 }
 
                 // Copy TYPE instance fields back after call (BYREF)
@@ -1107,17 +1253,21 @@ impl Lowerer {
             Stmt::GetPut(gp) => self.lower_get_put(gp),
             Stmt::Field { file_num, fields } => {
                 let fnum = self.lower_expr(file_num)?;
-                // Pass field widths and names as sequential args
                 let mut args = vec![fnum];
                 for field in fields {
                     let width_t = self.lower_expr(&field.width)?;
                     let name_t = self.alloc_temp();
                     let var_key = self.make_var_key(&field.var);
-                    self.emit(Instruction::LoadConst(name_t, Constant::Str(var_key)));
+                    self.emit(Instruction::LoadConst(name_t, Constant::Str(var_key.clone())));
                     args.push(width_t);
                     args.push(name_t);
+                    if !self.field_var_names.contains(&var_key) {
+                        self.field_var_names.push(var_key);
+                    }
                 }
                 self.emit_failable_runtime_call("rice_file_field", args);
+                // After FIELD, sync the initialized field vars from runtime to local
+                self.emit_field_vars_from_runtime();
                 Ok(())
             }
             Stmt::Seek { file_num, position } => {
@@ -1210,26 +1360,8 @@ impl Lowerer {
                 self.emit(Instruction::StoreVar(vid, result));
                 Ok(())
             }
-            Stmt::Lset { var, expr } => {
-                let var_key = self.make_var_key(var);
-                let vid = self.var_id(&var_key);
-                let var_temp = self.alloc_temp();
-                self.emit(Instruction::LoadVar(var_temp, vid));
-                let src = self.lower_expr(expr)?;
-                let result = self.emit_runtime_call("rice_lset", vec![var_temp, src]);
-                self.emit(Instruction::StoreVar(vid, result));
-                Ok(())
-            }
-            Stmt::Rset { var, expr } => {
-                let var_key = self.make_var_key(var);
-                let vid = self.var_id(&var_key);
-                let var_temp = self.alloc_temp();
-                self.emit(Instruction::LoadVar(var_temp, vid));
-                let src = self.lower_expr(expr)?;
-                let result = self.emit_runtime_call("rice_rset", vec![var_temp, src]);
-                self.emit(Instruction::StoreVar(vid, result));
-                Ok(())
-            }
+            Stmt::Lset { var, expr } => self.lower_lset_rset(var, expr, "rice_lset"),
+            Stmt::Rset { var, expr } => self.lower_lset_rset(var, expr, "rice_rset"),
             Stmt::Shared(vars) => {
                 for var in vars {
                     let var_key = self.make_var_key(var);
@@ -1349,7 +1481,6 @@ impl Lowerer {
                 }
                 Ok(())
             }
-            _ => Err(format!("unsupported statement in compiler: {:?}", std::mem::discriminant(stmt))),
         }
     }
 
@@ -1789,8 +1920,10 @@ impl Lowerer {
                     }
                     Ok(result)
                 } else if self.func_names.contains(&base_name) {
+                    let needs_byref = self.emit_byref_begin_if_needed(&base_name, args);
                     let result = self.alloc_temp();
-                    self.emit(Instruction::CallFunc(result, base_name, arg_temps));
+                    self.emit(Instruction::CallFunc(result, base_name.clone(), arg_temps));
+                    if needs_byref { self.emit_byref_copyback(&base_name, args); }
                     Ok(result)
                 } else {
                     // For builtins, keep the original name (including suffix like LEFT$)
@@ -1808,8 +1941,10 @@ impl Lowerer {
                     arg_temps.push(t);
                 }
                 if self.func_names.contains(&base_name) {
+                    let needs_byref = self.emit_byref_begin_if_needed(&base_name, indices);
                     let result = self.alloc_temp();
-                    self.emit(Instruction::CallFunc(result, base_name, arg_temps));
+                    self.emit(Instruction::CallFunc(result, base_name.clone(), arg_temps));
+                    if needs_byref { self.emit_byref_copyback(&base_name, indices); }
                     Ok(result)
                 } else if self.array_names.contains(&base_name) {
                     // Known array — use runtime array access
@@ -2096,7 +2231,11 @@ impl Lowerer {
         } else {
             if gp.is_get {
                 self.emit_failable_runtime_call("rice_file_get_fielded", vec![fnum, rec]);
+                // After GET with fields: sync field vars from runtime to local
+                self.emit_field_vars_from_runtime();
             } else {
+                // Before PUT with fields: sync field vars from local to runtime
+                self.emit_field_vars_to_runtime();
                 self.emit_failable_runtime_call("rice_file_put_fielded", vec![fnum, rec]);
             }
         }

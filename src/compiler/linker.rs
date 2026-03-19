@@ -77,6 +77,12 @@ pub fn link(object_bytes: &[u8], output_path: &Path) -> Result<(), String> {
 
 // ── Windows MSVC linking ──────────────────────────────────────────────
 
+/// MSVC architecture directory name matching the compilation target.
+#[cfg(target_os = "windows")]
+fn msvc_arch() -> &'static str {
+    if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" }
+}
+
 #[cfg(target_os = "windows")]
 fn find_msvc_link() -> Result<PathBuf, String> {
     let vswhere = PathBuf::from(
@@ -88,8 +94,11 @@ fn find_msvc_link() -> Result<PathBuf, String> {
         );
     }
 
+    let arch = msvc_arch();
+    let pattern = format!(r"VC\Tools\MSVC\*\bin\Host{arch}\{arch}\link.exe");
+
     let output = Command::new(&vswhere)
-        .args(["-latest", "-find", r"VC\Tools\MSVC\*\bin\Hostx64\x64\link.exe"])
+        .args(["-latest", "-find", &pattern])
         .output()
         .map_err(|e| format!("running vswhere: {e}"))?;
 
@@ -97,7 +106,7 @@ fn find_msvc_link() -> Result<PathBuf, String> {
     let link_path = stdout
         .lines()
         .next()
-        .ok_or_else(|| "vswhere found no MSVC link.exe".to_string())?;
+        .ok_or_else(|| format!("vswhere found no MSVC link.exe (searched for {pattern})"))?;
 
     let path = PathBuf::from(link_path.trim());
     if path.exists() {
@@ -110,14 +119,16 @@ fn find_msvc_link() -> Result<PathBuf, String> {
 #[cfg(target_os = "windows")]
 fn find_msvc_lib_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
+    let arch = msvc_arch();
 
     // MSVC runtime libs (msvcrt, vcruntime, etc.)
     let vswhere = PathBuf::from(
         r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe",
     );
     if vswhere.exists() {
+        let pattern = format!(r"VC\Tools\MSVC\*\lib\{arch}");
         if let Ok(output) = Command::new(&vswhere)
-            .args(["-latest", "-find", r"VC\Tools\MSVC\*\lib\x64"])
+            .args(["-latest", "-find", &pattern])
             .output()
         {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -142,11 +153,11 @@ fn find_msvc_lib_paths() -> Vec<PathBuf> {
                 .collect();
             versions.sort();
             if let Some(latest) = versions.last() {
-                let um = latest.join("um").join("x64");
+                let um = latest.join("um").join(arch);
                 if um.is_dir() {
                     paths.push(um);
                 }
-                let ucrt = latest.join("ucrt").join("x64");
+                let ucrt = latest.join("ucrt").join(arch);
                 if ucrt.is_dir() {
                     paths.push(ucrt);
                 }

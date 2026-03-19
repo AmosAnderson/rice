@@ -88,6 +88,9 @@ pub struct RiceRuntime {
 
     // COMMON variables for CHAIN
     common_vars: Vec<(String, Value)>,
+
+    // BYREF copy-in/copy-out stack (each frame = one function call)
+    byref_stack: Vec<HashMap<String, Value>>,
 }
 
 impl RiceRuntime {
@@ -122,6 +125,7 @@ impl RiceRuntime {
             resume_point: 0,
             screen_buffer: vec![vec![b' '; 80]; 25],
             common_vars: Vec::new(),
+            byref_stack: Vec::new(),
         }
     }
 
@@ -966,6 +970,47 @@ impl RiceRuntime {
             "rice_chain" => {
                 eprintln!("rice runtime error: CHAIN is not supported in compiled mode; use the interpreter instead");
                 std::process::exit(1);
+            }
+
+            // --- FIELD variable sync ---
+            "rice_field_var_get" => {
+                let name = args_vals.first().map(|v| v.to_string_val().unwrap_or_default()).unwrap_or_default();
+                self.field_vars.get(&name).cloned().unwrap_or(Value::Str(String::new()))
+            }
+            "rice_field_var_set" => {
+                if args_vals.len() >= 2 {
+                    let name = args_vals[0].to_string_val().unwrap_or_default();
+                    let val = args_vals[1].clone();
+                    self.field_vars.insert(name, val);
+                }
+                Value::Integer(0)
+            }
+            // --- BYREF copy-in/copy-out ---
+            "rice_byref_begin" => {
+                self.byref_stack.push(HashMap::new());
+                Value::Integer(0)
+            }
+            "rice_byref_store" => {
+                if args_vals.len() >= 2 {
+                    let key = args_vals[0].to_string_val().unwrap_or_default();
+                    let val = args_vals[1].clone();
+                    if let Some(frame) = self.byref_stack.last_mut() {
+                        frame.insert(key, val);
+                    }
+                }
+                Value::Integer(0)
+            }
+            "rice_byref_load" => {
+                let key = args_vals.first().map(|v| v.to_string_val().unwrap_or_default()).unwrap_or_default();
+                if let Some(frame) = self.byref_stack.last() {
+                    frame.get(&key).cloned().unwrap_or(Value::Integer(0))
+                } else {
+                    Value::Integer(0)
+                }
+            }
+            "rice_byref_end" => {
+                self.byref_stack.pop();
+                Value::Integer(0)
             }
 
             _ => {

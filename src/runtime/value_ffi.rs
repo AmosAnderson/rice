@@ -7,7 +7,7 @@
 /// Functions that produce values write to output pointers (*mut i64)
 /// instead of returning structs, for cross-platform ABI compatibility.
 
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
 
 use crate::ast::BinOp;
 use crate::builtins::BuiltinRegistry;
@@ -20,7 +20,8 @@ const TAG_DOUBLE: i64 = 3;
 const TAG_STRING: i64 = 4;
 
 /// Convert a Value to (tag, data) pair, returning the raw pair.
-/// For strings, allocates a CString that must eventually be freed via rice_value_drop.
+/// For strings, allocates a Box<String> that must eventually be freed via rice_value_drop.
+/// Uses Box<String> instead of CString to support interior null bytes (e.g., MKI$/MKL$).
 pub fn value_to_ffi(val: &Value) -> (i64, i64) {
     match val {
         Value::Integer(n) => (TAG_INTEGER, *n),
@@ -28,8 +29,8 @@ pub fn value_to_ffi(val: &Value) -> (i64, i64) {
         Value::Single(n) => (TAG_SINGLE, n.to_bits() as i64),
         Value::Double(n) => (TAG_DOUBLE, n.to_bits() as i64),
         Value::Str(s) => {
-            let c_str = CString::new(s.as_str()).unwrap_or_default();
-            let ptr = c_str.into_raw();
+            let boxed = Box::new(s.clone());
+            let ptr = Box::into_raw(boxed);
             (TAG_STRING, ptr as i64)
         }
         Value::Record { .. } => (TAG_INTEGER, 0),
@@ -37,7 +38,6 @@ pub fn value_to_ffi(val: &Value) -> (i64, i64) {
 }
 
 /// Convert a Value to (tag, data) pair and write to output pointers.
-/// For strings, allocates a CString that must eventually be freed via rice_value_drop.
 fn write_value(val: &Value, out_tag: *mut i64, out_data: *mut i64) {
     let (tag, data) = value_to_ffi(val);
     unsafe {
@@ -47,7 +47,7 @@ fn write_value(val: &Value, out_tag: *mut i64, out_data: *mut i64) {
 }
 
 /// Convert (tag, data) back to a Value.
-/// For strings, reads (borrows) the C string without taking ownership.
+/// For strings, reads (borrows) the Box<String> without taking ownership.
 pub fn ffi_to_value(tag: i64, data: i64) -> Value {
     match tag {
         TAG_INTEGER => Value::Integer(data),
@@ -58,8 +58,8 @@ pub fn ffi_to_value(tag: i64, data: i64) -> Value {
             if data == 0 {
                 Value::Str(String::new())
             } else {
-                let c_str = unsafe { CStr::from_ptr(data as *const std::ffi::c_char) };
-                Value::Str(c_str.to_string_lossy().into_owned())
+                let s = unsafe { &*(data as *const String) };
+                Value::Str(s.clone())
             }
         }
         _ => Value::Integer(0),
@@ -86,18 +86,14 @@ pub extern "C" fn rice_value_new_double(v: f64, out_tag: *mut i64, out_data: *mu
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rice_value_new_string(s: *const std::ffi::c_char, out_tag: *mut i64, out_data: *mut i64) {
-    if s.is_null() {
-        let c_str = CString::new("").unwrap();
-        let ptr = c_str.into_raw();
-        unsafe {
-            *out_tag = TAG_STRING;
-            *out_data = ptr as i64;
-        }
-        return;
-    }
-    let c_str = unsafe { CStr::from_ptr(s) };
-    let owned = c_str.to_owned();
-    let ptr = owned.into_raw();
+    let rust_string = if s.is_null() {
+        String::new()
+    } else {
+        let c_str = unsafe { CStr::from_ptr(s) };
+        c_str.to_string_lossy().into_owned()
+    };
+    let boxed = Box::new(rust_string);
+    let ptr = Box::into_raw(boxed);
     unsafe {
         *out_tag = TAG_STRING;
         *out_data = ptr as i64;
@@ -108,7 +104,7 @@ pub extern "C" fn rice_value_new_string(s: *const std::ffi::c_char, out_tag: *mu
 pub extern "C" fn rice_value_drop(tag: i64, data: i64) {
     if tag == TAG_STRING && data != 0 {
         unsafe {
-            let _ = CString::from_raw(data as *mut std::ffi::c_char);
+            let _ = Box::from_raw(data as *mut String);
         }
     }
 }

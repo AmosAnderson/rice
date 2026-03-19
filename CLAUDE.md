@@ -58,12 +58,12 @@ All hand-written (no parser generators). The compiler is at near-parity with the
 - **`compiler/`** — Native compiler backend (AST → machine code via Cranelift):
   - `mod.rs` — Public API (`compile_file`, `compile_source`, `emit_ir`); shared parse step.
   - `ir.rs` — `RiceIR`, a flat intermediate representation (typed instructions, basic blocks). Includes `CheckError`, `SetResumePoint`, and `ResumeDispatch` instructions for ON ERROR GOTO support.
-  - `lower.rs` — `Lowerer`: AST → RiceIR translation. Inlines single-line DEF FN at call sites. Emits failable runtime calls with error checking when ON ERROR GOTO is active. CHAIN returns a compile-time error.
+  - `lower.rs` — `Lowerer`: AST → RiceIR translation. Inlines single-line DEF FN at call sites. Emits failable runtime calls with error checking when ON ERROR GOTO is active. BYREF parameters use copy-in/copy-out via runtime `byref_stack`. FIELD variables are synced between local vars and runtime `field_vars`. CHAIN returns a compile-time error.
   - `cranelift_codegen.rs` — `CodeGenerator`: RiceIR → Cranelift IR → object file bytes.
-  - `linker.rs` — Invokes system linker (`cc`) to produce final executable from object file.
+  - `linker.rs` — Invokes system linker (`cc` on Unix, MSVC `link.exe` on Windows) to produce final executable. Detects host architecture (x64/ARM64) for MSVC paths.
 - **`runtime/`** — C-ABI runtime library linked into compiled executables:
-  - `value_ffi.rs` — extern "C" functions for Value creation, arithmetic, string ops, type coercion.
-  - `io_ffi.rs` — extern "C" functions for PRINT, file I/O, console operations, error handling (error flag/resume point), and screen buffer tracking for SCREEN().
+  - `value_ffi.rs` — extern "C" functions for Value creation, arithmetic, string ops, type coercion. Strings use `Box<String>` (not CString) to support interior null bytes (MKI$/MKL$ etc.).
+  - `io_ffi.rs` — extern "C" functions for PRINT, file I/O, console operations, error handling (error flag/resume point), screen buffer tracking for SCREEN(), BYREF copy-in/copy-out stack, and FIELD variable sync.
 
 ### Key Design Decisions
 
@@ -122,4 +122,4 @@ The interpreter's `SharedOutput` captures PRINT output for assertion.
 
 **Working**: PRINT, PRINT USING, LET, DIM, CONST, INPUT, LINE INPUT, IF/ELSEIF/ELSE, FOR/NEXT, WHILE/WEND, DO/LOOP, SELECT CASE, GOTO, GOSUB/RETURN, EXIT FOR/DO/SUB/FUNCTION, SUB/FUNCTION definitions, CALL, DECLARE, DATA/READ/RESTORE, SWAP, all string/math/conversion builtins, ERR/ERL, OPTION BASE, REDIM, ERASE, File I/O (OPEN, CLOSE, PRINT#, WRITE#, INPUT#, LINE INPUT#, GET, PUT, FIELD, SEEK), file functions (FREEFILE, EOF, LOF, LOC, SEEK), ON ERROR GOTO/RESUME, ON n GOTO/GOSUB, RANDOMIZE/RND, WRITE (console), SLEEP, CLEAR, NAME/KILL/MKDIR/RMDIR/CHDIR, SHELL, ENVIRON$, MID$ (statement form), LSET/RSET, SHARED, STATIC, DEFtype (DEFINT/DEFLNG/DEFSNG/DEFDBL/DEFSTR), DEF FN, MKI$/MKL$/MKS$/MKD$/CVI/CVL/CVS/CVD, TYPE (user-defined types with dot-notation, STRING * n, arrays of TYPE), CHAIN/COMMON (multi-module programming), text/console features (CLS, LOCATE, COLOR, BEEP, WIDTH, VIEW PRINT, CSRLIN, POS, INKEY$, INPUT$, SCREEN()), BYVAL parameter semantics.
 
-**Not implemented**: proper array storage (currently uses flattened key hack), LBOUND/UBOUND (stubs only), CHAIN in compiled mode (compile-time error; use interpreter).
+**Not implemented**: proper array storage (currently uses flattened key hack), LBOUND/UBOUND (stubs only), CHAIN in compiled mode (compile-time error; use interpreter), CLEAR in compiled mode only resets runtime state (arrays, DATA) but not local SSA variables.
