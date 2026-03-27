@@ -1,0 +1,11 @@
+@@ -1480,6 +1480,10 @@
+                 pos: position.clone(),
+             }),
+             
++            Stmt::OnTimer { .. } | Stmt::TimerOp(_) | Stmt::OnKey { .. } | Stmt::KeyOp { .. } => {
++                return Err(crate::error::RuntimeError::General { msg: "Event trapping not supported in compiler mode yet".into() });
++            }
++            
+             Stmt::Dim(_) | Stmt::Const { .. } | Stmt::System | Stmt::SubDef(_) | Stmt::FunctionDef(_) | Stmt::Declare(_) | Stmt::Data(_) | Stmt::Rem | Stmt::DefFn { .. } | Stmt::TypeDef { .. } => {
+                 // handled in prescan or ignored
+                 Ok(())

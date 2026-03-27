@@ -1,0 +1,11 @@
+I = 0
+DO
+I = I + 1
+GOSUB MySub
+IF I = 3 THEN EXIT DO
+LOOP
+END
+
+MySub:
+PRINT "In GOSUB"
+RETURN
