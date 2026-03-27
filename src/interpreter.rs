@@ -158,10 +158,10 @@ pub struct Interpreter {
     timer_handler: Option<Label>,
     timer_state: EventState,
     last_timer_trigger: std::time::Instant,
-    timer_triggered: bool,
     key_handlers: HashMap<i64, Option<Label>>,
     key_states: HashMap<i64, EventState>,
-    keys_triggered: HashSet<i64>,
+    // Root-level statements for GOSUB from nested blocks
+    root_stmts: Option<Rc<Vec<LabeledStmt>>>,
 }
 
 impl Drop for Interpreter {
@@ -247,10 +247,9 @@ impl Interpreter {
             timer_handler: None,
             timer_state: EventState::Off,
             last_timer_trigger: std::time::Instant::now(),
-            timer_triggered: false,
             key_handlers: HashMap::new(),
             key_states: HashMap::new(),
-            keys_triggered: HashSet::new(),
+            root_stmts: None,
         }
     }
 
@@ -281,8 +280,11 @@ impl Interpreter {
         // Pre-scan: collect labels, DATA statements, SUB/FUNCTION definitions
         self.prescan(&program.statements);
 
+        // Store root statements for GOSUB from nested blocks
+        self.root_stmts = Some(Rc::new(program.statements.clone()));
+
         // Execute top-level statements
-        let cf = self.exec_block(&program.statements)?;
+        let cf = self.exec_top_level(&program.statements)?;
         match cf {
             ControlFlow::Chain { filespec, common_values } => {
                 self.chain_loop(filespec, common_values)
@@ -386,7 +388,6 @@ impl Interpreter {
                 let now = std::time::Instant::now();
                 if now.duration_since(self.last_timer_trigger).as_secs_f64() >= interval {
                     self.last_timer_trigger = now;
-                    // Prevent re-triggering during handling (QBasic disables it while in handler, but we keep it simple for now)
                     return Some(handler.clone());
                 }
             }
@@ -394,16 +395,99 @@ impl Interpreter {
         None
     }
 
+    /// Execute a subroutine at the root level (for GOSUB from nested blocks and event handlers).
+    /// Runs statements from the resolved label until RETURN is encountered.
+    fn exec_gosub_at_root(&mut self, label: &Label) -> Result<ControlFlow, RuntimeError> {
+        let root_stmts = self.root_stmts.as_ref()
+            .ok_or_else(|| RuntimeError::General { msg: "No root statements available".into() })?
+            .clone();
+        let resolved = self.env.borrow().resolve_label(label)
+            .ok_or_else(|| RuntimeError::UndefinedLabel { label: label.to_string() })?;
+        let mut pc = resolved;
+        while pc < root_stmts.len() {
+            // Check for timer events within subroutine execution
+            if let Some(event_handler) = self.poll_events() {
+                self.exec_gosub_at_root(&event_handler)?;
+                continue;
+            }
+            let ls = &root_stmts[pc];
+            let result = self.exec_stmt(&ls.stmt);
+            let cf = match result {
+                Ok(cf) => cf,
+                Err(err) => {
+                    if let (Some(handler), false) =
+                        (&self.error_handler, self.in_error_handler)
+                    {
+                        let handler = handler.clone();
+                        self.current_error = Some(ErrorInfo {
+                            err_code: err.qbasic_error_code(),
+                            err_line: ls.line,
+                        });
+                        self.error_resume_pc = Some(pc);
+                        self.in_error_handler = true;
+                        let resolved = self.env.borrow().resolve_label(&handler);
+                        if let Some(idx) = resolved {
+                            pc = idx;
+                            continue;
+                        } else {
+                            return Err(RuntimeError::UndefinedLabel {
+                                label: handler.to_string(),
+                            });
+                        }
+                    } else {
+                        return Err(err);
+                    }
+                }
+            };
+            match cf {
+                ControlFlow::Normal => pc += 1,
+                ControlFlow::Return => return Ok(ControlFlow::Normal),
+                ControlFlow::Goto(l) => {
+                    let idx = self.env.borrow().resolve_label(&l)
+                        .ok_or_else(|| RuntimeError::UndefinedLabel { label: l.to_string() })?;
+                    pc = idx;
+                }
+                ControlFlow::Gosub(l) => {
+                    self.exec_gosub_at_root(&l)?;
+                    pc += 1;
+                }
+                ControlFlow::End => return Ok(ControlFlow::End),
+                other => return Ok(other),
+            }
+        }
+        Ok(ControlFlow::Normal)
+    }
+
+    /// Execute a nested block of statements (inside IF, FOR, DO, WHILE, SELECT CASE, SUB, FUNCTION).
+    /// GOSUB is executed inline via root statements. GOTO and RETURN propagate upward.
     fn exec_block(&mut self, stmts: &[LabeledStmt]) -> Result<ControlFlow, RuntimeError> {
         let mut pc = 0;
         while pc < stmts.len() {
-            if let Some(event_handler) = self.poll_events() {
-                let resolved = self.env.borrow().resolve_label(&event_handler);
-                if let Some(idx) = resolved {
-                    self.env.borrow_mut().gosub_stack.push(pc);
-                    pc = idx;
-                    continue;
+            let ls = &stmts[pc];
+            let cf = self.exec_stmt(&ls.stmt)?;
+            match cf {
+                ControlFlow::Normal => pc += 1,
+                ControlFlow::Gosub(label) => {
+                    // Execute subroutine inline using root statements
+                    let inner_cf = self.exec_gosub_at_root(&label)?;
+                    match inner_cf {
+                        ControlFlow::Normal => pc += 1,
+                        other => return Ok(other),
+                    }
                 }
+                other => return Ok(other),
+            }
+        }
+        Ok(ControlFlow::Normal)
+    }
+
+    /// Execute the top-level statement block with full GOTO/GOSUB/RETURN/event handling.
+    fn exec_top_level(&mut self, stmts: &[LabeledStmt]) -> Result<ControlFlow, RuntimeError> {
+        let mut pc = 0;
+        while pc < stmts.len() {
+            if let Some(event_handler) = self.poll_events() {
+                self.exec_gosub_at_root(&event_handler)?;
+                continue;
             }
             let ls = &stmts[pc];
             let result = self.exec_stmt(&ls.stmt);
@@ -2241,8 +2325,11 @@ impl Interpreter {
                 }
             }
 
+            // Store root statements for GOSUB from nested blocks
+            self.root_stmts = Some(Rc::new(program.statements.clone()));
+
             // Execute the new program
-            let cf = self.exec_block(&program.statements)?;
+            let cf = self.exec_top_level(&program.statements)?;
 
             match cf {
                 ControlFlow::Chain {

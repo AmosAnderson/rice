@@ -1422,3 +1422,53 @@ END FUNCTION
 "#);
     assert_eq!(output, " 10 \n 20 \n");
 }
+
+#[test]
+fn test_gosub_nested_do_loop() {
+    let output = run_file("tests/programs/gosub_nested.bas");
+    assert_eq!(output, "In GOSUB 1 \nIn GOSUB 2 \nIn GOSUB 3 \nDone\n");
+}
+
+#[test]
+fn test_gosub_nested_for_loop() {
+    let output = run_file("tests/programs/gosub_for.bas");
+    assert_eq!(output, "Iter 1 \nIter 2 \nIter 3 \nDone\n");
+}
+
+#[test]
+fn test_on_timer_syntax() {
+    // Test that ON TIMER/TIMER ON/OFF/STOP parse correctly (no runtime timer test - nondeterministic)
+    let output = run_bas(r#"
+ON TIMER(1) GOSUB Handler
+TIMER ON
+TIMER OFF
+PRINT "OK"
+END
+
+Handler:
+PRINT "fired"
+RETURN
+"#);
+    assert_eq!(output, "OK\n");
+}
+
+#[test]
+fn test_gosub_deeply_nested() {
+    let output = run_bas(r#"
+x = 0
+DO
+    x = x + 1
+    FOR I = 1 TO 2
+        GOSUB Inner
+    NEXT I
+    IF x = 2 THEN EXIT DO
+LOOP
+PRINT "Done"
+END
+
+Inner:
+PRINT x; I
+RETURN
+"#);
+    assert_eq!(output, " 1  1 \n 1  2 \n 2  1 \n 2  2 \nDone\n");
+}
