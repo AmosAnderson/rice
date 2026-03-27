@@ -738,6 +738,9 @@ impl Lowerer {
             Stmt::For(for_stmt) => self.lower_for(for_stmt),
             Stmt::WhileWend { condition, body } => self.lower_while(condition, body),
             Stmt::DoLoop(do_loop) => self.lower_do_loop(do_loop),
+            Stmt::OnTimer { .. } | Stmt::TimerOp(_) | Stmt::OnKey { .. } | Stmt::KeyOp { .. } => {
+                Err("Event trapping not supported in compiler mode".into())
+            }
             Stmt::Declare(_) => Ok(()), // forward declarations are no-ops
             Stmt::FunctionDef(_) => Ok(()), // handled separately
             Stmt::SubDef(_) => Ok(()),      // handled separately

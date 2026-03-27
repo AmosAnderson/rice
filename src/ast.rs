@@ -104,6 +104,10 @@ pub enum Stmt {
     OnErrorGoto(Option<Label>),
     OnGoto { expr: Expr, labels: Vec<Label> },
     OnGosub { expr: Expr, labels: Vec<Label> },
+    OnTimer { n: Expr, label: Label },
+    TimerOp(EventState),
+    OnKey { n: Expr, label: Label },
+    KeyOp { n: Expr, state: EventState },
     Resume(ResumeTarget),
 
     // Random
@@ -201,6 +205,13 @@ pub enum PrintItem {
     Tab(Expr),
     Spc(Expr),
     Comma, // zone separator
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EventState {
+    On,
+    Off,
+    Stop,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

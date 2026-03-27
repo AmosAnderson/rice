@@ -349,6 +349,8 @@ impl Lexer {
                 "LPRINT" => Token::KwLPrint,
                 "USING" => Token::KwUsing,
                 "ON" => Token::KwOn,
+                "OFF" => Token::KwOff,
+                "KEY" => Token::KwKey,
                 "ERROR" => Token::KwError,
                 "RESUME" => Token::KwResume,
                 "AND" => Token::KwAnd,

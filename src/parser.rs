@@ -217,6 +217,29 @@ impl Parser {
             Token::KwColor => self.parse_color(),
             Token::KwWidth => self.parse_width(),
             Token::KwView => self.parse_view_print(),
+            Token::KwTimer => {
+                self.advance();
+                let state = match self.peek() {
+                    Token::KwOn => { self.advance(); EventState::On }
+                    Token::KwOff => { self.advance(); EventState::Off }
+                    Token::KwStop => { self.advance(); EventState::Stop }
+                    _ => return Err(ParseError::General { line: self.current_line(), msg: "expected ON, OFF, or STOP after TIMER".into() })
+                };
+                Ok(Stmt::TimerOp(state))
+            }
+            Token::KwKey => {
+                self.advance();
+                self.expect(Token::LeftParen)?;
+                let n = self.parse_expr()?;
+                self.expect(Token::RightParen)?;
+                let state = match self.peek() {
+                    Token::KwOn => { self.advance(); EventState::On }
+                    Token::KwOff => { self.advance(); EventState::Off }
+                    Token::KwStop => { self.advance(); EventState::Stop }
+                    _ => return Err(ParseError::General { line: self.current_line(), msg: "expected ON, OFF, or STOP after KEY(n)".into() })
+                };
+                Ok(Stmt::KeyOp { n, state })
+            }
             Token::Identifier { .. } => self.parse_assignment_or_call(),
             _ => {
                 let tok = self.peek().clone();
@@ -1358,6 +1381,24 @@ impl Parser {
             }
             let label = self.parse_label()?;
             return Ok(Stmt::OnErrorGoto(Some(label)));
+        }
+        if matches!(self.peek(), Token::KwTimer) {
+            self.advance();
+            self.expect(Token::LeftParen)?;
+            let n = self.parse_expr()?;
+            self.expect(Token::RightParen)?;
+            self.expect(Token::KwGosub)?;
+            let label = self.parse_label()?;
+            return Ok(Stmt::OnTimer { n, label });
+        }
+        if matches!(self.peek(), Token::KwKey) {
+            self.advance();
+            self.expect(Token::LeftParen)?;
+            let n = self.parse_expr()?;
+            self.expect(Token::RightParen)?;
+            self.expect(Token::KwGosub)?;
+            let label = self.parse_label()?;
+            return Ok(Stmt::OnKey { n, label });
         }
         // ON n GOTO/GOSUB
         let expr = self.parse_expr()?;

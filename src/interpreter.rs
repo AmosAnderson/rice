@@ -153,6 +153,15 @@ pub struct Interpreter {
     source_dir: Option<std::path::PathBuf>,
     interactive: bool,
     screen_buffer: Vec<Vec<u8>>,
+    // Event Trapping
+    timer_interval: Option<f64>,
+    timer_handler: Option<Label>,
+    timer_state: EventState,
+    last_timer_trigger: std::time::Instant,
+    timer_triggered: bool,
+    key_handlers: HashMap<i64, Option<Label>>,
+    key_states: HashMap<i64, EventState>,
+    keys_triggered: HashSet<i64>,
 }
 
 impl Drop for Interpreter {
@@ -234,6 +243,14 @@ impl Interpreter {
             source_dir: None,
             interactive: false,
             screen_buffer: vec![vec![b' '; 80]; 25],
+            timer_interval: None,
+            timer_handler: None,
+            timer_state: EventState::Off,
+            last_timer_trigger: std::time::Instant::now(),
+            timer_triggered: false,
+            key_handlers: HashMap::new(),
+            key_states: HashMap::new(),
+            keys_triggered: HashSet::new(),
         }
     }
 
@@ -362,9 +379,32 @@ impl Interpreter {
         }
     }
 
+    fn poll_events(&mut self) -> Option<Label> {
+        // Check timer
+        if self.timer_state == EventState::On {
+            if let (Some(interval), Some(handler)) = (self.timer_interval, &self.timer_handler) {
+                let now = std::time::Instant::now();
+                if now.duration_since(self.last_timer_trigger).as_secs_f64() >= interval {
+                    self.last_timer_trigger = now;
+                    // Prevent re-triggering during handling (QBasic disables it while in handler, but we keep it simple for now)
+                    return Some(handler.clone());
+                }
+            }
+        }
+        None
+    }
+
     fn exec_block(&mut self, stmts: &[LabeledStmt]) -> Result<ControlFlow, RuntimeError> {
         let mut pc = 0;
         while pc < stmts.len() {
+            if let Some(event_handler) = self.poll_events() {
+                let resolved = self.env.borrow().resolve_label(&event_handler);
+                if let Some(idx) = resolved {
+                    self.env.borrow_mut().gosub_stack.push(pc);
+                    pc = idx;
+                    continue;
+                }
+            }
             let ls = &stmts[pc];
             let result = self.exec_stmt(&ls.stmt);
             let cf = match result {
@@ -583,6 +623,27 @@ impl Interpreter {
                         Ok(ControlFlow::Goto(label.clone()))
                     }
                 }
+            }
+            Stmt::OnTimer { n, label } => {
+                let secs = self.eval_expr(n)?.to_f64()?;
+                self.timer_interval = Some(secs);
+                self.timer_handler = Some(label.clone());
+                Ok(ControlFlow::Normal)
+            }
+            Stmt::TimerOp(state) => {
+                self.timer_state = *state;
+                self.last_timer_trigger = std::time::Instant::now();
+                Ok(ControlFlow::Normal)
+            }
+            Stmt::OnKey { n, label } => {
+                let code = self.eval_expr(n)?.to_i64()?;
+                self.key_handlers.insert(code, Some(label.clone()));
+                Ok(ControlFlow::Normal)
+            }
+            Stmt::KeyOp { n, state } => {
+                let code = self.eval_expr(n)?.to_i64()?;
+                self.key_states.insert(code, *state);
+                Ok(ControlFlow::Normal)
             }
             Stmt::OnGoto { expr, labels } => {
                 let n = self.eval_expr(expr)?.to_i64()? as usize;

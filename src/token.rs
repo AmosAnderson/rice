@@ -157,6 +157,8 @@ pub enum Token {
     KwLPrint,
     KwUsing,
     KwOn,
+    KwOff,
+    KwKey,
     KwError,
     KwResume,
 
