@@ -101,7 +101,6 @@ pub enum Token {
     KwOpen,
     KwClose,
     KwWrite,
-    KwAppend,
     KwOutput,
     KwLen,
     KwAccess,

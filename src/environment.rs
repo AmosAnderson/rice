@@ -14,7 +14,6 @@ pub struct Environment {
     constants: HashMap<String, Value>,
     parent: Option<EnvRef>,
     labels: HashMap<String, usize>,
-    pub gosub_stack: Vec<usize>,
     pub option_base: i32,
     pub shared_vars: HashSet<String>,
 }
@@ -26,7 +25,6 @@ impl Environment {
             constants: HashMap::new(),
             parent: None,
             labels: HashMap::new(),
-            gosub_stack: Vec::new(),
             option_base: 1,
             shared_vars: HashSet::new(),
         }))
@@ -39,7 +37,6 @@ impl Environment {
             constants: HashMap::new(),
             parent: Some(parent),
             labels: HashMap::new(),
-            gosub_stack: Vec::new(),
             option_base,
             shared_vars: HashSet::new(),
         }))

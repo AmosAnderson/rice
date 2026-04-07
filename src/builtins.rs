@@ -66,7 +66,6 @@ impl BuiltinRegistry {
         reg.register("TIMER", builtin_timer, 0);
         reg.register("DATE$", builtin_date, 0);
         reg.register("TIME$", builtin_time, 0);
-        reg.register("COMMAND$", builtin_stub, 0);
         reg.register("ENVIRON$", builtin_environ, 1);
 
         reg

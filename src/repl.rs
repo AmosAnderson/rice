@@ -277,7 +277,6 @@ fn keyword_name(token: &Token) -> &'static str {
         Token::KwOpen => "OPEN",
         Token::KwClose => "CLOSE",
         Token::KwWrite => "WRITE",
-        Token::KwAppend => "APPEND",
         Token::KwOutput => "OUTPUT",
         Token::KwStream => "STREAM",
         Token::KwSequential => "SEQUENTIAL",

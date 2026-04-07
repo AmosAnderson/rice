@@ -40,8 +40,6 @@ pub enum RuntimeError {
     Overflow { msg: String },
     #[error("subscript out of range")]
     SubscriptOutOfRange,
-    #[error("RETURN without GOSUB")]
-    ReturnWithoutGosub,
     #[error("undefined label: {label}")]
     UndefinedLabel { label: String },
     #[error("wrong number of arguments: expected {expected}, got {got}")]
@@ -52,35 +50,11 @@ pub enum RuntimeError {
     IllegalFunctionCall { msg: String },
     #[error("duplicate definition: {name}")]
     DuplicateDefinition { name: String },
-    #[error("NEXT without FOR")]
-    NextWithoutFor,
-    #[error("RESUME without error")]
-    ResumeWithoutError,
     #[error("{msg}")]
     IoError { msg: String, code: i32 },
 }
 
 impl RuntimeError {
-    /// Map a RuntimeError to an ANSI BASIC-compatible error code number.
-    pub fn basic_error_code(&self) -> i32 {
-        match self {
-            RuntimeError::NextWithoutFor => 1,
-            RuntimeError::DivisionByZero => 11,
-            RuntimeError::TypeMismatch { .. } => 13,
-            RuntimeError::Overflow { .. } => 6,
-            RuntimeError::SubscriptOutOfRange => 9,
-            RuntimeError::IllegalFunctionCall { .. } => 5,
-            RuntimeError::ReturnWithoutGosub => 3,
-            RuntimeError::ResumeWithoutError => 20,
-            RuntimeError::UndefinedLabel { .. } => 8,
-            RuntimeError::DuplicateDefinition { .. } => 10,
-            RuntimeError::ArityMismatch { .. } => 5,
-            RuntimeError::UndefinedVariable { .. } => 5,
-            RuntimeError::General { .. } => 5,
-            RuntimeError::IoError { code, .. } => *code,
-        }
-    }
-
     /// Map a RuntimeError to an ANSI BASIC exception type number.
     pub fn ansi_extype(&self) -> i32 {
         match self {

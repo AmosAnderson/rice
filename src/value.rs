@@ -102,7 +102,7 @@ impl Value {
     /// WRITE# formatting: no leading/trailing spaces on numbers, strings get quoted by caller.
     pub fn format_for_write(&self) -> String {
         match self {
-            Value::Numeric(n) => format_number_raw(*n),
+            Value::Numeric(n) => format_number(*n),
             Value::Str(s) => s.clone(),
             Value::Record { type_name, .. } => format!("[{type_name}]"),
         }
@@ -135,14 +135,6 @@ impl Value {
                 msg: "cannot use record as boolean".into(),
             }),
         }
-    }
-}
-
-fn format_number_raw(n: f64) -> String {
-    if n == n.trunc() && n.abs() < 1e15 {
-        format!("{}", n as i64)
-    } else {
-        format!("{n}")
     }
 }
 

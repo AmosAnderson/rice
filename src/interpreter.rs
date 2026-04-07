@@ -73,8 +73,7 @@ struct UserFunction {
 }
 
 struct FileHandle {
-    #[allow(dead_code)]
-    access: FileAccess,
+    _access: FileAccess,
     reader: Option<BufReader<File>>,
     writer: Option<BufWriter<File>>,
     eof_flag: bool,
@@ -93,13 +92,13 @@ pub struct Interpreter {
     current_bg: Option<u8>,
     data_values: Vec<DataItem>,
     data_pos: usize,
+    data_label_pos: HashMap<String, usize>,
     output: Box<dyn Write>,
     input: Box<dyn BufRead>,
     file_handles: HashMap<i64, FileHandle>,
     // Random number generator state
     rng_state: u64,
     last_rnd: f64,
-    // Phase 3: STATIC variable persistence
     static_vars: HashMap<String, HashMap<String, Value>>,
     current_static_vars: HashSet<String>,
     type_defs: HashMap<String, Vec<crate::ast::TypeField>>,
@@ -153,6 +152,7 @@ impl Interpreter {
             current_bg: None,
             data_values: Vec::new(),
             data_pos: 0,
+            data_label_pos: HashMap::new(),
             output,
             input,
             file_handles: HashMap::new(),
@@ -213,6 +213,9 @@ impl Interpreter {
             }
             match &ls.stmt {
                 Stmt::Data(items) => {
+                    if let Some(label) = &ls.label {
+                        self.data_label_pos.insert(label.to_string(), self.data_values.len());
+                    }
                     self.data_values.extend(items.clone());
                 }
                 Stmt::SubDef(sub) => {
@@ -315,15 +318,22 @@ impl Interpreter {
             }
             Stmt::Let { var, expr } => self.exec_let(var, expr),
             Stmt::LetSlice { name, start, end, expr } => {
-                let start_idx = self.eval_expr(start)?.to_f64()? as usize;
-                let end_idx = self.eval_expr(end)?.to_f64()? as usize;
+                let start_f = self.eval_expr(start)?.to_f64()?;
+                let end_f = self.eval_expr(end)?.to_f64()?;
+                if start_f < 1.0 || end_f < 1.0 {
+                    return Err(RuntimeError::IllegalFunctionCall {
+                        msg: "string slice index must be >= 1".into(),
+                    });
+                }
                 let replacement = self.eval_expr(expr)?.to_string_val()?;
                 let mut s = self.env.borrow().get(name)
                     .unwrap_or(Value::Str(String::new()))
                     .to_string_val()?;
-                let start_0 = start_idx.saturating_sub(1);
-                let end_0 = end_idx.min(s.len());
-                s.replace_range(start_0..end_0, &replacement);
+                let start_0 = (start_f as usize).saturating_sub(1);
+                let end_0 = (end_f as usize).min(s.len());
+                if start_0 <= end_0 {
+                    s.replace_range(start_0..end_0, &replacement);
+                }
                 self.env.borrow_mut().set(name, Value::Str(s));
                 Ok(ControlFlow::Normal)
             }
@@ -386,10 +396,15 @@ impl Interpreter {
             }
             Stmt::Read(vars) => self.exec_read(vars),
             Stmt::Restore(label) => {
-                if label.is_some() {
-                    // TODO: restore to specific label
+                if let Some(lbl) = label {
+                    if let Some(&pos) = self.data_label_pos.get(&lbl.to_string()) {
+                        self.data_pos = pos;
+                    } else {
+                        self.data_pos = 0;
+                    }
+                } else {
+                    self.data_pos = 0;
                 }
-                self.data_pos = 0;
                 Ok(ControlFlow::Normal)
             }
             Stmt::Data(_) => Ok(ControlFlow::Normal), // handled in prescan
@@ -442,7 +457,6 @@ impl Interpreter {
 
             Stmt::Write(exprs) => self.exec_write_console(exprs),
 
-            // Phase 1: SLEEP
             Stmt::Sleep(expr) => {
                 if let Some(e) = expr {
                     let secs = self.eval_expr(e)?.to_i64()?;
@@ -453,14 +467,12 @@ impl Interpreter {
                 Ok(ControlFlow::Normal)
             }
 
-            // Phase 1: CLEAR
             Stmt::Clear => {
                 self.env.borrow_mut().clear_vars();
                 self.data_pos = 0;
                 Ok(ControlFlow::Normal)
             }
 
-            // Phase 1: NAME old AS new
             Stmt::Name { old, new } => {
                 let old_path = self.eval_expr(old)?.to_string_val()?;
                 let new_path = self.eval_expr(new)?.to_string_val()?;
@@ -469,7 +481,6 @@ impl Interpreter {
                 Ok(ControlFlow::Normal)
             }
 
-            // Phase 1: KILL
             Stmt::Kill(expr) => {
                 let path = self.eval_expr(expr)?.to_string_val()?;
                 std::fs::remove_file(&path)
@@ -477,7 +488,6 @@ impl Interpreter {
                 Ok(ControlFlow::Normal)
             }
 
-            // Phase 1: MKDIR
             Stmt::Mkdir(expr) => {
                 let path = self.eval_expr(expr)?.to_string_val()?;
                 std::fs::create_dir(&path)
@@ -485,7 +495,6 @@ impl Interpreter {
                 Ok(ControlFlow::Normal)
             }
 
-            // Phase 1: RMDIR
             Stmt::Rmdir(expr) => {
                 let path = self.eval_expr(expr)?.to_string_val()?;
                 std::fs::remove_dir(&path)
@@ -493,7 +502,6 @@ impl Interpreter {
                 Ok(ControlFlow::Normal)
             }
 
-            // Phase 1: CHDIR
             Stmt::Chdir(expr) => {
                 let path = self.eval_expr(expr)?.to_string_val()?;
                 std::env::set_current_dir(&path)
@@ -501,7 +509,6 @@ impl Interpreter {
                 Ok(ControlFlow::Normal)
             }
 
-            // Phase 1: SHELL
             Stmt::Shell(expr) => {
                 if let Some(e) = expr {
                     let cmd = self.eval_expr(e)?.to_string_val()?;
@@ -516,7 +523,6 @@ impl Interpreter {
                 Ok(ControlFlow::Normal)
             }
 
-            // Phase 3: SHARED
             Stmt::Shared(vars) => {
                 for var in vars {
                     self.env.borrow_mut().shared_vars.insert(var.name.clone());
@@ -524,7 +530,6 @@ impl Interpreter {
                 Ok(ControlFlow::Normal)
             }
 
-            // Phase 3: STATIC (variable declarations handled in exec_sub_call)
             Stmt::Static(decls) => {
                 // Mark variables as static and initialize with defaults if not already loaded
                 for decl in decls {
@@ -653,8 +658,6 @@ impl Interpreter {
             Stmt::Retry => Ok(ControlFlow::Retry),
             Stmt::Continue => Ok(ControlFlow::Continue),
 
-            // Legacy statements not supported in ANSI BASIC mode
-            // MAT operations
             Stmt::Mat(op) => self.exec_mat(op),
 
             Stmt::SetPointer { file_num, position } => {
@@ -666,16 +669,6 @@ impl Interpreter {
                 Ok(ControlFlow::Normal)
             }
 
-            Stmt::Gosub(_) | Stmt::Return | Stmt::OnErrorGoto(_) | Stmt::Resume(_) |
-            Stmt::OnGoto { .. } | Stmt::OnGosub { .. } | Stmt::OnTimer { .. } |
-            Stmt::TimerOp(_) | Stmt::OnKey { .. } | Stmt::KeyOp { .. } |
-            Stmt::DefFn { .. } | Stmt::DefType { .. } | Stmt::MidAssign { .. } |
-            Stmt::Lset { .. } | Stmt::Rset { .. } | Stmt::Chain { .. } |
-            Stmt::Common(_) | Stmt::Field { .. } => {
-                Err(RuntimeError::General {
-                    msg: "unsupported statement (legacy feature not available)".to_string(),
-                })
-            }
         }
     }
 
@@ -829,7 +822,7 @@ impl Interpreter {
                 }
                 PrintSep::Semicolon => {}
                 PrintSep::Comma => {
-                    let next_zone = ((self.print_col / 14) + 1) * 14;
+                    let next_zone = ((self.print_col / 16) + 1) * 16;
                     let spaces = next_zone - self.print_col;
                     self.write_text(&" ".repeat(spaces));
                 }
@@ -858,7 +851,7 @@ impl Interpreter {
                 }
                 PrintItem::Comma => {
                     // Advance to next 14-column zone
-                    let next_zone = ((self.print_col / 14) + 1) * 14;
+                    let next_zone = ((self.print_col / 16) + 1) * 16;
                     let spaces = next_zone - self.print_col;
                     self.write_text(&" ".repeat(spaces));
                 }
@@ -870,7 +863,7 @@ impl Interpreter {
             }
             PrintSep::Semicolon => {}
             PrintSep::Comma => {
-                let next_zone = ((self.print_col / 14) + 1) * 14;
+                let next_zone = ((self.print_col / 16) + 1) * 16;
                 let spaces = next_zone - self.print_col;
                 self.write_text(&" ".repeat(spaces));
             }
@@ -1134,7 +1127,6 @@ impl Interpreter {
                             extext: err.to_string(),
                         });
                         // Execute handler
-                        let mut did_continue = false;
                         for h in handler {
                             match self.exec_stmt(&h.stmt)? {
                                 ControlFlow::Retry => {
@@ -1142,23 +1134,15 @@ impl Interpreter {
                                     break;
                                 }
                                 ControlFlow::Continue => {
-                                    // Continue executing body from statement i+1
-                                    for remaining in &body[i + 1..] {
-                                        let cf = self.exec_stmt(&remaining.stmt)?;
-                                        if !matches!(cf, ControlFlow::Normal) {
-                                            return Ok(cf);
-                                        }
-                                    }
+                                    // Continue executing body from statement i+1,
+                                    // still under exception protection
                                     self.current_exception = None;
-                                    did_continue = true;
-                                    break;
+                                    let cf = self.exec_when_exception(&body[i + 1..], handler)?;
+                                    return Ok(cf);
                                 }
                                 ControlFlow::Normal => {}
                                 other => return Ok(other),
                             }
-                        }
-                        if did_continue {
-                            return Ok(ControlFlow::Normal);
                         }
                         if should_retry {
                             break; // break inner for loop, outer loop will retry
@@ -1350,8 +1334,6 @@ impl Interpreter {
                     .map(|e| self.eval_expr(e))
                     .collect::<Result<Vec<_>, _>>()?;
 
-                let func_name = name.clone();
-
                 // Stateful functions (need access to interpreter state)
                 match name.as_str() {
                     "RND" => {
@@ -1506,16 +1488,12 @@ impl Interpreter {
                 }
 
                 // Try builtin first
-                if let Some(result) = self.builtins.call(&func_name, &arg_vals)? {
-                    return Ok(result);
-                }
-                // Try without suffix
                 if let Some(result) = self.builtins.call(name, &arg_vals)? {
                     return Ok(result);
                 }
 
                 // Try user-defined function
-                let func = self.functions.get(&func_name).or_else(|| self.functions.get(name)).cloned();
+                let func = self.functions.get(name).cloned();
                 if let Some(func) = func {
                     return self.call_user_function(&func, &arg_vals, args);
                 }
@@ -1530,11 +1508,18 @@ impl Interpreter {
             }
             Expr::StringSlice { name, start, end } => {
                 let s = self.env.borrow().get(name).unwrap_or(Value::Str(String::new())).to_string_val()?;
-                let start_idx = self.eval_expr(start)?.to_f64()? as usize;
-                let end_idx = self.eval_expr(end)?.to_f64()? as usize;
-                // 1-based to 0-based
-                let start_0 = start_idx.saturating_sub(1);
-                let end_0 = end_idx.min(s.len());
+                let start_f = self.eval_expr(start)?.to_f64()?;
+                let end_f = self.eval_expr(end)?.to_f64()?;
+                if start_f < 1.0 || end_f < 1.0 {
+                    return Err(RuntimeError::IllegalFunctionCall {
+                        msg: "string slice index must be >= 1".into(),
+                    });
+                }
+                let start_0 = (start_f as usize).saturating_sub(1);
+                let end_0 = (end_f as usize).min(s.len());
+                if start_0 > end_0 {
+                    return Ok(Value::Str(String::new()));
+                }
                 Ok(Value::Str(s[start_0..end_0].to_string()))
             }
             Expr::Paren(inner) => self.eval_expr(inner),
@@ -1626,7 +1611,6 @@ impl Interpreter {
         self.byref_writeback(&func.params, arg_exprs, &child_env);
 
         match result? {
-            ControlFlow::ExitFunction(v) => Ok(v),
             _ => {
                 // Return value is stored in the function name variable
                 Ok(child_env
@@ -1718,11 +1702,6 @@ impl Interpreter {
             }
             UnaryOp::Pos => Ok(val.clone()),
         }
-    }
-
-    #[allow(dead_code)]
-    fn make_numeric(n: f64, _ty: BasicType) -> Result<Value, RuntimeError> {
-        Ok(Value::Numeric(n))
     }
 
     fn resolve_decl_type(decl: &DimDecl) -> BasicType {
@@ -2274,7 +2253,7 @@ impl Interpreter {
         };
 
         self.file_handles.insert(file_num, FileHandle {
-            access: open.access,
+            _access: open.access,
             reader,
             writer,
             eof_flag: false,

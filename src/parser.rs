@@ -93,8 +93,7 @@ impl Parser {
                 return Err(ParseError::General { line: self.current_line(), msg: "GOSUB is not supported; use SUB/FUNCTION instead".into() });
             }
             Token::KwReturn => {
-                self.advance();
-                Ok(Stmt::Return)
+                return Err(ParseError::General { line: self.current_line(), msg: "RETURN is not supported; use EXIT SUB or EXIT FUNCTION instead".into() });
             }
             Token::KwExit => self.parse_exit(),
             Token::KwEnd => {
@@ -159,7 +158,6 @@ impl Parser {
                 self.advance();
                 Ok(Stmt::Rem)
             }
-            // Phase 1
             Token::KwSleep => {
                 self.advance();
                 if self.at_stmt_end() {
@@ -201,17 +199,14 @@ impl Parser {
                     Ok(Stmt::Shell(Some(self.parse_expr()?)))
                 }
             }
-            // Phase 2
             Token::KwLset => {
                 return Err(ParseError::General { line: self.current_line(), msg: "LSET is not supported in ANSI BASIC".into() });
             }
             Token::KwRset => {
                 return Err(ParseError::General { line: self.current_line(), msg: "RSET is not supported in ANSI BASIC".into() });
             }
-            // Phase 3
             Token::KwShared => self.parse_shared(),
             Token::KwStatic => self.parse_static(),
-            // Phase 4
             Token::KwDefInt | Token::KwDefLng | Token::KwDefSng |
             Token::KwDefDbl | Token::KwDefStr => {
                 return Err(ParseError::General { line: self.current_line(), msg: "DEFtype is not supported in ANSI BASIC".into() });
@@ -573,7 +568,7 @@ impl Parser {
     }
 
     fn parse_dim_decl(&mut self) -> Result<DimDecl, ParseError> {
-        let (name, _) = self.expect_identifier()?;
+        let name = self.expect_identifier()?;
 
         let dimensions = if matches!(self.peek(), Token::LeftParen) {
             self.advance();
@@ -615,7 +610,7 @@ impl Parser {
 
     fn parse_const(&mut self) -> Result<Stmt, ParseError> {
         self.advance(); // consume CONST
-        let (name, _suffix) = self.expect_identifier()?;
+        let name = self.expect_identifier()?;
         self.expect(Token::Equal)?;
         let value = self.parse_expr()?;
         Ok(Stmt::Const { name, value })
@@ -974,7 +969,7 @@ impl Parser {
 
     fn parse_sub_def(&mut self) -> Result<Stmt, ParseError> {
         self.advance(); // consume SUB
-        let (name, _) = self.expect_identifier()?;
+        let name = self.expect_identifier()?;
 
         let params = if matches!(self.peek(), Token::LeftParen) {
             self.advance();
@@ -1007,7 +1002,7 @@ impl Parser {
 
     fn parse_function_def(&mut self) -> Result<Stmt, ParseError> {
         self.advance(); // consume FUNCTION
-        let (name, _) = self.expect_identifier()?;
+        let name = self.expect_identifier()?;
 
         let params = if matches!(self.peek(), Token::LeftParen) {
             self.advance();
@@ -1068,7 +1063,7 @@ impl Parser {
             true // ANSI default: pass by value
         };
 
-        let (name, _) = self.expect_identifier()?;
+        let name = self.expect_identifier()?;
 
         // Check for array param: name()
         let is_array = if matches!(self.peek(), Token::LeftParen) {
@@ -1096,7 +1091,7 @@ impl Parser {
 
     fn parse_call(&mut self) -> Result<Stmt, ParseError> {
         self.advance(); // consume CALL
-        let (name, _) = self.expect_identifier()?;
+        let name = self.expect_identifier()?;
 
         let args = if matches!(self.peek(), Token::LeftParen) {
             self.advance();
@@ -1137,7 +1132,7 @@ impl Parser {
             }
         };
 
-        let (name, _) = self.expect_identifier()?;
+        let name = self.expect_identifier()?;
 
         let params = if matches!(self.peek(), Token::LeftParen) {
             self.advance();
@@ -1176,11 +1171,11 @@ impl Parser {
     fn parse_erase(&mut self) -> Result<Stmt, ParseError> {
         self.advance(); // consume ERASE
         let mut names = Vec::new();
-        let (name, _) = self.expect_identifier()?;
+        let name = self.expect_identifier()?;
         names.push(name);
         while matches!(self.peek(), Token::Comma) {
             self.advance();
-            let (name, _) = self.expect_identifier()?;
+            let name = self.expect_identifier()?;
             names.push(name);
         }
         Ok(Stmt::Erase(names))
@@ -1464,7 +1459,7 @@ impl Parser {
 
     fn parse_type_def(&mut self) -> Result<Stmt, ParseError> {
         self.advance(); // consume TYPE
-        let (name, _) = self.expect_identifier()?;
+        let name = self.expect_identifier()?;
         self.skip_newlines();
 
         let mut fields = Vec::new();
@@ -1561,12 +1556,12 @@ impl Parser {
                 } else {
                     None
                 };
-                let (name, _) = self.expect_identifier()?;
+                let name = self.expect_identifier()?;
                 Ok(Stmt::Mat(MatOp::Print { channel, name }))
             }
             Token::KwRead => {
                 self.advance(); // consume READ
-                let (name, _) = self.expect_identifier()?;
+                let name = self.expect_identifier()?;
                 Ok(Stmt::Mat(MatOp::Read { name }))
             }
             Token::KwInput => {
@@ -1580,12 +1575,12 @@ impl Parser {
                 } else {
                     None
                 };
-                let (name, _) = self.expect_identifier()?;
+                let name = self.expect_identifier()?;
                 Ok(Stmt::Mat(MatOp::Input { channel, name }))
             }
             Token::Identifier(_) => {
                 // MAT name = expr
-                let (target, _) = self.expect_identifier()?;
+                let target = self.expect_identifier()?;
                 self.expect(Token::Equal)?;
                 let source = self.parse_mat_expr()?;
                 Ok(Stmt::Mat(MatOp::Assign { target, source }))
@@ -1615,14 +1610,14 @@ impl Parser {
             Token::Identifier(ref name) if name == "INV" => {
                 self.advance();
                 self.expect(Token::LeftParen)?;
-                let (name, _) = self.expect_identifier()?;
+                let name = self.expect_identifier()?;
                 self.expect(Token::RightParen)?;
                 Ok(MatExpr::Inv(name))
             }
             Token::Identifier(ref name) if name == "TRN" => {
                 self.advance();
                 self.expect(Token::LeftParen)?;
-                let (name, _) = self.expect_identifier()?;
+                let name = self.expect_identifier()?;
                 self.expect(Token::RightParen)?;
                 Ok(MatExpr::Trn(name))
             }
@@ -1632,26 +1627,26 @@ impl Parser {
                 let scalar = self.parse_expr()?;
                 self.expect(Token::RightParen)?;
                 self.expect(Token::Star)?;
-                let (name, _) = self.expect_identifier()?;
+                let name = self.expect_identifier()?;
                 Ok(MatExpr::ScalarMul(scalar, name))
             }
             Token::Identifier(_) => {
                 // Could be: name, name + name, name - name, name * name
-                let (a, _) = self.expect_identifier()?;
+                let a = self.expect_identifier()?;
                 match self.peek() {
                     Token::Plus => {
                         self.advance();
-                        let (b, _) = self.expect_identifier()?;
+                        let b = self.expect_identifier()?;
                         Ok(MatExpr::Add(a, b))
                     }
                     Token::Minus => {
                         self.advance();
-                        let (b, _) = self.expect_identifier()?;
+                        let b = self.expect_identifier()?;
                         Ok(MatExpr::Sub(a, b))
                     }
                     Token::Star => {
                         self.advance();
-                        let (b, _) = self.expect_identifier()?;
+                        let b = self.expect_identifier()?;
                         Ok(MatExpr::Mul(a, b))
                     }
                     _ => Ok(MatExpr::Name(a)),
@@ -1999,7 +1994,7 @@ impl Parser {
     // ==================== Helpers ====================
 
     fn parse_variable(&mut self) -> Result<Variable, ParseError> {
-        let (name, _) = self.expect_identifier()?;
+        let name = self.expect_identifier()?;
         Ok(Variable { name })
     }
 
@@ -2084,11 +2079,11 @@ impl Parser {
         std::mem::discriminant(self.peek()) == std::mem::discriminant(expected)
     }
 
-    fn expect_identifier(&mut self) -> Result<(String, ()), ParseError> {
+    fn expect_identifier(&mut self) -> Result<String, ParseError> {
         match self.peek().clone() {
             Token::Identifier(name) => {
                 self.advance();
-                Ok((name, ()))
+                Ok(name)
             }
             _ => Err(ParseError::Expected {
                 line: self.current_line(),

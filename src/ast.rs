@@ -59,8 +59,6 @@ pub enum Stmt {
     DoLoop(DoLoopStmt),
     SelectCase(SelectCaseStmt),
     Goto(Label),
-    Gosub(Label),
-    Return,
     ExitFor,
     ExitDo,
 
@@ -104,16 +102,6 @@ pub enum Stmt {
     },
     GetPut(GetPutStmt),
 
-    // Error handling
-    OnErrorGoto(Option<Label>),
-    OnGoto { expr: Expr, labels: Vec<Label> },
-    OnGosub { expr: Expr, labels: Vec<Label> },
-    OnTimer { n: Expr, label: Label },
-    TimerOp(EventState),
-    OnKey { n: Expr, label: Label },
-    KeyOp { n: Expr, state: EventState },
-    Resume(ResumeTarget),
-
     // Random
     Randomize(Option<Expr>),
 
@@ -128,29 +116,13 @@ pub enum Stmt {
     Chdir(Expr),
     Shell(Option<Expr>),
 
-    // String mutation
-    MidAssign { var: Variable, start: Expr, length: Option<Expr>, replacement: Expr },
-    Lset { var: Variable, expr: Expr },
-    Rset { var: Variable, expr: Expr },
-
     // Scope
     Shared(Vec<Variable>),
     Static(Vec<DimDecl>),
 
-    // DEFtype and DEF FN
-    DefType { typ: BasicType, ranges: Vec<(char, char)> },
-    DefFn { name: String, params: Vec<Param>, body: DefFnBody },
-
     // User-defined types
     TypeDef { name: String, fields: Vec<TypeField> },
     MemberAssign { target: Expr, value: Expr },
-
-    // CHAIN/COMMON
-    Chain { filespec: Expr },
-    Common(CommonStmt),
-
-    // FIELD (legacy, unsupported)
-    Field { file_num: Expr, fields: Vec<FieldDef> },
 
     // SET/ASK POINTER (ANSI BASIC file positioning)
     SetPointer { file_num: Expr, position: Expr },
@@ -190,26 +162,6 @@ pub struct TypeField {
 }
 
 #[derive(Debug, Clone)]
-pub struct CommonVar {
-    pub name: String,
-    pub as_type: Option<BasicType>,
-    pub is_array: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct CommonStmt {
-    pub shared: bool,
-    pub block_name: Option<String>,
-    pub vars: Vec<CommonVar>,
-}
-
-#[derive(Debug, Clone)]
-pub enum DefFnBody {
-    SingleLine(Expr),
-    MultiLine(Vec<LabeledStmt>),
-}
-
-#[derive(Debug, Clone)]
 pub struct PrintStmt {
     pub format: Option<Expr>,
     pub items: Vec<PrintItem>,
@@ -222,13 +174,6 @@ pub enum PrintItem {
     Tab(Expr),
     Spc(Expr),
     Comma, // zone separator
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum EventState {
-    On,
-    Off,
-    Stop,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -381,19 +326,6 @@ pub struct GetPutStmt {
     pub file_num: Expr,
     pub record: Option<Expr>,
     pub var: Option<Variable>,
-}
-
-#[derive(Debug, Clone)]
-pub enum ResumeTarget {
-    Default,
-    Next,
-    Label(Label),
-}
-
-#[derive(Debug, Clone)]
-pub struct FieldDef {
-    pub width: Expr,
-    pub var: Variable,
 }
 
 // Expressions

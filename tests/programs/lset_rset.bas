@@ -1,8 +1,0 @@
-a$ = "          "
-LSET a$ = "Hello"
-PRINT "|" & a$ & "|"
-RSET a$ = "Hi"
-PRINT "|" & a$ & "|"
-b$ = "12345"
-LSET b$ = "ABCDEFGH"
-PRINT "|" & b$ & "|"

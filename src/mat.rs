@@ -16,11 +16,6 @@ pub fn mat_add(a: &[Vec<f64>], b: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, RuntimeE
             });
         }
     }
-    if b[0].len() != cols {
-        return Err(RuntimeError::General {
-            msg: "MAT ADD: dimension mismatch".into(),
-        });
-    }
     let mut result = vec![vec![0.0; cols]; rows];
     for i in 0..rows {
         for j in 0..cols {
@@ -39,10 +34,12 @@ pub fn mat_sub(a: &[Vec<f64>], b: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, RuntimeE
         });
     }
     let cols = a[0].len();
-    if b[0].len() != cols {
-        return Err(RuntimeError::General {
-            msg: "MAT SUB: dimension mismatch".into(),
-        });
+    for row in a.iter().chain(b.iter()) {
+        if row.len() != cols {
+            return Err(RuntimeError::General {
+                msg: "MAT SUB: dimension mismatch".into(),
+            });
+        }
     }
     let mut result = vec![vec![0.0; cols]; rows];
     for i in 0..rows {

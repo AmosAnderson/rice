@@ -1,5 +1,5 @@
 x = 42
-y$ = "hello"
+y = "hello"
 CLEAR
 PRINT x
-PRINT y$
+PRINT y

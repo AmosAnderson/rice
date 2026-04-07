@@ -28,14 +28,14 @@ END IF
 
 ' Values should be in [0, 1)
 RANDOMIZE 99
-ok% = -1
-FOR i% = 1 TO 100
+ok = 1
+FOR i = 1 TO 100
     r = RND
     IF r < 0 OR r >= 1 THEN
-        ok% = 0
+        ok = 0
     END IF
-NEXT i%
-IF ok% THEN
+NEXT i
+IF ok THEN
     PRINT "range ok"
 ELSE
     PRINT "range fail"

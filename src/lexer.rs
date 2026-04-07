@@ -310,7 +310,6 @@ impl Lexer {
                 "OPEN" => Token::KwOpen,
                 "CLOSE" => Token::KwClose,
                 "WRITE" => Token::KwWrite,
-                "APPEND" => Token::KwAppend,
                 "OUTPUT" => Token::KwOutput,
                 "LEN" => Token::KwLen,
                 "ACCESS" => Token::KwAccess,

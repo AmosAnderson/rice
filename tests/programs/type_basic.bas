@@ -9,6 +9,6 @@ person.FirstName = "John"
 person.LastName = "Doe"
 person.Age = 30
 
-PRINT RTRIM$(person.FirstName)
-PRINT RTRIM$(person.LastName)
+PRINT RTRIM(person.FirstName)
+PRINT RTRIM(person.LastName)
 PRINT person.Age
