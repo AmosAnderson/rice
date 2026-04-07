@@ -1060,11 +1060,12 @@ impl Parser {
     }
 
     fn parse_param(&mut self) -> Result<Param, ParseError> {
+        // ANSI BASIC: parameters are BYVAL by default
         let by_val = if matches!(self.peek(), Token::KwByVal) {
             self.advance();
             true
         } else {
-            false
+            true // ANSI default: pass by value
         };
 
         let (name, _) = self.expect_identifier()?;

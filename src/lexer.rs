@@ -370,7 +370,6 @@ impl Lexer {
                 "WIDTH" => Token::KwWidth,
                 "VIEW" => Token::KwView,
                 "FIELD" => Token::KwField,
-                "SEEK" => Token::KwSeek,
                 "WHEN" => Token::KwWhen,
                 "EXCEPTION" => Token::KwException,
                 "USE" => Token::KwUse,

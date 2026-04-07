@@ -33,11 +33,20 @@ impl BuiltinRegistry {
         reg.register("ATN", builtin_atn, 1);
         reg.register("EXP", builtin_exp, 1);
         reg.register("LOG", builtin_log, 1);
+        reg.register("ROUND", builtin_round, 1);
+        // ANSI math additions
+        reg.register("ASIN", builtin_asin, 1);
+        reg.register("ACOS", builtin_acos, 1);
+        reg.register("COT", builtin_cot, 1);
+        reg.register("CSC", builtin_csc, 1);
+        reg.register("SEC", builtin_sec, 1);
+        reg.register("ANGLE", builtin_angle, 2);
+        reg.register("CEIL", builtin_ceil, 1);
+        reg.register("TRUNCATE", builtin_truncate, 1);
+        reg.register("REMAINDER", builtin_remainder, 2);
+        reg.register("MAXNUM", builtin_maxnum, 0);
+        reg.register("PI", builtin_pi, 0);
         // RND is handled as a stateful function in the interpreter
-        reg.register("CINT", builtin_cint, 1);
-        reg.register("CLNG", builtin_clng, 1);
-        reg.register("CSNG", builtin_csng, 1);
-        reg.register("CDBL", builtin_cdbl, 1);
 
         // String
         reg.register("LEN", builtin_len, 1);
@@ -50,8 +59,6 @@ impl BuiltinRegistry {
         reg.register("ASC", builtin_asc, 1);
         reg.register("STR$", builtin_str, 1);
         reg.register("VAL", builtin_val, 1);
-        reg.register("HEX$", builtin_hex, 1);
-        reg.register("OCT$", builtin_oct, 1);
 
         // Misc
         reg.register("LBOUND", builtin_stub, 0);
@@ -61,16 +68,6 @@ impl BuiltinRegistry {
         reg.register("TIME$", builtin_time, 0);
         reg.register("COMMAND$", builtin_stub, 0);
         reg.register("ENVIRON$", builtin_environ, 1);
-
-        // Binary conversion
-        reg.register("MKI$", builtin_mki, 1);
-        reg.register("MKL$", builtin_mkl, 1);
-        reg.register("MKS$", builtin_mks, 1);
-        reg.register("MKD$", builtin_mkd, 1);
-        reg.register("CVI", builtin_cvi, 1);
-        reg.register("CVL", builtin_cvl, 1);
-        reg.register("CVS", builtin_cvs, 1);
-        reg.register("CVD", builtin_cvd, 1);
 
         reg
     }
@@ -171,22 +168,74 @@ fn builtin_log(args: &[Value]) -> Result<Value, RuntimeError> {
     Ok(Value::Numeric(n.ln()))
 }
 
-fn builtin_cint(args: &[Value]) -> Result<Value, RuntimeError> {
-    let n = args[0].to_f64()?.round();
-    Ok(Value::Numeric(n))
+fn builtin_round(args: &[Value]) -> Result<Value, RuntimeError> {
+    Ok(Value::Numeric(args[0].to_f64()?.round()))
 }
 
-fn builtin_clng(args: &[Value]) -> Result<Value, RuntimeError> {
-    let n = args[0].to_f64()?.round();
-    Ok(Value::Numeric(n))
+fn builtin_asin(args: &[Value]) -> Result<Value, RuntimeError> {
+    let n = args[0].to_f64()?;
+    if !(-1.0..=1.0).contains(&n) {
+        return Err(RuntimeError::IllegalFunctionCall { msg: "ASIN argument out of range".into() });
+    }
+    Ok(Value::Numeric(n.asin()))
 }
 
-fn builtin_csng(args: &[Value]) -> Result<Value, RuntimeError> {
-    Ok(Value::Numeric(args[0].to_f64()?))
+fn builtin_acos(args: &[Value]) -> Result<Value, RuntimeError> {
+    let n = args[0].to_f64()?;
+    if !(-1.0..=1.0).contains(&n) {
+        return Err(RuntimeError::IllegalFunctionCall { msg: "ACOS argument out of range".into() });
+    }
+    Ok(Value::Numeric(n.acos()))
 }
 
-fn builtin_cdbl(args: &[Value]) -> Result<Value, RuntimeError> {
-    Ok(Value::Numeric(args[0].to_f64()?))
+fn builtin_cot(args: &[Value]) -> Result<Value, RuntimeError> {
+    let n = args[0].to_f64()?;
+    let t = n.tan();
+    if t == 0.0 { return Err(RuntimeError::DivisionByZero); }
+    Ok(Value::Numeric(1.0 / t))
+}
+
+fn builtin_csc(args: &[Value]) -> Result<Value, RuntimeError> {
+    let n = args[0].to_f64()?;
+    let s = n.sin();
+    if s == 0.0 { return Err(RuntimeError::DivisionByZero); }
+    Ok(Value::Numeric(1.0 / s))
+}
+
+fn builtin_sec(args: &[Value]) -> Result<Value, RuntimeError> {
+    let n = args[0].to_f64()?;
+    let c = n.cos();
+    if c == 0.0 { return Err(RuntimeError::DivisionByZero); }
+    Ok(Value::Numeric(1.0 / c))
+}
+
+fn builtin_angle(args: &[Value]) -> Result<Value, RuntimeError> {
+    let x = args[0].to_f64()?;
+    let y = args[1].to_f64()?;
+    Ok(Value::Numeric(y.atan2(x)))
+}
+
+fn builtin_ceil(args: &[Value]) -> Result<Value, RuntimeError> {
+    Ok(Value::Numeric(args[0].to_f64()?.ceil()))
+}
+
+fn builtin_truncate(args: &[Value]) -> Result<Value, RuntimeError> {
+    Ok(Value::Numeric(args[0].to_f64()?.trunc()))
+}
+
+fn builtin_remainder(args: &[Value]) -> Result<Value, RuntimeError> {
+    let a = args[0].to_f64()?;
+    let b = args[1].to_f64()?;
+    if b == 0.0 { return Err(RuntimeError::DivisionByZero); }
+    Ok(Value::Numeric(a % b))
+}
+
+fn builtin_maxnum(_args: &[Value]) -> Result<Value, RuntimeError> {
+    Ok(Value::Numeric(f64::MAX))
+}
+
+fn builtin_pi(_args: &[Value]) -> Result<Value, RuntimeError> {
+    Ok(Value::Numeric(std::f64::consts::PI))
 }
 
 // String builtins
@@ -276,11 +325,10 @@ fn builtin_asc(args: &[Value]) -> Result<Value, RuntimeError> {
 
 fn builtin_str(args: &[Value]) -> Result<Value, RuntimeError> {
     let n = args[0].to_f64()?;
-    let sign = if n >= 0.0 { " " } else { "" };
     let formatted = if n == n.trunc() && n.abs() < 1e15 {
-        format!("{sign}{}", n as i64)
+        format!("{}", n as i64)
     } else {
-        format!("{sign}{n}")
+        format!("{n}")
     };
     Ok(Value::Str(formatted))
 }
@@ -312,16 +360,6 @@ fn builtin_val(args: &[Value]) -> Result<Value, RuntimeError> {
     } else {
         Ok(Value::Numeric(num_str.parse::<f64>().unwrap_or(0.0)))
     }
-}
-
-fn builtin_hex(args: &[Value]) -> Result<Value, RuntimeError> {
-    let n = args[0].to_i64()?;
-    Ok(Value::Str(format!("{:X}", n)))
-}
-
-fn builtin_oct(args: &[Value]) -> Result<Value, RuntimeError> {
-    let n = args[0].to_i64()?;
-    Ok(Value::Str(format!("{:o}", n)))
 }
 
 /// Get local time components (hours, minutes, seconds, millis) from system time.
@@ -427,85 +465,3 @@ fn builtin_environ(args: &[Value]) -> Result<Value, RuntimeError> {
     Ok(Value::Str(val))
 }
 
-// Binary conversion functions (MKI$/MKL$/MKS$/MKD$ and CVI/CVL/CVS/CVD)
-
-/// Convert bytes to a string where each byte becomes a char (latin-1 style)
-fn bytes_to_basic_string(bytes: &[u8]) -> String {
-    bytes.iter().map(|&b| b as char).collect()
-}
-
-/// Convert a BASIC binary string back to bytes
-fn basic_string_to_bytes(s: &str) -> Vec<u8> {
-    s.chars().map(|c| c as u8).collect()
-}
-
-fn builtin_mki(args: &[Value]) -> Result<Value, RuntimeError> {
-    let n = args[0].to_i64()? as i16;
-    Ok(Value::Str(bytes_to_basic_string(&n.to_le_bytes())))
-}
-
-fn builtin_mkl(args: &[Value]) -> Result<Value, RuntimeError> {
-    let n = args[0].to_i64()? as i32;
-    Ok(Value::Str(bytes_to_basic_string(&n.to_le_bytes())))
-}
-
-fn builtin_mks(args: &[Value]) -> Result<Value, RuntimeError> {
-    let n = args[0].to_f64()? as f32;
-    Ok(Value::Str(bytes_to_basic_string(&n.to_le_bytes())))
-}
-
-fn builtin_mkd(args: &[Value]) -> Result<Value, RuntimeError> {
-    let n = args[0].to_f64()?;
-    Ok(Value::Str(bytes_to_basic_string(&n.to_le_bytes())))
-}
-
-fn builtin_cvi(args: &[Value]) -> Result<Value, RuntimeError> {
-    let s = args[0].to_string_val()?;
-    let bytes = basic_string_to_bytes(&s);
-    if bytes.len() < 2 {
-        return Err(RuntimeError::IllegalFunctionCall {
-            msg: "CVI requires a 2-byte string".into(),
-        });
-    }
-    let n = i16::from_le_bytes([bytes[0], bytes[1]]);
-    Ok(Value::Numeric(n as f64))
-}
-
-fn builtin_cvl(args: &[Value]) -> Result<Value, RuntimeError> {
-    let s = args[0].to_string_val()?;
-    let bytes = basic_string_to_bytes(&s);
-    if bytes.len() < 4 {
-        return Err(RuntimeError::IllegalFunctionCall {
-            msg: "CVL requires a 4-byte string".into(),
-        });
-    }
-    let n = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-    Ok(Value::Numeric(n as f64))
-}
-
-fn builtin_cvs(args: &[Value]) -> Result<Value, RuntimeError> {
-    let s = args[0].to_string_val()?;
-    let bytes = basic_string_to_bytes(&s);
-    if bytes.len() < 4 {
-        return Err(RuntimeError::IllegalFunctionCall {
-            msg: "CVS requires a 4-byte string".into(),
-        });
-    }
-    let n = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-    Ok(Value::Numeric(n as f64))
-}
-
-fn builtin_cvd(args: &[Value]) -> Result<Value, RuntimeError> {
-    let s = args[0].to_string_val()?;
-    let bytes = basic_string_to_bytes(&s);
-    if bytes.len() < 8 {
-        return Err(RuntimeError::IllegalFunctionCall {
-            msg: "CVD requires an 8-byte string".into(),
-        });
-    }
-    let n = f64::from_le_bytes([
-        bytes[0], bytes[1], bytes[2], bytes[3],
-        bytes[4], bytes[5], bytes[6], bytes[7],
-    ]);
-    Ok(Value::Numeric(n))
-}

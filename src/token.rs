@@ -183,9 +183,8 @@ pub enum Token {
     KwWidth,
     KwView,
 
-    // FIELD/SEEK
+    // FIELD (legacy, unsupported)
     KwField,
-    KwSeek,
 
     // WHEN EXCEPTION
     KwWhen,

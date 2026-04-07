@@ -281,6 +281,12 @@ fn keyword_name(token: &Token) -> &'static str {
         Token::KwOutput => "OUTPUT",
         Token::KwStream => "STREAM",
         Token::KwSequential => "SEQUENTIAL",
+        Token::KwAccess => "ACCESS",
+        Token::KwOrganization => "ORGANIZATION",
+        Token::KwOutIn => "OUTIN",
+        Token::KwSet => "SET",
+        Token::KwAsk => "ASK",
+        Token::KwPointer => "POINTER",
         Token::KwLen => "LEN",
         Token::KwGet => "GET",
         Token::KwPut => "PUT",
@@ -329,6 +335,7 @@ fn keyword_name(token: &Token) -> &'static str {
         Token::KwRetry => "RETRY",
         Token::KwContinue => "CONTINUE",
         Token::KwEndWhen => "END WHEN",
+        Token::KwMat => "MAT",
         _ => "",
     }
 }

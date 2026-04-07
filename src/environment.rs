@@ -27,7 +27,7 @@ impl Environment {
             parent: None,
             labels: HashMap::new(),
             gosub_stack: Vec::new(),
-            option_base: 0,
+            option_base: 1,
             shared_vars: HashSet::new(),
         }))
     }

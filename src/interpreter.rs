@@ -72,17 +72,12 @@ struct UserFunction {
     is_static: bool,
 }
 
-struct FieldMapping {
-    width: usize,
-    var_name: String,
-}
-
 struct FileHandle {
+    #[allow(dead_code)]
     access: FileAccess,
     reader: Option<BufReader<File>>,
     writer: Option<BufWriter<File>>,
     eof_flag: bool,
-    field_mappings: Vec<FieldMapping>,
 }
 
 pub struct Interpreter {
@@ -114,6 +109,8 @@ pub struct Interpreter {
     screen_buffer: Vec<Vec<u8>>,
     current_exception: Option<ExceptionInfo>,
     last_det: f64,
+    /// Tracks array dimensions from DIM: name -> vec of (lower, upper) per dimension.
+    array_dim_info: HashMap<String, Vec<(i64, i64)>>,
 }
 
 impl Drop for Interpreter {
@@ -173,6 +170,7 @@ impl Interpreter {
             screen_buffer: vec![vec![b' '; 80]; 25],
             current_exception: None,
             last_det: 0.0,
+            array_dim_info: HashMap::new(),
         }
     }
 
@@ -710,6 +708,26 @@ impl Interpreter {
     fn exec_dim(&mut self, decls: &[DimDecl]) -> Result<ControlFlow, RuntimeError> {
         for decl in decls {
             let resolved = Self::resolve_decl_type(decl);
+            // Store dimension metadata for MAT operations
+            if let Some(dims) = &decl.dimensions {
+                let base = self.env.borrow().option_base as i64;
+                let mut bounds = Vec::new();
+                for dim in dims {
+                    let (lower, upper) = match dim {
+                        (upper_expr, None) => {
+                            let upper = self.eval_expr(upper_expr)?.to_i64()?;
+                            (base, upper)
+                        }
+                        (lower_expr, Some(upper_expr)) => {
+                            let lower = self.eval_expr(lower_expr)?.to_i64()?;
+                            let upper = self.eval_expr(upper_expr)?.to_i64()?;
+                            (lower, upper)
+                        }
+                    };
+                    bounds.push((lower, upper));
+                }
+                self.array_dim_info.insert(decl.name.clone(), bounds);
+            }
             if let BasicType::UserDefined(ref type_name) = resolved {
                 if decl.dimensions.is_some() {
                     self.array_type_map.insert(decl.name.clone(), type_name.clone());
@@ -1889,6 +1907,204 @@ impl Interpreter {
         crate::format_using::format_using(&fmt_str, &vals)
     }
 
+    fn extract_matrix(&self, name: &str) -> Result<Vec<Vec<f64>>, RuntimeError> {
+        let prefix = format!("{}_", name);
+        let env = self.env.borrow();
+        let base = env.option_base as i64;
+        let mut max_row: i64 = base - 1;
+        let mut max_col: i64 = base - 1;
+        let mut cells: Vec<(i64, i64, f64)> = Vec::new();
+        for key in env.var_keys() {
+            if let Some(suffix) = key.strip_prefix(&prefix) {
+                let parts: Vec<&str> = suffix.split('_').collect();
+                if parts.len() == 2 {
+                    if let (Ok(r), Ok(c)) = (parts[0].parse::<i64>(), parts[1].parse::<i64>()) {
+                        let val = env.get(&key).unwrap_or(Value::Numeric(0.0));
+                        let f = val.to_f64().unwrap_or(0.0);
+                        cells.push((r, c, f));
+                        if r > max_row { max_row = r; }
+                        if c > max_col { max_col = c; }
+                    }
+                }
+            }
+        }
+        if max_row < base || max_col < base {
+            return Err(RuntimeError::General {
+                msg: format!("MAT: array '{}' has no 2-D elements", name),
+            });
+        }
+        let rows = (max_row - base + 1) as usize;
+        let cols = (max_col - base + 1) as usize;
+        let mut mat = vec![vec![0.0; cols]; rows];
+        for (r, c, v) in cells {
+            let ri = (r - base) as usize;
+            let ci = (c - base) as usize;
+            if ri < rows && ci < cols { mat[ri][ci] = v; }
+        }
+        Ok(mat)
+    }
+
+    fn store_matrix(&mut self, name: &str, mat: &[Vec<f64>]) {
+        let base = self.env.borrow().option_base as i64;
+        let prefix = format!("{}_", name);
+        let keys: Vec<String> = self.env.borrow().var_keys()
+            .into_iter().filter(|k| k.starts_with(&prefix)).collect();
+        for key in keys { self.env.borrow_mut().vars_mut().remove(&key); }
+        for (i, row) in mat.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                let key = format!("{}_{}_{}", name, (i as i64) + base, (j as i64) + base);
+                self.env.borrow_mut().set(&key, Value::Numeric(val));
+            }
+        }
+    }
+
+    fn matrix_dims(&self, name: &str) -> Option<(usize, usize)> {
+        // First check DIM metadata
+        if let Some(bounds) = self.array_dim_info.get(name) {
+            if bounds.len() == 2 {
+                let rows = (bounds[0].1 - bounds[0].0 + 1) as usize;
+                let cols = (bounds[1].1 - bounds[1].0 + 1) as usize;
+                return Some((rows, cols));
+            }
+        }
+        // Fall back to scanning existing keys
+        let prefix = format!("{}_", name);
+        let env = self.env.borrow();
+        let base = env.option_base as i64;
+        let mut max_row: i64 = base - 1;
+        let mut max_col: i64 = base - 1;
+        for key in env.var_keys() {
+            if let Some(suffix) = key.strip_prefix(&prefix) {
+                let parts: Vec<&str> = suffix.split('_').collect();
+                if parts.len() == 2 {
+                    if let (Ok(r), Ok(c)) = (parts[0].parse::<i64>(), parts[1].parse::<i64>()) {
+                        if r > max_row { max_row = r; }
+                        if c > max_col { max_col = c; }
+                    }
+                }
+            }
+        }
+        if max_row >= base && max_col >= base {
+            Some(((max_row - base + 1) as usize, (max_col - base + 1) as usize))
+        } else { None }
+    }
+
+    fn exec_mat(&mut self, op: &MatOp) -> Result<ControlFlow, RuntimeError> {
+        use crate::mat;
+        match op {
+            MatOp::Print { channel: _, name } => {
+                let m = self.extract_matrix(name)?;
+                for row in &m {
+                    let formatted: Vec<String> = row.iter()
+                        .map(|v| Value::Numeric(*v).format_for_print()).collect();
+                    self.write_text(&formatted.join(" "));
+                    self.write_text("\n");
+                }
+                self.output.flush().ok();
+                Ok(ControlFlow::Normal)
+            }
+            MatOp::Read { name } => {
+                let (rows, cols) = self.matrix_dims(name).ok_or_else(|| RuntimeError::General {
+                    msg: format!("MAT READ: array '{}' must be DIMed first", name),
+                })?;
+                let mut m = vec![vec![0.0; cols]; rows];
+                for r in 0..rows {
+                    for c in 0..cols {
+                        if self.data_pos >= self.data_values.len() {
+                            return Err(RuntimeError::General { msg: "MAT READ: READ past end of DATA".into() });
+                        }
+                        let item = &self.data_values[self.data_pos];
+                        self.data_pos += 1;
+                        m[r][c] = match item {
+                            DataItem::Number(n) => *n,
+                            DataItem::Str(s) => s.parse::<f64>().unwrap_or(0.0),
+                        };
+                    }
+                }
+                self.store_matrix(name, &m);
+                Ok(ControlFlow::Normal)
+            }
+            MatOp::Input { channel: _, name } => {
+                let (rows, cols) = self.matrix_dims(name).ok_or_else(|| RuntimeError::General {
+                    msg: format!("MAT INPUT: array '{}' must be DIMed first", name),
+                })?;
+                let mut m = vec![vec![0.0; cols]; rows];
+                for r in 0..rows {
+                    write!(self.output, "? ").ok();
+                    self.output.flush().ok();
+                    let mut line = String::new();
+                    self.input.read_line(&mut line).ok();
+                    let parts: Vec<&str> = line.trim().split(',').map(|s| s.trim()).collect();
+                    for c in 0..cols {
+                        m[r][c] = parts.get(c).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+                    }
+                }
+                self.store_matrix(name, &m);
+                Ok(ControlFlow::Normal)
+            }
+            MatOp::Assign { target, source } => {
+                match source {
+                    MatExpr::Name(src) => {
+                        let m = self.extract_matrix(src)?;
+                        self.store_matrix(target, &m);
+                    }
+                    MatExpr::Add(a, b) => {
+                        let ma = self.extract_matrix(a)?;
+                        let mb = self.extract_matrix(b)?;
+                        self.store_matrix(target, &mat::mat_add(&ma, &mb)?);
+                    }
+                    MatExpr::Sub(a, b) => {
+                        let ma = self.extract_matrix(a)?;
+                        let mb = self.extract_matrix(b)?;
+                        self.store_matrix(target, &mat::mat_sub(&ma, &mb)?);
+                    }
+                    MatExpr::Mul(a, b) => {
+                        let ma = self.extract_matrix(a)?;
+                        let mb = self.extract_matrix(b)?;
+                        self.store_matrix(target, &mat::mat_mul(&ma, &mb)?);
+                    }
+                    MatExpr::ScalarMul(expr, a) => {
+                        let k = self.eval_expr(expr)?.to_f64()?;
+                        let ma = self.extract_matrix(a)?;
+                        self.store_matrix(target, &mat::mat_scalar_mul(k, &ma));
+                    }
+                    MatExpr::Inv(a) => {
+                        let ma = self.extract_matrix(a)?;
+                        let (inv, det) = mat::mat_inv(&ma)?;
+                        self.last_det = det;
+                        self.store_matrix(target, &inv);
+                    }
+                    MatExpr::Trn(a) => {
+                        let ma = self.extract_matrix(a)?;
+                        self.store_matrix(target, &mat::mat_trn(&ma));
+                    }
+                    MatExpr::Zer => {
+                        let (rows, cols) = self.matrix_dims(target).ok_or_else(|| RuntimeError::General {
+                            msg: format!("MAT ZER: array '{}' must be DIMed first", target),
+                        })?;
+                        self.store_matrix(target, &mat::mat_zer(rows, cols));
+                    }
+                    MatExpr::Con => {
+                        let (rows, cols) = self.matrix_dims(target).ok_or_else(|| RuntimeError::General {
+                            msg: format!("MAT CON: array '{}' must be DIMed first", target),
+                        })?;
+                        self.store_matrix(target, &mat::mat_con(rows, cols));
+                    }
+                    MatExpr::Idn => {
+                        let (rows, cols) = self.matrix_dims(target).ok_or_else(|| RuntimeError::General {
+                            msg: format!("MAT IDN: array '{}' must be DIMed first", target),
+                        })?;
+                        if rows != cols {
+                            return Err(RuntimeError::General { msg: "MAT IDN: matrix must be square".into() });
+                        }
+                        self.store_matrix(target, &mat::mat_idn(rows));
+                    }
+                }
+                Ok(ControlFlow::Normal)
+            }
+        }
+    }
+
     /// Write visible text to output and update screen buffer.
     fn write_text(&mut self, text: &str) {
         write!(self.output, "{}", text).ok();
@@ -2059,7 +2275,6 @@ impl Interpreter {
             reader,
             writer,
             eof_flag: false,
-            field_mappings: Vec::new(),
         });
 
         Ok(())
@@ -2474,61 +2689,5 @@ impl Interpreter {
         }
 
         Ok(())
-    }
-
-    fn exec_mat(&mut self, op: &MatOp) -> Result<ControlFlow, RuntimeError> {
-        match op {
-            MatOp::Print { channel: _, name } => {
-                // Print all elements of the array
-                let prefix = format!("{}(", name);
-                let mut entries: Vec<(String, Value)> = Vec::new();
-                {
-                    let env = self.env.borrow();
-                    for (key, val) in env.vars_ref().iter() {
-                        if key.starts_with(&prefix) {
-                            entries.push((key.clone(), val.clone()));
-                        }
-                    }
-                }
-                entries.sort_by(|a, b| a.0.cmp(&b.0));
-                for (_key, val) in &entries {
-                    write!(self.output, " {} ", val.format_for_print()).ok();
-                }
-                writeln!(self.output).ok();
-                Ok(ControlFlow::Normal)
-            }
-            MatOp::Read { name } => {
-                // Read DATA values into array elements
-                let prefix = format!("{}(", name);
-                let keys: Vec<String> = {
-                    let env = self.env.borrow();
-                    env.vars_ref().keys()
-                        .filter(|k| k.starts_with(&prefix))
-                        .cloned()
-                        .collect()
-                };
-                for key in keys {
-                    if self.data_pos < self.data_values.len() {
-                        let val = match &self.data_values[self.data_pos] {
-                            DataItem::Number(n) => Value::Numeric(*n),
-                            DataItem::Str(s) => Value::Str(s.clone()),
-                        };
-                        self.data_pos += 1;
-                        self.env.borrow_mut().set(&key, val);
-                    }
-                }
-                Ok(ControlFlow::Normal)
-            }
-            MatOp::Input { channel: _, name: _ } => {
-                Err(RuntimeError::General {
-                    msg: "MAT INPUT not yet implemented".to_string(),
-                })
-            }
-            MatOp::Assign { target: _, source: _ } => {
-                Err(RuntimeError::General {
-                    msg: "MAT assignment not yet implemented".to_string(),
-                })
-            }
-        }
     }
 }
