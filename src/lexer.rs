@@ -89,7 +89,6 @@ impl Lexer {
             '-' => Token::Minus,
             '*' => Token::Star,
             '/' => Token::Slash,
-            '\\' => Token::Backslash,
             '^' => Token::Caret,
             '=' => Token::Equal,
             '<' => {
@@ -313,9 +312,15 @@ impl Lexer {
                 "WRITE" => Token::KwWrite,
                 "APPEND" => Token::KwAppend,
                 "OUTPUT" => Token::KwOutput,
-                "BINARY" => Token::KwBinary,
-                "RANDOM" => Token::KwRandom,
                 "LEN" => Token::KwLen,
+                "ACCESS" => Token::KwAccess,
+                "ORGANIZATION" => Token::KwOrganization,
+                "SEQUENTIAL" => Token::KwSequential,
+                "STREAM" => Token::KwStream,
+                "OUTIN" => Token::KwOutIn,
+                "SET" => Token::KwSet,
+                "ASK" => Token::KwAsk,
+                "POINTER" => Token::KwPointer,
                 "GET" => Token::KwGet,
                 "PUT" => Token::KwPut,
                 "FREEFILE" => Token::KwFreefile,
@@ -330,8 +335,6 @@ impl Lexer {
                 "OR" => Token::KwOr,
                 "NOT" => Token::KwNot,
                 "XOR" => Token::KwXor,
-                "EQV" => Token::KwEqv,
-                "IMP" => Token::KwImp,
                 "MOD" => Token::KwMod,
                 "TAB" => Token::KwTab,
                 "SPC" => Token::KwSpc,
@@ -368,6 +371,12 @@ impl Lexer {
                 "VIEW" => Token::KwView,
                 "FIELD" => Token::KwField,
                 "SEEK" => Token::KwSeek,
+                "WHEN" => Token::KwWhen,
+                "EXCEPTION" => Token::KwException,
+                "USE" => Token::KwUse,
+                "RETRY" => Token::KwRetry,
+                "CONTINUE" => Token::KwContinue,
+                "MAT" => Token::KwMat,
             _ => Token::Identifier(word),
         };
 
@@ -412,6 +421,10 @@ impl Lexer {
                         "WHILE" => {
                             self.consume_word();
                             return Some(Token::KwEndWhile);
+                        }
+                        "WHEN" => {
+                            self.consume_word();
+                            return Some(Token::KwEndWhen);
                         }
                         _ => {}
                     }

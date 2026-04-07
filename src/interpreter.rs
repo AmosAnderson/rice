@@ -48,6 +48,13 @@ enum ControlFlow {
     ExitFunction(Value),
     Goto(Label),
     End,
+    Retry,
+    Continue,
+}
+
+struct ExceptionInfo {
+    extype: i32,
+    extext: String,
 }
 
 #[derive(Clone)]
@@ -71,10 +78,9 @@ struct FieldMapping {
 }
 
 struct FileHandle {
-    mode: FileMode,
+    access: FileAccess,
     reader: Option<BufReader<File>>,
     writer: Option<BufWriter<File>>,
-    rec_len: i64,
     eof_flag: bool,
     field_mappings: Vec<FieldMapping>,
 }
@@ -106,6 +112,8 @@ pub struct Interpreter {
     source_dir: Option<std::path::PathBuf>,
     interactive: bool,
     screen_buffer: Vec<Vec<u8>>,
+    current_exception: Option<ExceptionInfo>,
+    last_det: f64,
 }
 
 impl Drop for Interpreter {
@@ -163,6 +171,8 @@ impl Interpreter {
             source_dir: None,
             interactive: false,
             screen_buffer: vec![vec![b' '; 80]; 25],
+            current_exception: None,
+            last_det: 0.0,
         }
     }
 
@@ -252,6 +262,10 @@ impl Interpreter {
                         self.prescan(else_body);
                     }
                 }
+                Stmt::WhenException { body, handler } => {
+                    self.prescan(body);
+                    self.prescan(handler);
+                }
                 _ => {}
             }
         }
@@ -302,6 +316,19 @@ impl Interpreter {
                 Ok(ControlFlow::Normal)
             }
             Stmt::Let { var, expr } => self.exec_let(var, expr),
+            Stmt::LetSlice { name, start, end, expr } => {
+                let start_idx = self.eval_expr(start)?.to_f64()? as usize;
+                let end_idx = self.eval_expr(end)?.to_f64()? as usize;
+                let replacement = self.eval_expr(expr)?.to_string_val()?;
+                let mut s = self.env.borrow().get(name)
+                    .unwrap_or(Value::Str(String::new()))
+                    .to_string_val()?;
+                let start_0 = start_idx.saturating_sub(1);
+                let end_0 = end_idx.min(s.len());
+                s.replace_range(start_0..end_0, &replacement);
+                self.env.borrow_mut().set(name, Value::Str(s));
+                Ok(ControlFlow::Normal)
+            }
             Stmt::Dim(decls) => self.exec_dim(decls),
             Stmt::Const { name, value } => {
                 let val = self.eval_expr(value)?;
@@ -623,13 +650,30 @@ impl Interpreter {
                 Ok(ControlFlow::Normal)
             }
 
+            // WHEN EXCEPTION
+            Stmt::WhenException { body, handler } => self.exec_when_exception(body, handler),
+            Stmt::Retry => Ok(ControlFlow::Retry),
+            Stmt::Continue => Ok(ControlFlow::Continue),
+
             // Removed QBasic-only statements (parser should reject these)
+            // MAT operations
+            Stmt::Mat(op) => self.exec_mat(op),
+
+            Stmt::SetPointer { file_num, position } => {
+                self.exec_set_pointer(file_num, position)?;
+                Ok(ControlFlow::Normal)
+            }
+            Stmt::AskPointer { file_num, var } => {
+                self.exec_ask_pointer(file_num, var)?;
+                Ok(ControlFlow::Normal)
+            }
+
             Stmt::Gosub(_) | Stmt::Return | Stmt::OnErrorGoto(_) | Stmt::Resume(_) |
             Stmt::OnGoto { .. } | Stmt::OnGosub { .. } | Stmt::OnTimer { .. } |
             Stmt::TimerOp(_) | Stmt::OnKey { .. } | Stmt::KeyOp { .. } |
             Stmt::DefFn { .. } | Stmt::DefType { .. } | Stmt::MidAssign { .. } |
             Stmt::Lset { .. } | Stmt::Rset { .. } | Stmt::Chain { .. } |
-            Stmt::Common(_) | Stmt::Field { .. } | Stmt::Seek { .. } => {
+            Stmt::Common(_) | Stmt::Field { .. } => {
                 Err(RuntimeError::General {
                     msg: "unsupported statement (removed QBasic feature)".to_string(),
                 })
@@ -922,6 +966,7 @@ impl Interpreter {
                 ControlFlow::Goto(l) => return Ok(ControlFlow::Goto(l)),
                 ControlFlow::ExitSub => return Ok(ControlFlow::ExitSub),
                 ControlFlow::ExitFunction(v) => return Ok(ControlFlow::ExitFunction(v)),
+                ControlFlow::Retry | ControlFlow::Continue => return Ok(cf),
                 _ => {}
             }
 
@@ -957,6 +1002,7 @@ impl Interpreter {
                 ControlFlow::ExitSub => return Ok(ControlFlow::ExitSub),
                 ControlFlow::ExitFunction(v) => return Ok(ControlFlow::ExitFunction(v)),
                 ControlFlow::ExitDo => return Ok(ControlFlow::ExitDo),
+                ControlFlow::Retry | ControlFlow::Continue => return Ok(cf),
                 _ => {}
             }
         }
@@ -982,6 +1028,7 @@ impl Interpreter {
                 ControlFlow::Goto(l) => return Ok(ControlFlow::Goto(l)),
                 ControlFlow::ExitSub => return Ok(ControlFlow::ExitSub),
                 ControlFlow::ExitFunction(v) => return Ok(ControlFlow::ExitFunction(v)),
+                ControlFlow::Retry | ControlFlow::Continue => return Ok(cf),
                 _ => {}
             }
 
@@ -1046,6 +1093,69 @@ impl Interpreter {
             return self.exec_block(else_body);
         }
 
+        Ok(ControlFlow::Normal)
+    }
+
+    fn exec_when_exception(
+        &mut self,
+        body: &[LabeledStmt],
+        handler: &[LabeledStmt],
+    ) -> Result<ControlFlow, RuntimeError> {
+        loop {
+            let mut should_retry = false;
+            for (i, stmt) in body.iter().enumerate() {
+                match self.exec_stmt(&stmt.stmt) {
+                    Ok(cf) => match cf {
+                        ControlFlow::Normal => {}
+                        other => return Ok(other),
+                    },
+                    Err(err) => {
+                        // Enter exception handler
+                        self.current_exception = Some(ExceptionInfo {
+                            extype: err.ansi_extype(),
+                            extext: err.to_string(),
+                        });
+                        // Execute handler
+                        let mut did_continue = false;
+                        for h in handler {
+                            match self.exec_stmt(&h.stmt)? {
+                                ControlFlow::Retry => {
+                                    should_retry = true;
+                                    break;
+                                }
+                                ControlFlow::Continue => {
+                                    // Continue executing body from statement i+1
+                                    for remaining in &body[i + 1..] {
+                                        let cf = self.exec_stmt(&remaining.stmt)?;
+                                        if !matches!(cf, ControlFlow::Normal) {
+                                            return Ok(cf);
+                                        }
+                                    }
+                                    self.current_exception = None;
+                                    did_continue = true;
+                                    break;
+                                }
+                                ControlFlow::Normal => {}
+                                other => return Ok(other),
+                            }
+                        }
+                        if did_continue {
+                            return Ok(ControlFlow::Normal);
+                        }
+                        if should_retry {
+                            break; // break inner for loop, outer loop will retry
+                        }
+                        // Handler completed without RETRY or CONTINUE
+                        self.current_exception = None;
+                        return Ok(ControlFlow::Normal);
+                    }
+                }
+            }
+            if !should_retry {
+                break;
+            }
+        }
+        self.current_exception = None;
         Ok(ControlFlow::Normal)
     }
 
@@ -1167,6 +1277,16 @@ impl Interpreter {
                     if builtin_name == "INKEY$" {
                         return Ok(Value::Str(self.read_inkey()?));
                     }
+                    if builtin_name == "EXTYPE" {
+                        return Ok(Value::Numeric(
+                            self.current_exception.as_ref().map_or(0.0, |e| e.extype as f64),
+                        ));
+                    }
+                    if builtin_name == "EXTEXT$" {
+                        return Ok(Value::Str(
+                            self.current_exception.as_ref().map_or(String::new(), |e| e.extext.clone()),
+                        ));
+                    }
 
                     let is_implicit_builtin = matches!(builtin_name.as_str(), "DATE$" | "TIME$" | "TIMER");
                     if is_implicit_builtin
@@ -1241,6 +1361,22 @@ impl Interpreter {
                         }
                         return Ok(Value::Numeric(self.print_row as f64));
                     }
+                    "DET" => {
+                        if !arg_vals.is_empty() {
+                            return Err(RuntimeError::ArityMismatch { expected: 0, got: arg_vals.len() });
+                        }
+                        return Ok(Value::Numeric(self.last_det));
+                    }
+                    "EXTYPE" => {
+                        return Ok(Value::Numeric(
+                            self.current_exception.as_ref().map_or(0.0, |e| e.extype as f64),
+                        ));
+                    }
+                    "EXTEXT$" => {
+                        return Ok(Value::Str(
+                            self.current_exception.as_ref().map_or(String::new(), |e| e.extext.clone()),
+                        ));
+                    }
                     "POS" => {
                         // POS takes 1 arg (ignored) — returns current column (1-indexed)
                         if arg_vals.len() != 1 {
@@ -1309,7 +1445,7 @@ impl Interpreter {
                                 fh.eof_flag = true;
                             }
                         }
-                        return Ok(Value::Numeric(if fh.eof_flag { -1.0 } else { 0.0 }));
+                        return Ok(Value::Numeric(if fh.eof_flag { 1.0 } else { 0.0 }));
                     }
                     "LOF" => {
                         if arg_vals.len() != 1 {
@@ -1345,35 +1481,6 @@ impl Interpreter {
                         };
                         return Ok(Value::Numeric(pos as f64));
                     }
-                    "SEEK" => {
-                        if arg_vals.len() != 1 {
-                            return Err(RuntimeError::ArityMismatch { expected: 1, got: arg_vals.len() });
-                        }
-                        let fnum = arg_vals[0].to_i64()?;
-                        let fh = self.file_handles.get_mut(&fnum).ok_or_else(|| RuntimeError::General {
-                            msg: format!("file #{fnum} is not open"),
-                        })?;
-                        // Flush writer to ensure file position reflects writes
-                        if let Some(writer) = &mut fh.writer {
-                            writer.flush().map_err(|e| RuntimeError::General {
-                                msg: format!("flush error: {e}"),
-                            })?;
-                        }
-                        let byte_pos = if let Some(writer) = &mut fh.writer {
-                            writer.stream_position().unwrap_or(0)
-                        } else if let Some(reader) = &mut fh.reader {
-                            reader.stream_position().unwrap_or(0)
-                        } else {
-                            0
-                        };
-                        // SEEK returns 1-based position; for RANDOM mode, return record number
-                        let result = if fh.mode == FileMode::Random && fh.rec_len > 0 {
-                            (byte_pos as i64 / fh.rec_len) + 1
-                        } else {
-                            byte_pos as i64 + 1
-                        };
-                        return Ok(Value::Numeric(result as f64));
-                    }
                     _ => {}
                 }
 
@@ -1399,6 +1506,15 @@ impl Interpreter {
                     .collect::<Result<Vec<_>, _>>()?;
                 let key = Self::array_key(name, &idx_vals);
                 self.get_or_init_array_element(name, &key)
+            }
+            Expr::StringSlice { name, start, end } => {
+                let s = self.env.borrow().get(name).unwrap_or(Value::Str(String::new())).to_string_val()?;
+                let start_idx = self.eval_expr(start)?.to_f64()? as usize;
+                let end_idx = self.eval_expr(end)?.to_f64()? as usize;
+                // 1-based to 0-based
+                let start_0 = start_idx.saturating_sub(1);
+                let end_0 = end_idx.min(s.len());
+                Ok(Value::Str(s[start_0..end_0].to_string()))
             }
             Expr::Paren(inner) => self.eval_expr(inner),
             Expr::MemberAccess { object, field } => {
@@ -1506,10 +1622,10 @@ impl Interpreter {
         op: BinOp,
         right: &Value,
     ) -> Result<Value, RuntimeError> {
-        // String concatenation
-        if matches!(op, BinOp::Add)
-            && let (Value::Str(a), Value::Str(b)) = (left, right)
-        {
+        // String concatenation with &
+        if matches!(op, BinOp::Concat) {
+            let a = left.to_string_val()?;
+            let b = right.to_string_val()?;
             return Ok(Value::Str(format!("{a}{b}")));
         }
 
@@ -1528,7 +1644,7 @@ impl Interpreter {
                 BinOp::Ge => a >= b,
                 _ => unreachable!(),
             };
-            return Ok(Value::Numeric(if result { -1.0 } else { 0.0 }));
+            return Ok(Value::Numeric(if result { 1.0 } else { 0.0 }));
         }
 
         // Numeric operations
@@ -1545,34 +1661,27 @@ impl Interpreter {
                 }
                 Ok(Value::Numeric(a / b))
             }
-            BinOp::IntDiv => {
-                let bi = b as i64;
-                if bi == 0 {
-                    return Err(RuntimeError::DivisionByZero);
-                }
-                Ok(Value::Numeric((a as i64 / bi) as f64))
-            }
             BinOp::Mod => {
-                let bi = b as i64;
-                if bi == 0 {
+                if b == 0.0 {
                     return Err(RuntimeError::DivisionByZero);
                 }
-                Ok(Value::Numeric((a as i64 % bi) as f64))
+                // ANSI MOD operates on reals: a MOD b = a - b * INT(a/b)
+                Ok(Value::Numeric(a - b * (a / b).floor()))
             }
             BinOp::Pow => {
                 Ok(Value::Numeric(a.powf(b)))
             }
-            BinOp::Eq => Ok(Value::Numeric(if a == b { -1.0 } else { 0.0 })),
-            BinOp::Ne => Ok(Value::Numeric(if a != b { -1.0 } else { 0.0 })),
-            BinOp::Lt => Ok(Value::Numeric(if a < b { -1.0 } else { 0.0 })),
-            BinOp::Gt => Ok(Value::Numeric(if a > b { -1.0 } else { 0.0 })),
-            BinOp::Le => Ok(Value::Numeric(if a <= b { -1.0 } else { 0.0 })),
-            BinOp::Ge => Ok(Value::Numeric(if a >= b { -1.0 } else { 0.0 })),
-            BinOp::And => Ok(Value::Numeric((a as i64 & b as i64) as f64)),
-            BinOp::Or => Ok(Value::Numeric((a as i64 | b as i64) as f64)),
-            BinOp::Xor => Ok(Value::Numeric((a as i64 ^ b as i64) as f64)),
-            BinOp::Eqv => Ok(Value::Numeric((!(a as i64 ^ b as i64)) as f64)),
-            BinOp::Imp => Ok(Value::Numeric((!(a as i64) | b as i64) as f64)),
+            BinOp::Eq => Ok(Value::Numeric(if a == b { 1.0 } else { 0.0 })),
+            BinOp::Ne => Ok(Value::Numeric(if a != b { 1.0 } else { 0.0 })),
+            BinOp::Lt => Ok(Value::Numeric(if a < b { 1.0 } else { 0.0 })),
+            BinOp::Gt => Ok(Value::Numeric(if a > b { 1.0 } else { 0.0 })),
+            BinOp::Le => Ok(Value::Numeric(if a <= b { 1.0 } else { 0.0 })),
+            BinOp::Ge => Ok(Value::Numeric(if a >= b { 1.0 } else { 0.0 })),
+            // ANSI logical operators (not bitwise)
+            BinOp::And => Ok(Value::Numeric(if a != 0.0 && b != 0.0 { 1.0 } else { 0.0 })),
+            BinOp::Or => Ok(Value::Numeric(if a != 0.0 || b != 0.0 { 1.0 } else { 0.0 })),
+            BinOp::Xor => Ok(Value::Numeric(if (a != 0.0) ^ (b != 0.0) { 1.0 } else { 0.0 })),
+            BinOp::Concat => unreachable!("Concat handled above"),
         }
     }
 
@@ -1583,8 +1692,8 @@ impl Interpreter {
                 Ok(Value::Numeric(-n))
             }
             UnaryOp::Not => {
-                let n = val.to_i64()?;
-                Ok(Value::Numeric(!n as f64))
+                let n = val.to_f64()?;
+                Ok(Value::Numeric(if n == 0.0 { 1.0 } else { 0.0 }))
             }
             UnaryOp::Pos => Ok(val.clone()),
         }
@@ -1902,13 +2011,8 @@ impl Interpreter {
     // ==================== File I/O ====================
 
     fn exec_open(&mut self, open: &OpenStmt) -> Result<(), RuntimeError> {
-        let filename = self.eval_expr(&open.filename)?.to_string_val()?;
-        let file_num = self.eval_expr(&open.file_num)?.to_i64()?;
-        let rec_len = if let Some(expr) = &open.rec_len {
-            self.eval_expr(expr)?.to_i64()?
-        } else {
-            128
-        };
+        let filename = self.eval_expr(&open.name)?.to_string_val()?;
+        let file_num = self.eval_expr(&open.channel)?.to_i64()?;
 
         if file_num < 1 || file_num > 255 {
             return Err(RuntimeError::General {
@@ -1921,30 +2025,20 @@ impl Interpreter {
             });
         }
 
-        let (reader, writer) = match open.mode {
-            FileMode::Input => {
+        let (reader, writer) = match open.access {
+            FileAccess::Input => {
                 let f = File::open(&filename).map_err(|e| RuntimeError::General {
                     msg: format!("cannot open '{filename}': {e}"),
                 })?;
                 (Some(BufReader::new(f)), None)
             }
-            FileMode::Output => {
+            FileAccess::Output => {
                 let f = File::create(&filename).map_err(|e| RuntimeError::General {
                     msg: format!("cannot create '{filename}': {e}"),
                 })?;
                 (None, Some(BufWriter::new(f)))
             }
-            FileMode::Append => {
-                let f = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&filename)
-                    .map_err(|e| RuntimeError::General {
-                        msg: format!("cannot open '{filename}' for append: {e}"),
-                    })?;
-                (None, Some(BufWriter::new(f)))
-            }
-            FileMode::Random | FileMode::Binary => {
+            FileAccess::OutIn => {
                 let f = OpenOptions::new()
                     .read(true)
                     .write(true)
@@ -1961,10 +2055,9 @@ impl Interpreter {
         };
 
         self.file_handles.insert(file_num, FileHandle {
-            mode: open.mode,
+            access: open.access,
             reader,
             writer,
-            rec_len,
             eof_flag: false,
             field_mappings: Vec::new(),
         });
@@ -1993,6 +2086,54 @@ impl Interpreter {
                 }
             }
         }
+        Ok(())
+    }
+
+    fn exec_set_pointer(&mut self, file_num_expr: &Expr, position_expr: &Expr) -> Result<(), RuntimeError> {
+        let file_num = self.eval_expr(file_num_expr)?.to_i64()?;
+        let position = self.eval_expr(position_expr)?.to_i64()?;
+        let fh = self.file_handles.get_mut(&file_num).ok_or_else(|| RuntimeError::General {
+            msg: format!("file #{file_num} is not open"),
+        })?;
+        // SET POINTER uses 1-based byte position
+        let byte_pos = (position - 1).max(0) as u64;
+        if let Some(writer) = &mut fh.writer {
+            writer.flush().map_err(|e| RuntimeError::General {
+                msg: format!("flush error: {e}"),
+            })?;
+            writer.seek(SeekFrom::Start(byte_pos)).map_err(|e| RuntimeError::General {
+                msg: format!("seek error: {e}"),
+            })?;
+        }
+        if let Some(reader) = &mut fh.reader {
+            reader.seek(SeekFrom::Start(byte_pos)).map_err(|e| RuntimeError::General {
+                msg: format!("seek error: {e}"),
+            })?;
+        }
+        Ok(())
+    }
+
+    fn exec_ask_pointer(&mut self, file_num_expr: &Expr, var: &Variable) -> Result<(), RuntimeError> {
+        let file_num = self.eval_expr(file_num_expr)?.to_i64()?;
+        let fh = self.file_handles.get_mut(&file_num).ok_or_else(|| RuntimeError::General {
+            msg: format!("file #{file_num} is not open"),
+        })?;
+        // Flush writer to ensure position reflects writes
+        if let Some(writer) = &mut fh.writer {
+            writer.flush().map_err(|e| RuntimeError::General {
+                msg: format!("flush error: {e}"),
+            })?;
+        }
+        let byte_pos = if let Some(writer) = &mut fh.writer {
+            writer.stream_position().unwrap_or(0)
+        } else if let Some(reader) = &mut fh.reader {
+            reader.stream_position().unwrap_or(0)
+        } else {
+            0
+        };
+        // ASK POINTER returns 1-based byte position
+        let result = byte_pos as i64 + 1;
+        self.env.borrow_mut().set(&var.name, Value::Numeric(result as f64));
         Ok(())
     }
 
@@ -2267,16 +2408,6 @@ impl Interpreter {
             msg: format!("file #{file_num} is not open"),
         })?;
 
-        let rec_len = fh.rec_len;
-        let has_fields = !fh.field_mappings.is_empty();
-        let field_mappings: Vec<_> = if has_fields {
-            fh.field_mappings.iter()
-                .map(|m| (m.width, m.var_name.clone()))
-                .collect()
-        } else {
-            Vec::new()
-        };
-
         if gp.is_get {
             // Flush writer before reading to ensure data is on disk
             if let Some(writer) = &mut fh.writer {
@@ -2285,51 +2416,43 @@ impl Interpreter {
                 })?;
             }
 
-            // Seek if record specified
-            if let Some(rec) = record {
-                let pos = (rec - 1) * rec_len;
+            // Seek if position specified (1-based byte position)
+            if let Some(pos) = record {
+                let byte_pos = (pos - 1).max(0) as u64;
                 if let Some(reader) = &mut fh.reader {
-                    reader.seek(SeekFrom::Start(pos as u64)).map_err(|e| RuntimeError::General {
+                    reader.seek(SeekFrom::Start(byte_pos)).map_err(|e| RuntimeError::General {
                         msg: format!("seek error: {e}"),
                     })?;
                 }
             }
 
-            // Read rec_len bytes
             let reader = fh.reader.as_mut().ok_or_else(|| RuntimeError::General {
                 msg: format!("file #{file_num} is not open for reading"),
             })?;
-            let mut buf = vec![0u8; rec_len as usize];
-            let bytes_read = reader.read(&mut buf).unwrap_or(0);
-            if bytes_read == 0 {
-                fh.eof_flag = true;
-            }
 
-            if has_fields && gp.var.is_none() {
-                // Populate FIELD-mapped variables from the buffer
-                let mut offset = 0;
-                for &(width, ref var_name) in &field_mappings {
-                    let end = (offset + width).min(buf.len());
-                    let slice = if offset < buf.len() { &buf[offset..end] } else { &[] as &[u8] };
-                    let s = String::from_utf8_lossy(slice).to_string();
-                    self.env.borrow_mut().set(var_name, Value::Str(s));
-                    offset += width;
+            if let Some(var) = &gp.var {
+                // Read based on current variable length, or default 128 bytes
+                let val = self.env.borrow().get(&var.name).unwrap_or(Value::Str(String::new()));
+                let read_len = match &val {
+                    Value::Str(s) if !s.is_empty() => s.len(),
+                    _ => 128,
+                };
+                let mut buf = vec![0u8; read_len];
+                let bytes_read = reader.read(&mut buf).unwrap_or(0);
+                if bytes_read == 0 {
+                    fh.eof_flag = true;
                 }
-            } else {
-                // Original behavior: store in single variable
                 buf.truncate(bytes_read);
                 let s = String::from_utf8_lossy(&buf).trim_end_matches('\0').to_string();
-                if let Some(var) = &gp.var {
-                    self.env.borrow_mut().set(&var.name, Value::Str(s));
-                }
+                self.env.borrow_mut().set(&var.name, Value::Str(s));
             }
         } else {
             // PUT
-            // Seek if record specified
-            if let Some(rec) = record {
-                let pos = (rec - 1) * rec_len;
+            // Seek if position specified (1-based byte position)
+            if let Some(pos) = record {
+                let byte_pos = (pos - 1).max(0) as u64;
                 if let Some(writer) = &mut fh.writer {
-                    writer.seek(SeekFrom::Start(pos as u64)).map_err(|e| RuntimeError::General {
+                    writer.seek(SeekFrom::Start(byte_pos)).map_err(|e| RuntimeError::General {
                         msg: format!("seek error: {e}"),
                     })?;
                 }
@@ -2339,42 +2462,73 @@ impl Interpreter {
                 msg: format!("file #{file_num} is not open for writing"),
             })?;
 
-            if has_fields && gp.var.is_none() {
-                // Build record buffer from FIELD-mapped variables
-                let mut padded = vec![b' '; rec_len as usize];
-                let mut offset = 0;
-                for &(width, ref var_name) in &field_mappings {
-                    let val = self.env.borrow().get(var_name)
-                        .unwrap_or(Value::Str(String::new()));
-                    let s = val.to_string_val().unwrap_or_default();
-                    let bytes = s.as_bytes();
-                    let copy_len = bytes.len().min(width);
-                    if offset + copy_len <= padded.len() {
-                        padded[offset..offset + copy_len].copy_from_slice(&bytes[..copy_len]);
-                    }
-                    offset += width;
-                }
-                let _ = writer.write_all(&padded);
-            } else if let Some(var) = &gp.var {
+            if let Some(var) = &gp.var {
                 let val = self.env.borrow().get(&var.name)
                     .unwrap_or(Value::Str(String::new()));
                 let s = match val {
                     Value::Str(s) => s,
                     other => other.format_for_write(),
                 };
-                let bytes = s.as_bytes();
-                // Pad to rec_len for RANDOM mode
-                if fh.mode == FileMode::Random {
-                    let mut padded = vec![0u8; rec_len as usize];
-                    let copy_len = bytes.len().min(rec_len as usize);
-                    padded[..copy_len].copy_from_slice(&bytes[..copy_len]);
-                    let _ = writer.write_all(&padded);
-                } else {
-                    let _ = writer.write_all(bytes);
-                }
+                let _ = writer.write_all(s.as_bytes());
             }
         }
 
         Ok(())
+    }
+
+    fn exec_mat(&mut self, op: &MatOp) -> Result<ControlFlow, RuntimeError> {
+        match op {
+            MatOp::Print { channel: _, name } => {
+                // Print all elements of the array
+                let prefix = format!("{}(", name);
+                let mut entries: Vec<(String, Value)> = Vec::new();
+                {
+                    let env = self.env.borrow();
+                    for (key, val) in env.vars_ref().iter() {
+                        if key.starts_with(&prefix) {
+                            entries.push((key.clone(), val.clone()));
+                        }
+                    }
+                }
+                entries.sort_by(|a, b| a.0.cmp(&b.0));
+                for (_key, val) in &entries {
+                    write!(self.output, " {} ", val.format_for_print()).ok();
+                }
+                writeln!(self.output).ok();
+                Ok(ControlFlow::Normal)
+            }
+            MatOp::Read { name } => {
+                // Read DATA values into array elements
+                let prefix = format!("{}(", name);
+                let keys: Vec<String> = {
+                    let env = self.env.borrow();
+                    env.vars_ref().keys()
+                        .filter(|k| k.starts_with(&prefix))
+                        .cloned()
+                        .collect()
+                };
+                for key in keys {
+                    if self.data_pos < self.data_values.len() {
+                        let val = match &self.data_values[self.data_pos] {
+                            DataItem::Number(n) => Value::Numeric(*n),
+                            DataItem::Str(s) => Value::Str(s.clone()),
+                        };
+                        self.data_pos += 1;
+                        self.env.borrow_mut().set(&key, val);
+                    }
+                }
+                Ok(ControlFlow::Normal)
+            }
+            MatOp::Input { channel: _, name: _ } => {
+                Err(RuntimeError::General {
+                    msg: "MAT INPUT not yet implemented".to_string(),
+                })
+            }
+            MatOp::Assign { target: _, source: _ } => {
+                Err(RuntimeError::General {
+                    msg: "MAT assignment not yet implemented".to_string(),
+                })
+            }
+        }
     }
 }

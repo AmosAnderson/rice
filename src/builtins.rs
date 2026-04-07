@@ -41,12 +41,7 @@ impl BuiltinRegistry {
 
         // String
         reg.register("LEN", builtin_len, 1);
-        reg.register("LEFT$", builtin_left, 2);
-        reg.register("RIGHT$", builtin_right, 2);
-        reg.register("MID$", builtin_mid, 0); // 2 or 3 args
         reg.register("INSTR", builtin_instr, 0); // 2 or 3 args
-        reg.register("UCASE$", builtin_ucase, 1);
-        reg.register("LCASE$", builtin_lcase, 1);
         reg.register("LTRIM$", builtin_ltrim, 1);
         reg.register("RTRIM$", builtin_rtrim, 1);
         reg.register("SPACE$", builtin_space, 1);
@@ -205,45 +200,6 @@ fn builtin_len(args: &[Value]) -> Result<Value, RuntimeError> {
     }
 }
 
-fn builtin_left(args: &[Value]) -> Result<Value, RuntimeError> {
-    let s = args[0].to_string_val()?;
-    let n_raw = args[1].to_i64()?;
-    if n_raw < 0 {
-        return Err(RuntimeError::IllegalFunctionCall { msg: "LEFT$ count must be non-negative".into() });
-    }
-    let n = n_raw as usize;
-    let result: String = s.chars().take(n).collect();
-    Ok(Value::Str(result))
-}
-
-fn builtin_right(args: &[Value]) -> Result<Value, RuntimeError> {
-    let s = args[0].to_string_val()?;
-    let n = args[1].to_i64()? as usize;
-    let len = s.chars().count();
-    let skip = len.saturating_sub(n);
-    let result: String = s.chars().skip(skip).collect();
-    Ok(Value::Str(result))
-}
-
-fn builtin_mid(args: &[Value]) -> Result<Value, RuntimeError> {
-    if args.len() < 2 || args.len() > 3 {
-        return Err(RuntimeError::ArityMismatch {
-            expected: 2,
-            got: args.len(),
-        });
-    }
-    let s = args[0].to_string_val()?;
-    let start = (args[1].to_i64()? - 1).max(0) as usize; // 1-based
-    if args.len() == 3 {
-        let len = args[2].to_i64()? as usize;
-        let result: String = s.chars().skip(start).take(len).collect();
-        Ok(Value::Str(result))
-    } else {
-        let result: String = s.chars().skip(start).collect();
-        Ok(Value::Str(result))
-    }
-}
-
 fn builtin_instr(args: &[Value]) -> Result<Value, RuntimeError> {
     match args.len() {
         2 => {
@@ -267,14 +223,6 @@ fn builtin_instr(args: &[Value]) -> Result<Value, RuntimeError> {
             got: args.len(),
         }),
     }
-}
-
-fn builtin_ucase(args: &[Value]) -> Result<Value, RuntimeError> {
-    Ok(Value::Str(args[0].to_string_val()?.to_uppercase()))
-}
-
-fn builtin_lcase(args: &[Value]) -> Result<Value, RuntimeError> {
-    Ok(Value::Str(args[0].to_string_val()?.to_lowercase()))
 }
 
 fn builtin_ltrim(args: &[Value]) -> Result<Value, RuntimeError> {

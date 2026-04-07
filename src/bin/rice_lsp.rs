@@ -590,8 +590,6 @@ fn token_name(tok: &rice::token::Token) -> Option<String> {
         rice::token::Token::KwOr => Some("OR".into()),
         rice::token::Token::KwNot => Some("NOT".into()),
         rice::token::Token::KwXor => Some("XOR".into()),
-        rice::token::Token::KwEqv => Some("EQV".into()),
-        rice::token::Token::KwImp => Some("IMP".into()),
         rice::token::Token::KwMod => Some("MOD".into()),
         _ => None,
     }

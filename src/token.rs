@@ -30,7 +30,6 @@ pub enum Token {
     Minus,
     Star,
     Slash,
-    Backslash, // \ integer division (to be removed in Phase 5)
     Caret,     // ^
     Equal,     // = (assignment AND comparison)
     NotEqual,  // <>
@@ -104,9 +103,15 @@ pub enum Token {
     KwWrite,
     KwAppend,
     KwOutput,
-    KwBinary,
-    KwRandom,
     KwLen,
+    KwAccess,
+    KwOrganization,
+    KwSequential,
+    KwStream,
+    KwOutIn,
+    KwSet,
+    KwAsk,
+    KwPointer,
     KwGet,
     KwPut,
     KwFreefile,
@@ -123,8 +128,6 @@ pub enum Token {
     KwOr,
     KwNot,
     KwXor,
-    KwEqv,
-    KwImp,
     KwMod,
 
     KwRem,
@@ -183,4 +186,15 @@ pub enum Token {
     // FIELD/SEEK
     KwField,
     KwSeek,
+
+    // WHEN EXCEPTION
+    KwWhen,
+    KwException,
+    KwUse,
+    KwRetry,
+    KwContinue,
+    KwEndWhen,
+
+    // MAT operations
+    KwMat,
 }

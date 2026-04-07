@@ -227,11 +227,14 @@ impl Parser {
             Token::KwCommon => {
                 return Err(ParseError::General { line: self.current_line(), msg: "COMMON is not supported in ANSI BASIC".into() });
             }
-            // FIELD/SEEK
+            // FIELD (unsupported)
             Token::KwField => {
                 return Err(ParseError::General { line: self.current_line(), msg: "FIELD is not supported in ANSI BASIC".into() });
             }
-            Token::KwSeek => self.parse_seek(),
+            // SET #n: POINTER expr
+            Token::KwSet => self.parse_set_pointer(),
+            // ASK #n: POINTER var
+            Token::KwAsk => self.parse_ask_pointer(),
             // Console
             Token::KwCls => {
                 self.advance();
@@ -251,9 +254,19 @@ impl Parser {
             Token::KwKey => {
                 return Err(ParseError::General { line: self.current_line(), msg: "KEY ON/OFF/STOP is not supported in ANSI BASIC".into() });
             }
+            Token::KwWhen => self.parse_when(),
+            Token::KwRetry => {
+                self.advance();
+                Ok(Stmt::Retry)
+            }
+            Token::KwContinue => {
+                self.advance();
+                Ok(Stmt::Continue)
+            }
             Token::KwWend => {
                 return Err(ParseError::General { line: self.current_line(), msg: "WEND is not supported; use END WHILE instead".into() });
             }
+            Token::KwMat => self.parse_mat(),
             Token::Identifier(_) => self.parse_assignment_or_call(),
             _ => {
                 let tok = self.peek().clone();
@@ -391,6 +404,29 @@ impl Parser {
 
     fn parse_assignment(&mut self) -> Result<Stmt, ParseError> {
         let var = self.parse_variable()?;
+
+        // Check for string slice assignment: LET name$(start:end) = expr
+        if matches!(self.peek(), Token::LeftParen) {
+            let save = self.pos;
+            self.advance(); // consume (
+            let start_expr = self.parse_expr()?;
+            if matches!(self.peek(), Token::Colon) {
+                self.advance(); // consume colon
+                let end_expr = self.parse_expr()?;
+                self.expect(Token::RightParen)?;
+                self.expect(Token::Equal)?;
+                let rhs = self.parse_expr()?;
+                return Ok(Stmt::LetSlice {
+                    name: var.name,
+                    start: start_expr,
+                    end: end_expr,
+                    expr: rhs,
+                });
+            }
+            // Not a slice — backtrack
+            self.pos = save;
+        }
+
         self.expect(Token::Equal)?;
         let expr = self.parse_expr()?;
         Ok(Stmt::Let { var, expr })
@@ -411,7 +447,7 @@ impl Parser {
 
         self.advance();
 
-        // Check for array assignment or sub call with parens: name(...)
+        // Check for array assignment, string slice assignment, or sub call with parens: name(...)
         if matches!(self.peek(), Token::LeftParen) {
             // Parse the argument list; then check if = follows (array assignment)
             // or not (sub call)
@@ -420,6 +456,22 @@ impl Parser {
             let mut indices = Vec::new();
             if !matches!(self.peek(), Token::RightParen) {
                 indices.push(self.parse_expr()?);
+
+                // Check for string slice assignment: name$(start:end) = expr
+                if matches!(self.peek(), Token::Colon) {
+                    self.advance(); // consume colon
+                    let end_expr = self.parse_expr()?;
+                    self.expect(Token::RightParen)?;
+                    self.expect(Token::Equal)?;
+                    let rhs = self.parse_expr()?;
+                    return Ok(Stmt::LetSlice {
+                        name,
+                        start: indices.pop().unwrap(),
+                        end: end_expr,
+                        expr: rhs,
+                    });
+                }
+
                 while matches!(self.peek(), Token::Comma) {
                     self.advance();
                     indices.push(self.parse_expr()?);
@@ -1230,60 +1282,70 @@ impl Parser {
 
     fn parse_open(&mut self) -> Result<Stmt, ParseError> {
         self.advance(); // consume OPEN
-        let filename = self.parse_expr()?;
-        self.expect(Token::KwFor)?;
+        // ANSI BASIC: OPEN #channel: NAME expr [, ORGANIZATION kw] [, ACCESS kw]
+        self.expect(Token::Hash)?;
+        let channel = self.parse_expr()?;
+        self.expect(Token::Colon)?;
 
-        let mode = match self.peek() {
-            Token::KwInput => {
-                self.advance();
-                FileMode::Input
-            }
-            Token::KwOutput => {
-                self.advance();
-                FileMode::Output
-            }
-            Token::KwAppend => {
-                self.advance();
-                FileMode::Append
-            }
-            Token::KwRandom => {
-                self.advance();
-                FileMode::Random
-            }
-            Token::KwBinary => {
-                self.advance();
-                FileMode::Binary
-            }
-            _ => {
-                return Err(ParseError::Expected {
-                    line: self.current_line(),
-                    expected: "INPUT, OUTPUT, APPEND, RANDOM, or BINARY".into(),
-                    found: format!("{:?}", self.peek()),
-                });
-            }
-        };
-
-        self.expect(Token::KwAs)?;
-        // Optional #
-        if matches!(self.peek(), Token::Hash) {
-            self.advance();
+        // Expect NAME keyword (reused as KwName token)
+        if !matches!(self.peek(), Token::KwName) {
+            return Err(ParseError::Expected {
+                line: self.current_line(),
+                expected: "NAME".into(),
+                found: format!("{:?}", self.peek()),
+            });
         }
-        let file_num = self.parse_expr()?;
+        self.advance(); // consume NAME
 
-        let rec_len = if matches!(self.peek(), Token::KwLen) {
+        let name = self.parse_expr()?;
+
+        let mut access = FileAccess::Input; // default
+        let mut organization = None;
+
+        // Parse optional clauses separated by commas
+        while matches!(self.peek(), Token::Comma) {
             self.advance();
-            self.expect(Token::Equal)?;
-            Some(self.parse_expr()?)
-        } else {
-            None
-        };
+            match self.peek() {
+                Token::KwAccess => {
+                    self.advance();
+                    match self.peek() {
+                        Token::KwInput => { self.advance(); access = FileAccess::Input; }
+                        Token::KwOutput => { self.advance(); access = FileAccess::Output; }
+                        Token::KwOutIn => { self.advance(); access = FileAccess::OutIn; }
+                        _ => {
+                            return Err(ParseError::Expected {
+                                line: self.current_line(),
+                                expected: "INPUT, OUTPUT, or OUTIN".into(),
+                                found: format!("{:?}", self.peek()),
+                            });
+                        }
+                    }
+                }
+                Token::KwOrganization => {
+                    self.advance();
+                    match self.peek() {
+                        Token::KwSequential => { self.advance(); organization = Some(FileOrg::Sequential); }
+                        Token::KwStream => { self.advance(); organization = Some(FileOrg::Stream); }
+                        _ => {
+                            return Err(ParseError::Expected {
+                                line: self.current_line(),
+                                expected: "SEQUENTIAL or STREAM".into(),
+                                found: format!("{:?}", self.peek()),
+                            });
+                        }
+                    }
+                }
+                _ => {
+                    return Err(ParseError::Expected {
+                        line: self.current_line(),
+                        expected: "ACCESS or ORGANIZATION".into(),
+                        found: format!("{:?}", self.peek()),
+                    });
+                }
+            }
+        }
 
-        Ok(Stmt::Open(OpenStmt {
-            filename,
-            mode,
-            file_num,
-            rec_len,
-        }))
+        Ok(Stmt::Open(OpenStmt { channel, name, access, organization }))
     }
 
     fn parse_close(&mut self) -> Result<Stmt, ParseError> {
@@ -1464,50 +1526,173 @@ impl Parser {
         Some(name.to_string())
     }
 
-    fn parse_seek(&mut self) -> Result<Stmt, ParseError> {
-        self.advance(); // consume SEEK
-        // Optional #
-        if matches!(self.peek(), Token::Hash) {
-            self.advance();
-        }
+    fn parse_set_pointer(&mut self) -> Result<Stmt, ParseError> {
+        self.advance(); // consume SET
+        self.expect(Token::Hash)?;
         let file_num = self.parse_expr()?;
-        self.expect(Token::Comma)?;
+        self.expect(Token::Colon)?;
+        self.expect(Token::KwPointer)?;
         let position = self.parse_expr()?;
-        Ok(Stmt::Seek { file_num, position })
+        Ok(Stmt::SetPointer { file_num, position })
+    }
+
+    fn parse_ask_pointer(&mut self) -> Result<Stmt, ParseError> {
+        self.advance(); // consume ASK
+        self.expect(Token::Hash)?;
+        let file_num = self.parse_expr()?;
+        self.expect(Token::Colon)?;
+        self.expect(Token::KwPointer)?;
+        let var = self.parse_variable()?;
+        Ok(Stmt::AskPointer { file_num, var })
+    }
+
+    fn parse_mat(&mut self) -> Result<Stmt, ParseError> {
+        self.advance(); // consume MAT
+        match self.peek().clone() {
+            Token::KwPrint => {
+                self.advance(); // consume PRINT
+                // Optional file channel: MAT PRINT #n,
+                let channel = if matches!(self.peek(), Token::Hash) {
+                    self.advance(); // consume #
+                    let ch = self.parse_expr()?;
+                    self.expect(Token::Comma)?;
+                    Some(ch)
+                } else {
+                    None
+                };
+                let (name, _) = self.expect_identifier()?;
+                Ok(Stmt::Mat(MatOp::Print { channel, name }))
+            }
+            Token::KwRead => {
+                self.advance(); // consume READ
+                let (name, _) = self.expect_identifier()?;
+                Ok(Stmt::Mat(MatOp::Read { name }))
+            }
+            Token::KwInput => {
+                self.advance(); // consume INPUT
+                // Optional file channel: MAT INPUT #n,
+                let channel = if matches!(self.peek(), Token::Hash) {
+                    self.advance(); // consume #
+                    let ch = self.parse_expr()?;
+                    self.expect(Token::Comma)?;
+                    Some(ch)
+                } else {
+                    None
+                };
+                let (name, _) = self.expect_identifier()?;
+                Ok(Stmt::Mat(MatOp::Input { channel, name }))
+            }
+            Token::Identifier(_) => {
+                // MAT name = expr
+                let (target, _) = self.expect_identifier()?;
+                self.expect(Token::Equal)?;
+                let source = self.parse_mat_expr()?;
+                Ok(Stmt::Mat(MatOp::Assign { target, source }))
+            }
+            _ => Err(ParseError::Expected {
+                line: self.current_line(),
+                expected: "PRINT, READ, INPUT, or identifier after MAT".into(),
+                found: format!("{:?}", self.peek()),
+            }),
+        }
+    }
+
+    fn parse_mat_expr(&mut self) -> Result<MatExpr, ParseError> {
+        match self.peek().clone() {
+            Token::Identifier(ref name) if name == "ZER" => {
+                self.advance();
+                Ok(MatExpr::Zer)
+            }
+            Token::Identifier(ref name) if name == "CON" => {
+                self.advance();
+                Ok(MatExpr::Con)
+            }
+            Token::Identifier(ref name) if name == "IDN" => {
+                self.advance();
+                Ok(MatExpr::Idn)
+            }
+            Token::Identifier(ref name) if name == "INV" => {
+                self.advance();
+                self.expect(Token::LeftParen)?;
+                let (name, _) = self.expect_identifier()?;
+                self.expect(Token::RightParen)?;
+                Ok(MatExpr::Inv(name))
+            }
+            Token::Identifier(ref name) if name == "TRN" => {
+                self.advance();
+                self.expect(Token::LeftParen)?;
+                let (name, _) = self.expect_identifier()?;
+                self.expect(Token::RightParen)?;
+                Ok(MatExpr::Trn(name))
+            }
+            Token::LeftParen => {
+                // Scalar multiply: (expr) * name
+                self.advance(); // consume (
+                let scalar = self.parse_expr()?;
+                self.expect(Token::RightParen)?;
+                self.expect(Token::Star)?;
+                let (name, _) = self.expect_identifier()?;
+                Ok(MatExpr::ScalarMul(scalar, name))
+            }
+            Token::Identifier(_) => {
+                // Could be: name, name + name, name - name, name * name
+                let (a, _) = self.expect_identifier()?;
+                match self.peek() {
+                    Token::Plus => {
+                        self.advance();
+                        let (b, _) = self.expect_identifier()?;
+                        Ok(MatExpr::Add(a, b))
+                    }
+                    Token::Minus => {
+                        self.advance();
+                        let (b, _) = self.expect_identifier()?;
+                        Ok(MatExpr::Sub(a, b))
+                    }
+                    Token::Star => {
+                        self.advance();
+                        let (b, _) = self.expect_identifier()?;
+                        Ok(MatExpr::Mul(a, b))
+                    }
+                    _ => Ok(MatExpr::Name(a)),
+                }
+            }
+            _ => Err(ParseError::Expected {
+                line: self.current_line(),
+                expected: "matrix expression (name, ZER, CON, IDN, INV, TRN, or arithmetic)".into(),
+                found: format!("{:?}", self.peek()),
+            }),
+        }
+    }
+
+    fn parse_when(&mut self) -> Result<Stmt, ParseError> {
+        self.advance(); // consume WHEN
+        self.expect(Token::KwException)?;
+        // Expect "IN" as an identifier
+        match self.peek().clone() {
+            Token::Identifier(ref name) if name == "IN" => {
+                self.advance();
+            }
+            _ => {
+                return Err(ParseError::Expected {
+                    line: self.current_line(),
+                    expected: "IN".into(),
+                    found: format!("{:?}", self.peek()),
+                });
+            }
+        }
+        self.skip_newlines();
+        let body = self.parse_body_until(&[Token::KwUse])?;
+        self.expect(Token::KwUse)?;
+        self.skip_newlines();
+        let handler = self.parse_body_until(&[Token::KwEndWhen])?;
+        self.expect(Token::KwEndWhen)?;
+        Ok(Stmt::WhenException { body, handler })
     }
 
     // ==================== Expression parsing ====================
 
     pub fn parse_expr(&mut self) -> Result<Expr, ParseError> {
-        self.parse_imp_expr()
-    }
-
-    fn parse_imp_expr(&mut self) -> Result<Expr, ParseError> {
-        let mut left = self.parse_eqv_expr()?;
-        while matches!(self.peek(), Token::KwImp) {
-            self.advance();
-            let right = self.parse_eqv_expr()?;
-            left = Expr::BinaryOp {
-                left: Box::new(left),
-                op: BinOp::Imp,
-                right: Box::new(right),
-            };
-        }
-        Ok(left)
-    }
-
-    fn parse_eqv_expr(&mut self) -> Result<Expr, ParseError> {
-        let mut left = self.parse_xor_expr()?;
-        while matches!(self.peek(), Token::KwEqv) {
-            self.advance();
-            let right = self.parse_xor_expr()?;
-            left = Expr::BinaryOp {
-                left: Box::new(left),
-                op: BinOp::Eqv,
-                right: Box::new(right),
-            };
-        }
-        Ok(left)
+        self.parse_xor_expr()
     }
 
     fn parse_xor_expr(&mut self) -> Result<Expr, ParseError> {
@@ -1593,6 +1778,7 @@ impl Parser {
             let op = match self.peek() {
                 Token::Plus => BinOp::Add,
                 Token::Minus => BinOp::Sub,
+                Token::Ampersand => BinOp::Concat,
                 _ => break,
             };
             self.advance();
@@ -1607,27 +1793,13 @@ impl Parser {
     }
 
     fn parse_mod_expr(&mut self) -> Result<Expr, ParseError> {
-        let mut left = self.parse_intdiv()?;
-        while matches!(self.peek(), Token::KwMod) {
-            self.advance();
-            let right = self.parse_intdiv()?;
-            left = Expr::BinaryOp {
-                left: Box::new(left),
-                op: BinOp::Mod,
-                right: Box::new(right),
-            };
-        }
-        Ok(left)
-    }
-
-    fn parse_intdiv(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_multiplicative()?;
-        while matches!(self.peek(), Token::Backslash) {
+        while matches!(self.peek(), Token::KwMod) {
             self.advance();
             let right = self.parse_multiplicative()?;
             left = Expr::BinaryOp {
                 left: Box::new(left),
-                op: BinOp::IntDiv,
+                op: BinOp::Mod,
                 right: Box::new(right),
             };
         }
@@ -1705,7 +1877,7 @@ impl Parser {
             Token::Identifier(name) => {
                 self.advance();
 
-                // Check for function call / array index
+                // Check for function call / array index / string slice
                 if matches!(self.peek(), Token::LeftParen) {
                     self.advance();
                     let mut args = Vec::new();
@@ -1713,6 +1885,19 @@ impl Parser {
                         // Skip optional # before argument (e.g., INPUT$(n, #1))
                         if matches!(self.peek(), Token::Hash) { self.advance(); }
                         args.push(self.parse_expr()?);
+
+                        // Check for colon — string slice syntax: name$(start:end)
+                        if matches!(self.peek(), Token::Colon) {
+                            self.advance(); // consume colon
+                            let end_expr = self.parse_expr()?;
+                            self.expect(Token::RightParen)?;
+                            return Ok(Expr::StringSlice {
+                                name: name.clone(),
+                                start: Box::new(args.pop().unwrap()),
+                                end: Box::new(end_expr),
+                            });
+                        }
+
                         while matches!(self.peek(), Token::Comma) {
                             self.advance();
                             if matches!(self.peek(), Token::Hash) { self.advance(); }
@@ -1798,7 +1983,7 @@ impl Parser {
     fn is_keyword_function(&self, tok: &Token) -> bool {
         matches!(
             tok,
-            Token::KwLen | Token::KwString | Token::KwSeek
+            Token::KwLen | Token::KwString
         )
     }
 
@@ -1806,7 +1991,6 @@ impl Parser {
         match tok {
             Token::KwLen => "LEN".into(),
             Token::KwString => "STRING$".into(),
-            Token::KwSeek => "SEEK".into(),
             _ => unreachable!("keyword_function_name called with non-function keyword"),
         }
     }
@@ -1946,7 +2130,7 @@ impl Parser {
     }
 
     fn at_stmt_end(&self) -> bool {
-        matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon | Token::KwElse)
+        matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon | Token::KwElse | Token::KwUse | Token::KwEndWhen)
     }
 
     fn skip_newlines(&mut self) {

@@ -81,6 +81,24 @@ impl RuntimeError {
         }
     }
 
+    /// Map a RuntimeError to an ANSI BASIC exception type number.
+    pub fn ansi_extype(&self) -> i32 {
+        match self {
+            RuntimeError::DivisionByZero => 3001,
+            RuntimeError::TypeMismatch { .. } => 4001,
+            RuntimeError::SubscriptOutOfRange => 3000,
+            RuntimeError::Overflow { .. } => 1000,
+            RuntimeError::IllegalFunctionCall { .. } => 5000,
+            RuntimeError::IoError { code, .. } => {
+                match *code {
+                    53 => 8001, // FileNotFound
+                    _ => 8000 + *code,
+                }
+            }
+            _ => 9999,
+        }
+    }
+
     /// Create an IoError from a std::io::Error with appropriate QBasic error code.
     pub fn from_io(context: &str, e: std::io::Error) -> Self {
         RuntimeError::IoError {

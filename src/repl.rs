@@ -183,8 +183,7 @@ fn token_source_len(token: &Token, source_from_token: &str) -> usize {
         // Two-character operators
         Token::NotEqual | Token::LessEqual | Token::GreaterEqual => 2,
         // Single-character operators/punctuation
-        Token::Plus | Token::Minus | Token::Star | Token::Slash | Token::Backslash
-        | Token::Caret | Token::Equal | Token::Less | Token::Greater
+        Token::Plus | Token::Minus | Token::Star | Token::Slash        | Token::Caret | Token::Equal | Token::Less | Token::Greater
         | Token::LeftParen | Token::RightParen | Token::Comma | Token::Semicolon
         | Token::Hash | Token::Colon => 1,
         // Compound keywords
@@ -194,6 +193,7 @@ fn token_source_len(token: &Token, source_from_token: &str) -> usize {
         Token::KwEndSelect => keyword_len(source_from_token, &["END", "SELECT"]),
         Token::KwEndType => keyword_len(source_from_token, &["END", "TYPE"]),
         Token::KwLineInput => keyword_len(source_from_token, &["LINE", "INPUT"]),
+        Token::KwEndWhen => keyword_len(source_from_token, &["END", "WHEN"]),
         // All other keywords: match the keyword text length
         _ => {
             let kw_name = keyword_name(token);
@@ -279,8 +279,8 @@ fn keyword_name(token: &Token) -> &'static str {
         Token::KwWrite => "WRITE",
         Token::KwAppend => "APPEND",
         Token::KwOutput => "OUTPUT",
-        Token::KwBinary => "BINARY",
-        Token::KwRandom => "RANDOM",
+        Token::KwStream => "STREAM",
+        Token::KwSequential => "SEQUENTIAL",
         Token::KwLen => "LEN",
         Token::KwGet => "GET",
         Token::KwPut => "PUT",
@@ -294,8 +294,6 @@ fn keyword_name(token: &Token) -> &'static str {
         Token::KwOr => "OR",
         Token::KwNot => "NOT",
         Token::KwXor => "XOR",
-        Token::KwEqv => "EQV",
-        Token::KwImp => "IMP",
         Token::KwMod => "MOD",
         Token::KwRem => "REM",
         Token::KwTab => "TAB",
@@ -325,6 +323,12 @@ fn keyword_name(token: &Token) -> &'static str {
         Token::KwDefSng => "DEFSNG",
         Token::KwDefDbl => "DEFDBL",
         Token::KwDefStr => "DEFSTR",
+        Token::KwWhen => "WHEN",
+        Token::KwException => "EXCEPTION",
+        Token::KwUse => "USE",
+        Token::KwRetry => "RETRY",
+        Token::KwContinue => "CONTINUE",
+        Token::KwEndWhen => "END WHEN",
         _ => "",
     }
 }
@@ -335,8 +339,7 @@ fn token_color(token: &Token) -> &'static str {
         Token::NumericLiteral(_) | Token::LineNumber(_) => COLOR_NUMBER,
         Token::Identifier(_) => COLOR_IDENT,
         Token::KwRem => COLOR_COMMENT,
-        Token::Plus | Token::Minus | Token::Star | Token::Slash | Token::Backslash
-        | Token::Caret | Token::Equal | Token::NotEqual | Token::Less | Token::Greater
+        Token::Plus | Token::Minus | Token::Star | Token::Slash        | Token::Caret | Token::Equal | Token::NotEqual | Token::Less | Token::Greater
         | Token::LessEqual | Token::GreaterEqual | Token::LeftParen | Token::RightParen
         | Token::Comma | Token::Semicolon | Token::Hash | Token::Colon => COLOR_OPERATOR,
         Token::Newline | Token::Eof => COLOR_OPERATOR, // should be skipped, but safe default
@@ -493,9 +496,12 @@ fn compute_depth_delta(line: &str) -> i32 {
                     delta += 1;
                 }
             }
+            Token::KwWhen => {
+                delta += 1;
+            }
             Token::KwNext | Token::KwWend | Token::KwLoop
             | Token::KwEndIf | Token::KwEndSub | Token::KwEndFunction
-            | Token::KwEndSelect | Token::KwEndType => {
+            | Token::KwEndSelect | Token::KwEndType | Token::KwEndWhen => {
                 delta -= 1;
             }
             _ => {}

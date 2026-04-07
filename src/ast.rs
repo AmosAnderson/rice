@@ -32,6 +32,12 @@ pub enum Stmt {
         var: Variable,
         expr: Expr,
     },
+    LetSlice {
+        name: String,
+        start: Expr,
+        end: Expr,
+        expr: Expr,
+    },
     Dim(Vec<DimDecl>),
     Const {
         name: String,
@@ -143,9 +149,12 @@ pub enum Stmt {
     Chain { filespec: Expr },
     Common(CommonStmt),
 
-    // FIELD/SEEK
+    // FIELD (legacy, unsupported)
     Field { file_num: Expr, fields: Vec<FieldDef> },
-    Seek { file_num: Expr, position: Expr },
+
+    // SET/ASK POINTER (ANSI BASIC file positioning)
+    SetPointer { file_num: Expr, position: Expr },
+    AskPointer { file_num: Expr, var: Variable },
 
     // Console
     Cls,
@@ -154,6 +163,17 @@ pub enum Stmt {
     Color { fg: Option<Expr>, bg: Option<Expr> },
     Width { columns: Option<Expr>, rows: Option<Expr> },
     ViewPrint { top: Option<Expr>, bottom: Option<Expr> },
+
+    // WHEN EXCEPTION
+    WhenException {
+        body: Vec<LabeledStmt>,
+        handler: Vec<LabeledStmt>,
+    },
+    Retry,
+    Continue,
+
+    // MAT operations
+    Mat(MatOp),
 
     // Misc
     End,
@@ -316,19 +336,23 @@ pub enum DataItem {
 
 #[derive(Debug, Clone)]
 pub struct OpenStmt {
-    pub filename: Expr,
-    pub mode: FileMode,
-    pub file_num: Expr,
-    pub rec_len: Option<Expr>,
+    pub channel: Expr,       // file number expression
+    pub name: Expr,          // filename expression
+    pub access: FileAccess,  // ACCESS mode
+    pub organization: Option<FileOrg>,  // ORGANIZATION (optional)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum FileMode {
+pub enum FileAccess {
     Input,
     Output,
-    Append,
-    Random,
-    Binary,
+    OutIn,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FileOrg {
+    Sequential,
+    Stream,
 }
 
 #[derive(Debug, Clone)]
@@ -396,6 +420,11 @@ pub enum Expr {
         name: String,
         args: Vec<Expr>,
     },
+    StringSlice {
+        name: String,
+        start: Box<Expr>,
+        end: Box<Expr>,
+    },
     Paren(Box<Expr>),
     MemberAccess {
         object: Box<Expr>,
@@ -414,7 +443,6 @@ pub enum BinOp {
     Sub,
     Mul,
     Div,
-    IntDiv,
     Mod,
     Pow,
     Eq,
@@ -426,8 +454,7 @@ pub enum BinOp {
     And,
     Or,
     Xor,
-    Eqv,
-    Imp,
+    Concat,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -445,6 +472,29 @@ pub enum CompareOp {
     Gt,
     Le,
     Ge,
+}
+
+// MAT (matrix) operations
+#[derive(Debug, Clone)]
+pub enum MatOp {
+    Print { channel: Option<Expr>, name: String },
+    Read { name: String },
+    Input { channel: Option<Expr>, name: String },
+    Assign { target: String, source: MatExpr },
+}
+
+#[derive(Debug, Clone)]
+pub enum MatExpr {
+    Name(String),
+    Add(String, String),
+    Sub(String, String),
+    Mul(String, String),
+    ScalarMul(Expr, String),
+    Inv(String),
+    Trn(String),
+    Zer,
+    Con,
+    Idn,
 }
 
 // Re-export BasicType from value.rs to avoid duplication
