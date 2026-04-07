@@ -51,11 +51,11 @@
 
 ### Adding a new error
 1. Add variant to `LexError`, `ParseError`, or `RuntimeError` in `src/error.rs` with `#[error(...)]` attribute.
-2. For `RuntimeError`: add QBasic error code mapping in `qbasic_error_code()` if applicable.
+2. For `RuntimeError`: add error code mapping in `basic_error_code()` if applicable.
 
 ## Project Conventions
 - BASIC truth values are numeric: true = `-1`, false = `0`; do not change casually.
-- `PRINT` formatting follows QBasic behavior (leading space for positive numbers, comma zones).
+- `PRINT` formatting follows ANSI BASIC behavior (leading space for positive numbers, comma zones).
 - Single-line vs block `IF` is parser-sensitive; `ELSE` is treated as statement terminator in relevant contexts.
 - Undefined variables auto-initialize by suffix (`0` for numeric, `""` for string).
 - Arrays are currently implemented with flattened keys; avoid broad refactors without targeted tests.

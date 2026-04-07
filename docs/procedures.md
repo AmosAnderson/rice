@@ -22,10 +22,10 @@ MySubroutine arg1, arg2         ' CALL keyword is optional
 ### Example
 
 ```basic
-SUB PrintBanner (title AS STRING, width AS INTEGER)
-    PRINT STRING$(width, "=")
+SUB PrintBanner (title AS STRING, width AS NUMERIC)
+    PRINT REPEAT("=", width)
     PRINT title
-    PRINT STRING$(width, "=")
+    PRINT REPEAT("=", width)
 END SUB
 
 CALL PrintBanner("Welcome", 20)
@@ -36,7 +36,7 @@ CALL PrintBanner("Welcome", 20)
 Exit a subroutine early:
 
 ```basic
-SUB CheckValue (x AS INTEGER)
+SUB CheckValue (x AS NUMERIC)
     IF x < 0 THEN EXIT SUB
     PRINT "Value is: "; x
 END SUB
@@ -51,7 +51,7 @@ Functions are procedures that return a value. Assign the return value by assigni
 ### Definition
 
 ```basic
-FUNCTION name [(parameters)] [AS type]
+FUNCTION name [(parameters)] AS type
     ' body
     name = return_value
 END FUNCTION
@@ -60,7 +60,7 @@ END FUNCTION
 ### Example
 
 ```basic
-FUNCTION Factorial (n AS INTEGER) AS LONG
+FUNCTION Factorial (n AS NUMERIC) AS NUMERIC
     IF n <= 1 THEN
         Factorial = 1
     ELSE
@@ -76,7 +76,7 @@ PRINT Factorial(5)    ' Prints 120
 Exit a function early (returns whatever has been assigned so far, or the default value):
 
 ```basic
-FUNCTION SafeDiv (a AS DOUBLE, b AS DOUBLE) AS DOUBLE
+FUNCTION SafeDiv (a AS NUMERIC, b AS NUMERIC) AS NUMERIC
     IF b = 0 THEN
         SafeDiv = 0
         EXIT FUNCTION
@@ -89,81 +89,28 @@ END FUNCTION
 
 ## DECLARE
 
-Forward-declare procedures. This is optional in RICE BASIC but supported for compatibility:
+Forward-declare procedures. This is optional in RICE BASIC but supported for clarity:
 
 ```basic
-DECLARE SUB MyProc (x AS INTEGER)
-DECLARE FUNCTION MyFunc (x AS INTEGER) AS INTEGER
+DECLARE SUB MyProc (x AS NUMERIC)
+DECLARE FUNCTION MyFunc (x AS NUMERIC) AS NUMERIC
 ```
-
----
-
-## DEF FN (Inline Functions)
-
-Define simple functions using either single-line or multi-line syntax:
-
-### Single-Line Form
-
-```basic
-DEF FNSquare(x) = x * x
-DEF FNArea(r) = 3.14159 * r ^ 2
-DEF FNCelsius(f) = (f - 32) * 5 / 9
-
-PRINT FNSquare(5)       ' 25
-PRINT FNArea(3)         ' 28.27...
-PRINT FNCelsius(212)    ' 100
-```
-
-### Multi-Line Form
-
-```basic
-DEF FNMax(a, b)
-    IF a > b THEN
-        FNMax = a
-    ELSE
-        FNMax = b
-    END IF
-END DEF
-
-PRINT FNMax(10, 20)     ' 20
-```
-
-DEF FN functions:
-- Must have names starting with `FN`
-- Can use single-line (`= expr`) or multi-line (`... END DEF`) syntax
-- Can take multiple parameters
-- Are scoped to the module where they are defined
 
 ---
 
 ## Parameters
 
-### Pass by Reference (Default)
+### Pass by Value (Default)
 
-By default, parameters are passed by reference. Changes inside the procedure affect the original variable:
-
-```basic
-SUB Increment (x AS INTEGER)
-    x = x + 1
-END SUB
-
-DIM n AS INTEGER
-n = 10
-CALL Increment(n)
-PRINT n    ' 11
-```
-
-### Pass by Value (BYVAL)
-
-Use `BYVAL` to pass a copy. Changes inside the procedure do not affect the original:
+In ANSI Full BASIC, parameters are passed by value by default. Changes inside the procedure do not affect the original variable:
 
 ```basic
-SUB TryIncrement (BYVAL x AS INTEGER)
+SUB TryIncrement (x AS NUMERIC)
     x = x + 1
     PRINT "Inside: "; x    ' 11
 END SUB
 
-DIM n AS INTEGER
+DIM n AS NUMERIC
 n = 10
 CALL TryIncrement(n)
 PRINT "Outside: "; n        ' 10
@@ -174,8 +121,8 @@ PRINT "Outside: "; n        ' 10
 Pass arrays by using empty parentheses:
 
 ```basic
-SUB PrintArray (arr() AS INTEGER, size AS INTEGER)
-    FOR i = 0 TO size - 1
+SUB PrintArray (arr() AS NUMERIC, size AS NUMERIC)
+    FOR i = 1 TO size
         PRINT arr(i)
     NEXT i
 END SUB
@@ -187,8 +134,8 @@ User-defined types can be passed to procedures:
 
 ```basic
 TYPE PointType
-    x AS SINGLE
-    y AS SINGLE
+    x AS NUMERIC
+    y AS NUMERIC
 END TYPE
 
 SUB PrintPoint (p AS PointType)
@@ -206,7 +153,7 @@ Variables declared within a SUB or FUNCTION are local by default. They are creat
 
 ```basic
 SUB MyProc
-    DIM localVar AS INTEGER    ' Only exists inside MyProc
+    DIM localVar AS NUMERIC    ' Only exists inside MyProc
     localVar = 42
 END SUB
 ' localVar does not exist here
@@ -217,10 +164,10 @@ END SUB
 Access global (module-level) variables from within a procedure:
 
 ```basic
-DIM total AS INTEGER
+DIM total AS NUMERIC
 total = 100
 
-SUB AddToTotal (amount AS INTEGER)
+SUB AddToTotal (amount AS NUMERIC)
     SHARED total
     total = total + amount
 END SUB
@@ -235,7 +182,7 @@ Variables declared `STATIC` retain their values between calls:
 
 ```basic
 SUB Counter
-    STATIC count AS INTEGER
+    STATIC count AS NUMERIC
     count = count + 1
     PRINT "Called "; count; " times"
 END SUB
@@ -258,34 +205,11 @@ END SUB
 
 ---
 
-## GOSUB / RETURN
-
-An older-style subroutine mechanism using labels:
-
-```basic
-GOSUB printHeader
-PRINT "Main body"
-GOSUB printFooter
-END
-
-printHeader:
-    PRINT "=== Header ==="
-    RETURN
-
-printFooter:
-    PRINT "=== Footer ==="
-    RETURN
-```
-
-GOSUB/RETURN uses a return-address stack, so nested calls work correctly. Prefer SUB/FUNCTION for new code.
-
----
-
 ## Function Resolution Order
 
 When RICE BASIC encounters `name(args)` in an expression, it resolves in this order:
 
-1. **Built-in function** (e.g., `LEN`, `MID$`, `ABS`)
+1. **Built-in function** (e.g., `LEN`, `ABS`, `SQR`)
 2. **User-defined FUNCTION** (defined with `FUNCTION...END FUNCTION`)
 3. **Array access** (e.g., `myArray(index)`)
 

@@ -61,8 +61,8 @@ pub enum RuntimeError {
 }
 
 impl RuntimeError {
-    /// Map a RuntimeError to a QBasic-compatible error code number.
-    pub fn qbasic_error_code(&self) -> i32 {
+    /// Map a RuntimeError to an ANSI BASIC-compatible error code number.
+    pub fn basic_error_code(&self) -> i32 {
         match self {
             RuntimeError::NextWithoutFor => 1,
             RuntimeError::DivisionByZero => 11,
@@ -99,17 +99,17 @@ impl RuntimeError {
         }
     }
 
-    /// Create an IoError from a std::io::Error with appropriate QBasic error code.
+    /// Create an IoError from a std::io::Error with appropriate error code.
     pub fn from_io(context: &str, e: std::io::Error) -> Self {
         RuntimeError::IoError {
             msg: format!("{} error: {}", context, e),
-            code: io_error_to_qbasic_code(&e),
+            code: io_error_to_basic_code(&e),
         }
     }
 }
 
-/// Map a std::io::Error to a QBasic-compatible error code number.
-pub fn io_error_to_qbasic_code(e: &std::io::Error) -> i32 {
+/// Map a std::io::Error to an ANSI BASIC-compatible error code number.
+pub fn io_error_to_basic_code(e: &std::io::Error) -> i32 {
     match e.kind() {
         std::io::ErrorKind::NotFound => 53,
         std::io::ErrorKind::PermissionDenied => 70,

@@ -1,7 +1,7 @@
 use crate::error::RuntimeError;
 use crate::value::Value;
 
-/// Format values according to a QBasic PRINT USING format string.
+/// Format values according to a PRINT USING format string.
 pub fn format_using(format_str: &str, values: &[Value]) -> Result<String, RuntimeError> {
     let mut output = String::new();
     let chars: Vec<char> = format_str.chars().collect();
@@ -268,7 +268,7 @@ fn format_numeric(value: f64, field: &NumericField) -> String {
 
     let mut padded = String::new();
     if field.has_comma {
-        // With commas: pad positions are also comma-separated in QBasic,
+        // With commas: pad positions are also comma-separated,
         // so we pad based on displayed width including commas
         let display_int_width = int_str.len();
         // Total display width for integer portion = digits_before + (digits_before-1)/3 commas

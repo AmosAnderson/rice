@@ -1,9 +1,9 @@
-s$ = "Hello World"
-MID$(s$, 7) = "BASIC"
-PRINT s$
-s$ = "1234567890"
-MID$(s$, 3, 4) = "ABCDEFGH"
-PRINT s$
-s$ = "XXXXXXXXXX"
-MID$(s$, 1, 3) = "Hi"
-PRINT s$
+s = "Hello World"
+s(7:11) = "BASIC"
+PRINT s
+s = "1234567890"
+s(3:6) = "ABCD"
+PRINT s
+s = "XXXXXXXXXX"
+s(1:3) = "Hi"
+PRINT s

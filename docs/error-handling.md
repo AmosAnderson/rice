@@ -1,139 +1,109 @@
 # Error Handling
 
-RICE BASIC provides structured error handling through `ON ERROR GOTO`, `RESUME`, and the `ERR`/`ERL` functions.
+RICE BASIC provides structured error handling through the ANSI X3.113-1991 `WHEN EXCEPTION` construct.
 
-## Setting Up an Error Handler
+## WHEN EXCEPTION
 
-### ON ERROR GOTO
-
-Establish an error handler by specifying a label to jump to when a runtime error occurs:
+The `WHEN EXCEPTION` block establishes a protected region of code with an associated exception handler:
 
 ```basic
-ON ERROR GOTO errorHandler
-
-' Code that might cause errors
-OPEN "nonexistent.txt" FOR INPUT AS #1
-PRINT "This line runs if no error"
-END
-
-errorHandler:
-PRINT "Error"; ERR; "occurred at line"; ERL
-RESUME NEXT
+WHEN EXCEPTION IN
+    ' Code that might cause errors
+    OPEN #1: NAME "nonexistent.txt", ACCESS INPUT
+    PRINT "This line runs if no error"
+USE
+    PRINT "Error occurred: "; EXTEXT$
+END WHEN
 ```
 
-### ON ERROR GOTO 0
+If any statement in the `WHEN EXCEPTION IN` block raises an error, control transfers immediately to the `USE` block. If no error occurs, the `USE` block is skipped entirely.
 
-Disable the current error handler. Any subsequent errors will terminate the program:
+---
+
+## Exception Information
+
+### EXTYPE
+
+Returns the numeric exception type code for the most recent exception. Returns `0` when no exception has occurred.
 
 ```basic
-ON ERROR GOTO handler
-' Protected code...
-ON ERROR GOTO 0
-' Unprotected code - errors are fatal here
+WHEN EXCEPTION IN
+    x = 1 / 0
+USE
+    PRINT "Exception type:"; EXTYPE
+END WHEN
+```
+
+### EXTEXT$
+
+Returns a descriptive text string for the most recent exception:
+
+```basic
+WHEN EXCEPTION IN
+    OPEN #1: NAME "missing.txt", ACCESS INPUT
+USE
+    PRINT "Error: "; EXTEXT$
+END WHEN
 ```
 
 ---
 
-## Resuming After an Error
+## RETRY
 
-Within an error handler, use `RESUME` to continue execution:
-
-### RESUME
-
-Retry the statement that caused the error:
+Within a `USE` block, `RETRY` re-executes the statement that caused the exception. This is useful when the handler can correct the condition that caused the error:
 
 ```basic
-ON ERROR GOTO retryHandler
-OPEN filename$ FOR INPUT AS #1
-END
+DIM filename AS STRING
+filename = "primary.txt"
 
-retryHandler:
-filename$ = "backup.txt"
-RESUME    ' Try the OPEN statement again with the new filename
-```
-
-### RESUME NEXT
-
-Skip the statement that caused the error and continue with the next one:
-
-```basic
-ON ERROR GOTO skipHandler
-
-x = 1 / 0         ' Division by zero - will be skipped
-PRINT "Continued"  ' This runs after RESUME NEXT
-END
-
-skipHandler:
-PRINT "Skipping error"; ERR
-RESUME NEXT
-```
-
-### RESUME label
-
-Jump to a specific label after handling the error:
-
-```basic
-ON ERROR GOTO handler
-
-x = 1 / 0
-PRINT "Skipped"
-
-safePoint:
-PRINT "Resumed at safe point"
-END
-
-handler:
-RESUME safePoint
+WHEN EXCEPTION IN
+    OPEN #1: NAME filename, ACCESS INPUT
+    PRINT "File opened successfully"
+USE
+    IF filename = "primary.txt" THEN
+        filename = "backup.txt"
+        RETRY
+    ELSE
+        PRINT "Could not open any file"
+    END IF
+END WHEN
 ```
 
 ---
 
-## Error Information
+## CONTINUE
 
-### ERR
-
-Returns the error code of the most recent error. Returns `0` when no error has occurred.
-
-### ERL
-
-Returns the line number where the error occurred. Returns `0` if no error has occurred.
-
-### Example
+Within a `USE` block, `CONTINUE` skips the statement that caused the exception and resumes execution with the next statement in the protected block:
 
 ```basic
-ON ERROR GOTO handler
-10 x = 1 / 0
-20 PRINT "OK"
-END
-
-handler:
-PRINT "Error code:"; ERR
-PRINT "Error line:"; ERL
-RESUME NEXT
+WHEN EXCEPTION IN
+    x = 1 / 0         ' Division by zero - will be skipped
+    PRINT "Continued"  ' This runs after CONTINUE
+USE
+    PRINT "Skipping error: "; EXTEXT$
+    CONTINUE
+END WHEN
 ```
 
 ---
 
-## Error Codes
+## Nested Exception Handling
 
-RICE BASIC uses QBasic-compatible error codes:
+`WHEN EXCEPTION` blocks can be nested. Each block has its own handler:
 
-| Code | Description              |
-|------|--------------------------|
-| 1    | NEXT without FOR         |
-| 3    | RETURN without GOSUB     |
-| 5    | Illegal function call    |
-| 6    | Overflow                 |
-| 8    | Undefined label          |
-| 9    | Subscript out of range   |
-| 10   | Duplicate definition     |
-| 11   | Division by zero         |
-| 13   | Type mismatch            |
-| 20   | RESUME without error     |
-| 53   | File not found           |
-| 58   | File already exists      |
-| 70   | Permission denied        |
-| 76   | Path not found           |
+```basic
+WHEN EXCEPTION IN
+    PRINT "Outer protected block"
+    WHEN EXCEPTION IN
+        x = SQR(-1)
+    USE
+        PRINT "Inner handler caught: "; EXTEXT$
+    END WHEN
+    PRINT "Back in outer block"
+USE
+    PRINT "Outer handler caught: "; EXTEXT$
+END WHEN
+```
 
 ---
 
@@ -142,53 +112,45 @@ RICE BASIC uses QBasic-compatible error codes:
 ### Graceful File Open
 
 ```basic
-ON ERROR GOTO fileError
-OPEN "config.txt" FOR INPUT AS #1
-ON ERROR GOTO 0    ' Disable handler after successful open
+WHEN EXCEPTION IN
+    OPEN #1: NAME "config.txt", ACCESS INPUT
 
-' Process file...
-LINE INPUT #1, setting$
-CLOSE #1
-END
-
-fileError:
-PRINT "Could not open config.txt, using defaults"
-RESUME NEXT
-```
-
-### Error Logging
-
-```basic
-ON ERROR GOTO logError
-
-' Various operations...
-x = SQR(-1)
-PRINT "After error"
-END
-
-logError:
-PRINT "ERROR"; ERR; "at line"; ERL
-RESUME NEXT
+    ' Process file...
+    LINE INPUT #1: line
+    CLOSE #1
+USE
+    PRINT "Could not open config.txt, using defaults"
+END WHEN
 ```
 
 ### Retry Logic
 
 ```basic
-DIM attempts AS INTEGER
-ON ERROR GOTO retryOpen
+DIM attempts AS NUMERIC
+attempts = 0
 
-tryOpen:
-attempts = attempts + 1
-OPEN "data.txt" FOR INPUT AS #1
-PRINT "File opened successfully"
-END
+WHEN EXCEPTION IN
+    attempts = attempts + 1
+    OPEN #1: NAME "data.txt", ACCESS INPUT
+    PRINT "File opened successfully"
+USE
+    IF attempts < 3 THEN
+        PRINT "Attempt"; attempts; "failed, retrying..."
+        RETRY
+    ELSE
+        PRINT "Failed after 3 attempts"
+    END IF
+END WHEN
+```
 
-retryOpen:
-IF attempts < 3 THEN
-    PRINT "Attempt"; attempts; "failed, retrying..."
-    RESUME tryOpen
-ELSE
-    PRINT "Failed after 3 attempts"
-    END
-END IF
+### Logging Errors
+
+```basic
+WHEN EXCEPTION IN
+    x = SQR(-1)
+    PRINT "After error"
+USE
+    PRINT "Exception type:"; EXTYPE; " - "; EXTEXT$
+    CONTINUE
+END WHEN
 ```

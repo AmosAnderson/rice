@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-RICE BASIC is a structured BASIC interpreter written in Rust (QBasic/FreeBASIC dialect). No graphics or sound support. Supports interactive REPL and file execution.
+RICE BASIC is an ANSI X3.113-1991 (Full BASIC) interpreter written in Rust. No graphics or sound support. Supports interactive REPL and file execution.
 
 ## Build & Test Commands
 
@@ -31,33 +31,45 @@ REPL and file execution share interpreter code paths; keep behavior parity betwe
 
 `Source → Lexer → Tokens → Parser → AST → Tree-Walking Interpreter → Output`
 
-All hand-written (no parser generators).
+All hand-written (no parser generators). Interpreter only -- no compiler backend.
 
 ### Module Map
 
-- **`token.rs`** — Token enum, TypeSuffix (`% & ! # $`), Span. All identifiers stored UPPERCASE.
-- **`lexer.rs`** — Hand-written tokenizer. Case-insensitive. Detects line numbers at line start. Recognizes compound keywords (`END IF`, `END SUB`, `LINE INPUT`). Attaches type suffixes to identifiers.
-- **`ast.rs`** — `Stmt` and `Expr` enums. `LabeledStmt` wraps statements with optional line labels. Key types: `PrintStmt`, `IfStmt`, `ForStmt`, `DoLoopStmt`, `SelectCaseStmt`, `SubDef`, `FunctionDef`.
-- **`parser.rs`** — Recursive descent. Expression parsing uses precedence climbing (IMP → EQV → XOR → OR → AND → NOT → comparison → +/- → MOD → \\ → */÷ → unary → ^). `at_stmt_end()` also treats `ELSE` as a terminator for single-line IF support.
-- **`interpreter.rs`** — Tree-walking evaluator. Uses `ControlFlow` enum (Normal, ExitFor, ExitDo, ExitSub, ExitFunction, Goto, Gosub, Return, End, Resume, ResumeNext, Chain) for control flow. `SharedOutput` wrapper enables testable output capture. `FileHandle` struct manages open files with `BufReader`/`BufWriter` for text and binary I/O. Error handler state (error_handler, current_error, error_resume_pc) enables ON ERROR GOTO/RESUME. ERR and ERL are resolved as interpreter-state functions. Maintains `def_fns` map for DEF FN definitions, `static_vars` for STATIC variable persistence across calls, and `deftype_map` for DEFtype letter-range defaults.
-- **`format_using.rs`** — PRINT USING format engine. Supports QBasic numeric specifiers (`#`, `.`, `+`, `-`, `$$`, `**`, `**$`, `,`, `^^^^`) and string specifiers (`!`, `\ \`, `&`). Escape with `_`. Overflow prefix `%`.
-- **`environment.rs`** — `Rc<RefCell<Environment>>` scope chain. Variable key = name + suffix (`X%` and `X$` are different variables). GOSUB return stack and label map stored here. Supports `shared_vars` set for SHARED keyword (reads/writes go to root scope). Constants are checked through the parent chain to prevent reassignment.
-- **`value.rs`** — `Value` enum (Integer, Long, Single, Double, Str). QBasic-style PRINT formatting (leading space for positive numbers). Type coercion ladder: Integer < Long < Single < Double.
-- **`builtins.rs`** — Built-in function registry. Math (ABS, INT, SQR, SIN, etc.), string (LEFT$, MID$, LEN, etc.), conversion (CINT, VAL, STR$, etc.), binary conversion (MKI$/MKL$/MKS$/MKD$/CVI/CVL/CVS/CVD), system (ENVIRON$, TIMER, DATE$, TIME$).
+- **`token.rs`** — Token enum, Span. All identifiers stored UPPERCASE. No type suffixes -- ANSI Full BASIC uses only NUMERIC and STRING types.
+- **`lexer.rs`** — Hand-written tokenizer. Case-insensitive. Detects line numbers at line start. Recognizes compound keywords (`END IF`, `END SUB`, `END WHILE`, `LINE INPUT`).
+- **`ast.rs`** — `Stmt` and `Expr` enums. `LabeledStmt` wraps statements with optional line labels. Key types: `PrintStmt`, `IfStmt`, `ForStmt`, `DoLoopStmt`, `SelectCaseStmt`, `SubDef`, `FunctionDef`, `WhenExceptionStmt`.
+- **`parser.rs`** — Recursive descent. Expression parsing uses precedence climbing (XOR → OR → AND → NOT → comparison → &(concat) → +/- → MOD → */÷ → unary → ^). `at_stmt_end()` also treats `ELSE` as a terminator for single-line IF support.
+- **`interpreter.rs`** — Tree-walking evaluator. Uses `ControlFlow` enum (Normal, ExitFor, ExitDo, ExitSub, ExitFunction, Goto, End, Retry, Continue) for control flow. `SharedOutput` wrapper enables testable output capture. `FileHandle` struct manages open files with `BufReader`/`BufWriter` for text and binary I/O. `ExceptionInfo` struct tracks EXTYPE and EXTEXT$ for WHEN EXCEPTION error handling.
+- **`format_using.rs`** — PRINT USING format engine. Supports numeric specifiers (`#`, `.`, `+`, `-`, `$$`, `**`, `**$`, `,`, `^^^^`) and string specifiers (`!`, `\ \`, `&`). Escape with `_`. Overflow prefix `%`.
+- **`environment.rs`** — `Rc<RefCell<Environment>>` scope chain. Variable key = name (no suffixes). Label map stored here. Supports `shared_vars` set for SHARED keyword (reads/writes go to root scope). Constants are checked through the parent chain to prevent reassignment. Default OPTION BASE is 1.
+- **`value.rs`** — `Value` enum (Numeric, Str, Record). Only two primitive types: NUMERIC (f64) and STRING. No leading space on positive numbers in PRINT output. 16-char zone width for comma-separated PRINT.
+- **`mat.rs`** — MAT (matrix) operations. Element-wise arithmetic (add, subtract), matrix multiply, scalar multiply, INV (inverse), TRN (transpose), DET (determinant), ZER (zero matrix), CON (ones matrix), IDN (identity matrix).
+- **`builtins.rs`** — Built-in function registry. Math (ABS, INT, FIX, SGN, SQR, SIN, COS, TAN, ATN, EXP, LOG, ROUND, ASIN, ACOS, COT, CSC, SEC, ANGLE, CEIL, TRUNCATE, REMAINDER, MAXNUM, PI), string (LEN, INSTR, LTRIM$, RTRIM$, SPACE$, STRING$, CHR$, ASC, STR$, VAL), system (ENVIRON$, TIMER, DATE$, TIME$, FREEFILE, EOF, LOF, LOC).
 - **`repl.rs`** — Interactive REPL using rustyline. Environment persists across lines.
-- **`error.rs`** — `LexError`, `ParseError`, `RuntimeError` enums via `thiserror`. `RuntimeError::IoError` carries QBasic-compatible error codes for file/directory operations. `io_error_to_qbasic_code()` is the shared mapping function used by both interpreter and runtime.
+- **`error.rs`** — `LexError`, `ParseError`, `RuntimeError` enums via `thiserror`. `RuntimeError::IoError` carries error codes for file/directory operations.
 - **`bin/rice_lsp.rs`** — LSP server binary (stdio transport, `tower-lsp`).
 - **`main.rs`** — CLI: no args → REPL, one arg → execute file.
-- **`lib.rs`** — Module declarations. Also provides shared utility functions: `poll_inkey()` for non-blocking key reading via crossterm, `update_screen_buffer()` for tracking printed characters in an 80×25 buffer (used by both interpreter and runtime for `SCREEN()` support).
+- **`lib.rs`** — Module declarations. Also provides shared utility functions: `poll_inkey()` for non-blocking key reading via crossterm, `update_screen_buffer()` for tracking printed characters in an 80x25 buffer (used for `SCREEN()` support).
+
 ### Key Design Decisions
 
+- **Type system**: Only NUMERIC (f64) and STRING. No type suffixes. Variables ending in `$` are string; all others are numeric.
 - **`=` disambiguation**: at statement level `=` is assignment; inside expressions `=` is comparison
 - **Single-line vs block IF**: if tokens follow THEN on the same line, it's single-line
-- **Auto-initialization**: undefined variables auto-initialize to 0 or "" (classic BASIC behavior)
-- **`name(args)` ambiguity**: resolved at runtime — check builtin registry, then user functions, then arrays
-- **GOTO/GOSUB**: label map built during prescan; ControlFlow::Goto bubbles up to exec_block which resolves it
-- **Truth values**: true = `-1`, false = `0` (QBasic convention); do not change
-- **Prescan ordering**: `Interpreter::run_source` pre-scans labels, DATA, SUB/FUNCTION, and DEF FN definitions before execution; prescan recurses into nested blocks (IF, FOR, WHILE, DO, SELECT CASE); preserve this ordering
+- **Auto-initialization**: undefined variables auto-initialize to 0 or "" (BASIC behavior)
+- **`name(args)` ambiguity**: resolved at runtime -- check builtin registry, then user functions, then arrays
+- **GOTO**: label map built during prescan; ControlFlow::Goto bubbles up to exec_block which resolves it
+- **Truth values**: true = `1`, false = `0` (ANSI BASIC convention); do not change
+- **Logical operators**: AND, OR, NOT, XOR are logical (not bitwise). No IMP or EQV operators. No `\` integer division.
+- **MOD**: works on real numbers (not integer-only)
+- **String concatenation**: `&` operator (not `+`). `+` is always arithmetic.
+- **String slicing**: colon syntax `A$(3:7)` instead of MID$/LEFT$/RIGHT$
+- **Error handling**: WHEN EXCEPTION IN...USE...END WHEN with RETRY, CONTINUE, EXTYPE, EXTEXT$. No ON ERROR GOTO.
+- **File I/O**: ANSI OPEN syntax: `OPEN #n: NAME "file", ACCESS INPUT/OUTPUT/OUTIN, ORGANIZATION SEQUENTIAL/STREAM`. SET/ASK POINTER instead of SEEK.
+- **OPTION BASE**: defaults to 1 (ANSI convention), not 0
+- **Parameters**: BYVAL by default (not BYREF)
+- **PRINT formatting**: no leading space on positive numbers; 16-character zone width for comma-separated output
+- **Prescan ordering**: `Interpreter::run_source` pre-scans labels, DATA, SUB/FUNCTION definitions before execution; prescan recurses into nested blocks (IF, FOR, WHILE, DO, SELECT CASE); preserve this ordering
 - **Stack size**: `main.rs` spawns an 8MB-stack thread because debug-mode `match` arms in the interpreter create ~100KB frames, exhausting the default Windows 1MB stack
 
 ### Code Conventions
@@ -71,7 +83,7 @@ All hand-written (no parser generators).
 
 ### Test Programs
 
-Integration tests in `tests/programs/*.bas` cover: hello world, arithmetic, variables, FizzBuzz, while loops, do/loops, select case, gosub/return, recursive factorial, string functions, DATA/READ, SUB calls, file I/O (text, binary, append, WRITE#/INPUT# round-trip, FREEFILE, EOF, LOF), WRITE (console), SLEEP, CLEAR, file system operations (NAME, KILL, MKDIR, RMDIR, CHDIR), SHELL, ENVIRON$, MID$ assignment, LSET/RSET, SHARED, STATIC, DEFtype, DEF FN, date/time functions, binary conversion (MKI$/CVI etc.), ON n GOTO/GOSUB, RANDOMIZE/RND, TYPE (user-defined types with dot notation, arrays of TYPE, TYPE in SUB).
+Integration tests in `tests/programs/*.bas` cover: hello world, arithmetic, variables, FizzBuzz, while loops, do/loops, select case, recursive factorial, string functions, DATA/READ, SUB calls, file I/O (text, append, FREEFILE, EOF, LOF), WRITE (console), SLEEP, CLEAR, file system operations (NAME, KILL, MKDIR, RMDIR, CHDIR), SHELL, ENVIRON$, SHARED, STATIC, RANDOMIZE/RND, TYPE (user-defined types with dot notation, arrays of TYPE, TYPE in SUB), MAT operations, WHEN EXCEPTION error handling, string slicing.
 
 To add a new integration test: create a `.bas` file in `tests/programs/`, then add a test function in `tests/integration.rs` using one of these helpers:
 - `run_file("tests/programs/foo.bas")` — load and execute a `.bas` file, returns captured output
@@ -98,14 +110,13 @@ The interpreter's `SharedOutput` captures PRINT output for assertion.
 **Adding a builtin function:**
 1. Write `fn builtin_name(args: &[Value]) -> Result<Value, RuntimeError>` in `builtins.rs`
 2. Call `reg.register("NAME", builtin_name, arity)` in `BuiltinRegistry::new()` (use arity `0` for variadic)
-3. Use `args[n].to_f64()?`, `.to_i64()?`, `.to_string_val()?` for type coercion; return `Value::Integer`, `Value::Double`, `Value::Str`, etc.
+3. Use `args[n].to_f64()?` or `.to_string_val()?` for type coercion; return `Value::Numeric(...)` or `Value::Str(...)`
 
 **Adding a new error:**
 1. Add variant to `LexError`, `ParseError`, or `RuntimeError` in `error.rs` with `#[error(...)]` attribute
-2. For `RuntimeError`: add QBasic error code mapping in `qbasic_error_code()` if applicable
 
 ## Status of BASIC Features
 
-**Working**: PRINT, PRINT USING, LET, DIM, CONST, INPUT, LINE INPUT, IF/ELSEIF/ELSE, FOR/NEXT, WHILE/WEND, DO/LOOP, SELECT CASE, GOTO, GOSUB/RETURN, EXIT FOR/DO/SUB/FUNCTION, SUB/FUNCTION definitions, CALL, DECLARE, DATA/READ/RESTORE, SWAP, all string/math/conversion builtins, ERR/ERL, OPTION BASE, REDIM, ERASE, File I/O (OPEN, CLOSE, PRINT#, WRITE#, INPUT#, LINE INPUT#, GET, PUT, FIELD, SEEK), file functions (FREEFILE, EOF, LOF, LOC, SEEK), ON ERROR GOTO/RESUME, ON n GOTO/GOSUB, RANDOMIZE/RND, WRITE (console), SLEEP, CLEAR, NAME/KILL/MKDIR/RMDIR/CHDIR, SHELL, ENVIRON$, MID$ (statement form), LSET/RSET, SHARED, STATIC, DEFtype (DEFINT/DEFLNG/DEFSNG/DEFDBL/DEFSTR), DEF FN, MKI$/MKL$/MKS$/MKD$/CVI/CVL/CVS/CVD, TYPE (user-defined types with dot-notation, STRING * n, arrays of TYPE), CHAIN/COMMON (multi-module programming), text/console features (CLS, LOCATE, COLOR, BEEP, WIDTH, VIEW PRINT, CSRLIN, POS, INKEY$, INPUT$, SCREEN()), BYVAL parameter semantics.
+**Working**: PRINT, PRINT USING, LET, DIM, CONST, INPUT, LINE INPUT, IF/ELSEIF/ELSE/END IF, FOR/NEXT, WHILE/END WHILE, DO/LOOP, SELECT CASE, GOTO, EXIT FOR/DO/SUB/FUNCTION, SUB/END SUB, FUNCTION/END FUNCTION, CALL, DECLARE, DATA/READ/RESTORE, SWAP, OPTION BASE (default 1), REDIM, ERASE, SHARED, STATIC, TYPE/END TYPE (user-defined types with dot notation, arrays of TYPE), RANDOMIZE/RND, WRITE (console), SLEEP, CLEAR, WHEN EXCEPTION IN/USE/END WHEN (with RETRY, CONTINUE, EXTYPE, EXTEXT$), string slicing with colon syntax (A$(3:7)), & string concatenation, MAT operations (MAT PRINT, MAT READ, MAT INPUT, MAT +/-/*, scalar multiply, INV, TRN, DET, ZER, CON, IDN), File I/O (ANSI OPEN with NAME/ACCESS/ORGANIZATION, CLOSE, PRINT#, INPUT#, LINE INPUT#, SET POINTER, ASK POINTER), file functions (FREEFILE, EOF, LOF, LOC), file system operations (NAME...AS, KILL, MKDIR, RMDIR, CHDIR), console features (CLS, LOCATE, COLOR, BEEP, WIDTH, VIEW PRINT, CSRLIN, POS, INKEY$, INPUT$, SCREEN()), SHELL, ENVIRON$, BYVAL parameter semantics, logical AND/OR/NOT/XOR.
 
 **Not implemented**: proper array storage (currently uses flattened key hack), LBOUND/UBOUND (stubs only).

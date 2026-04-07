@@ -1,6 +1,6 @@
 # RICE BASIC
 
-A structured BASIC interpreter written in Rust, in the style of QBasic/FreeBASIC. Supports an interactive REPL and file execution. No graphics or sound -- pure text-mode BASIC.
+An ANSI X3.113-1991 (Full BASIC) interpreter written in Rust. Supports an interactive REPL and file execution. No graphics or sound -- pure text-mode BASIC.
 
 ## Getting Started
 
@@ -45,70 +45,113 @@ cargo test test_hello          # A single test by name
 
 ## Language Features
 
-RICE BASIC implements a broad subset of QBasic:
+RICE BASIC implements the ANSI X3.113-1991 Full BASIC standard:
 
 ### Data Types
 
-| Type    | Suffix | Description            |
-|---------|--------|------------------------|
-| INTEGER | `%`    | Whole numbers          |
-| LONG    | `&`    | Large whole numbers    |
-| SINGLE  | `!`    | Single-precision float |
-| DOUBLE  | `#`    | Double-precision float |
-| STRING  | `$`    | Text strings           |
+| Type    | Description                    |
+|---------|--------------------------------|
+| NUMERIC | Double-precision float (f64)   |
+| STRING  | Text strings ($ suffix)        |
+
+There are no type suffixes for numeric subtypes. All numeric values are double-precision. Variables ending in `$` are strings; all others are numeric.
+
+### Operators
+
+- **Arithmetic**: `+`, `-`, `*`, `/`, `^`, `MOD` (works on reals)
+- **String concatenation**: `&`
+- **Comparison**: `=`, `<>`, `<`, `>`, `<=`, `>=`
+- **Logical**: `AND`, `OR`, `NOT`, `XOR` (logical, not bitwise)
+- **Truth values**: 1 = true, 0 = false
 
 ### Statements
 
 - **Output**: PRINT, PRINT USING, WRITE
 - **Input**: INPUT, LINE INPUT
-- **Variables**: LET, DIM, CONST, SWAP, OPTION BASE, REDIM, ERASE, SHARED, STATIC, DEFINT/DEFLNG/DEFSNG/DEFDBL/DEFSTR, CLEAR, TYPE...END TYPE (user-defined types)
-- **Control flow**: IF/ELSEIF/ELSE/END IF, FOR/NEXT, WHILE/WEND, DO/LOOP, SELECT CASE, GOTO, GOSUB/RETURN, ON n GOTO/GOSUB, EXIT FOR/DO/SUB/FUNCTION, ON ERROR GOTO/RESUME, RANDOMIZE, END, STOP, SYSTEM, SLEEP
-- **Procedures**: SUB/END SUB, FUNCTION/END FUNCTION, DEF FN, CALL, DECLARE
+- **Variables**: LET, DIM, CONST, SWAP, OPTION BASE (default 1), REDIM, ERASE, SHARED, STATIC, CLEAR, TYPE...END TYPE (user-defined types)
+- **Control flow**: IF/ELSEIF/ELSE/END IF, FOR/NEXT, WHILE/END WHILE, DO/LOOP, SELECT CASE, GOTO, EXIT FOR/DO/SUB/FUNCTION, RANDOMIZE, END, STOP, SYSTEM, SLEEP
+- **Procedures**: SUB/END SUB, FUNCTION/END FUNCTION, CALL, DECLARE (BYVAL by default)
 - **Data**: DATA, READ, RESTORE
-- **String mutation**: MID$ (assignment), LSET, RSET
-- **File I/O**: OPEN, CLOSE, PRINT#, WRITE#, INPUT#, LINE INPUT#, GET, PUT, FIELD, SEEK
+- **Error handling**: WHEN EXCEPTION IN...USE...END WHEN, RETRY, CONTINUE, EXTYPE, EXTEXT$
+- **File I/O**: OPEN (ANSI syntax), CLOSE, PRINT#, INPUT#, LINE INPUT#, SET POINTER, ASK POINTER
 - **File system**: NAME...AS, KILL, MKDIR, RMDIR, CHDIR
 - **Console**: CLS, LOCATE, COLOR, BEEP, WIDTH, VIEW PRINT
-- **Multi-module**: CHAIN, COMMON
+- **MAT operations**: MAT PRINT, MAT READ, MAT INPUT, MAT arithmetic (+, -, *), scalar multiply, INV, TRN, DET, ZER, CON, IDN
 - **System**: SHELL
+
+### Strings
+
+ANSI Full BASIC uses colon slicing instead of LEFT$/RIGHT$/MID$:
+
+```basic
+LET A$ = "Hello, World!"
+PRINT A$(1:5)          ! "Hello"
+PRINT A$(8:12)         ! "World"
+```
+
+String concatenation uses `&`:
+
+```basic
+LET A$ = "Hello" & ", " & "World!"
+PRINT A$               ! Hello, World!
+```
 
 ### Built-in Functions
 
-- **String**: LEN, LEFT$, RIGHT$, MID$, INSTR, UCASE$, LCASE$, LTRIM$, RTRIM$, SPACE$, STRING$, CHR$, ASC, STR$, VAL, HEX$, OCT$
-- **Math**: ABS, SGN, INT, FIX, SQR, EXP, LOG, SIN, COS, TAN, ATN, RND
-- **Conversion**: CINT, CLNG, CSNG, CDBL, MKI$, MKL$, MKS$, MKD$, CVI, CVL, CVS, CVD
-- **File**: FREEFILE, EOF, LOF, LOC, SEEK
-- **Error handling**: ERR, ERL
+- **Math**: ABS, INT, FIX, SGN, SQR, SIN, COS, TAN, ATN, EXP, LOG, ROUND, ASIN, ACOS, COT, CSC, SEC, ANGLE, CEIL, TRUNCATE, REMAINDER, MAXNUM, PI, RND
+- **String**: LEN, INSTR, LTRIM$, RTRIM$, SPACE$, STRING$, CHR$, ASC, STR$, VAL
+- **File**: FREEFILE, EOF, LOF, LOC
 - **Console**: CSRLIN, POS, INKEY$, INPUT$, SCREEN()
 - **System**: ENVIRON$, TIMER, DATE$, TIME$
 
 ### File I/O
 
-RICE BASIC supports text and binary file operations:
+RICE BASIC uses ANSI Full BASIC file I/O syntax:
 
 ```basic
-' Write to a file
-OPEN "data.txt" FOR OUTPUT AS #1
-PRINT #1, "Hello, File!"
-WRITE #1, "Alice", 30
+! Write to a file
+OPEN #1: NAME "data.txt", ACCESS OUTPUT, ORGANIZATION SEQUENTIAL
+PRINT #1: "Hello, File!"
 CLOSE #1
 
-' Read from a file
-OPEN "data.txt" FOR INPUT AS #1
+! Read from a file
+OPEN #1: NAME "data.txt", ACCESS INPUT, ORGANIZATION SEQUENTIAL
 DO WHILE NOT EOF(1)
-    LINE INPUT #1, x$
+    LINE INPUT #1: x$
     PRINT x$
 LOOP
 CLOSE #1
-
-' Binary file access
-OPEN "data.bin" FOR BINARY AS #1
-PUT #1, 1, value$
-GET #1, 1, result$
-CLOSE #1
 ```
 
-File modes: INPUT, OUTPUT, APPEND, RANDOM, BINARY.
+Access modes: INPUT, OUTPUT, OUTIN. Organization: SEQUENTIAL, STREAM.
+
+### Error Handling
+
+ANSI Full BASIC structured exception handling:
+
+```basic
+WHEN EXCEPTION IN
+    OPEN #1: NAME "missing.txt", ACCESS INPUT
+    LINE INPUT #1: x$
+    CLOSE #1
+USE
+    PRINT "Error"; EXTYPE; EXTEXT$
+END WHEN
+```
+
+Use RETRY to re-execute the guarded block, or CONTINUE to resume after the failed statement.
+
+### MAT Operations
+
+Full matrix support for numeric arrays:
+
+```basic
+DIM A(3, 3), B(3, 3), C(3, 3)
+MAT A = ZER
+MAT B = IDN
+MAT C = A + B
+MAT PRINT C
+```
 
 ## Editor Integration (LSP)
 
@@ -184,14 +227,15 @@ Source -> Lexer -> Tokens -> Parser -> AST -> Tree-Walking Interpreter -> Output
 
 | Module             | Purpose                                              |
 |--------------------|------------------------------------------------------|
-| `token.rs`         | Token enum, type suffixes, spans                     |
+| `token.rs`         | Token enum, spans                                    |
 | `lexer.rs`         | Hand-written tokenizer, case-insensitive             |
 | `ast.rs`           | Statement and expression AST nodes                   |
 | `parser.rs`        | Recursive descent parser with precedence climbing    |
-| `interpreter.rs`   | Tree-walking evaluator, file handle management, error trapping |
+| `interpreter.rs`   | Tree-walking evaluator, file handle management, exception handling |
 | `format_using.rs`  | PRINT USING format engine (numeric + string specifiers) |
 | `environment.rs`   | Scope chain, variable storage, label map             |
-| `value.rs`         | Value types, QBasic-style formatting, coercion       |
+| `value.rs`         | Value types (Numeric, Str, Record), formatting       |
+| `mat.rs`           | MAT operations (arithmetic, inverse, transpose, etc.) |
 | `builtins.rs`      | Built-in function registry                           |
 | `repl.rs`          | Interactive REPL with syntax highlighting            |
 | `error.rs`         | Lexer, parser, and runtime error types               |

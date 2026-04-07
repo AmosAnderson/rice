@@ -1,6 +1,6 @@
 # RICE BASIC Language Reference
 
-RICE BASIC is a structured BASIC interpreter in the style of QBasic. This document covers the full syntax supported by RICE BASIC.
+RICE BASIC is a structured BASIC interpreter implementing ANSI X3.113-1991 (Full BASIC). This document covers the full syntax supported by RICE BASIC.
 
 ## Running Programs
 
@@ -734,7 +734,7 @@ RESUME NEXT                 ' Continue with the next statement
 | `ERR`    | Error code of the most recent trapped error      |
 | `ERL`    | Source line of the most recent trapped error      |
 
-Common QBasic error codes:
+Common ANSI BASIC exception types (EXTYPE):
 
 | Code | Error                  |
 |------|------------------------|
@@ -936,7 +936,7 @@ END FUNCTION
 
 ---
 
-## Differences from QBasic
+## Limitations
 
 RICE BASIC intentionally omits:
 
@@ -945,6 +945,6 @@ RICE BASIC intentionally omits:
 - **Memory access**: No `DEF SEG`, `PEEK`, `POKE`
 - **Proper array storage**: Arrays use a flattened key representation; `LBOUND`/`UBOUND` are stubs only
 
-RICE BASIC does support text-mode console features including `CLS`, `LOCATE`, `COLOR`, `BEEP`, `WIDTH`, `VIEW PRINT`, `CSRLIN`, `POS`, `INKEY$`, `INPUT$`, and `SCREEN()` (for reading character/attribute at a position).
+RICE BASIC supports text-mode console features including `CLS`, `LOCATE`, `COLOR`, `BEEP`, `WIDTH`, `VIEW PRINT`, `CSRLIN`, `POS`, `INKEY$`, `INPUT$`, and `SCREEN()`.
 
 All keywords are case-insensitive: `PRINT`, `Print`, and `print` all work.

@@ -1,38 +1,49 @@
 # File I/O Guide
 
+RICE BASIC uses the ANSI X3.113-1991 file I/O model with named file properties.
+
 ## Opening Files
 
 ```basic
-OPEN filename$ FOR mode AS #filenum [LEN = reclen]
+OPEN #channel: NAME filename, ORGANIZATION org, ACCESS mode
 ```
 
-### File Modes
+### File Organizations
 
-| Mode     | Description                                      |
-|----------|--------------------------------------------------|
-| `INPUT`  | Read text. File must exist.                      |
-| `OUTPUT` | Write text. Creates file or truncates existing.  |
-| `APPEND` | Write text. Creates file or appends to existing. |
-| `BINARY` | Read/write raw bytes at arbitrary positions.     |
-| `RANDOM` | Fixed-length record access. Supports FIELD.      |
+| Organization | Description                                      |
+|-------------|--------------------------------------------------|
+| `SEQUENTIAL`| Sequential text access (default). Read or write in order. |
+| `RELATIVE`  | Fixed-length record access by record number.     |
+| `STREAM`    | Byte-oriented access at arbitrary positions.     |
 
-### File Numbers
+### Access Modes
 
-File numbers range from 1 to 255. Use `FREEFILE` to get the next available number:
+| Access    | Description                                      |
+|-----------|--------------------------------------------------|
+| `INPUT`   | Read only. File must exist.                      |
+| `OUTPUT`  | Write only. Creates file or truncates existing.  |
+| `OUTIN`   | Read and write. Creates file if needed.          |
+
+### Channel Numbers
+
+Channel numbers identify open files. Use `FREEFILE` to get the next available number:
 
 ```basic
 f = FREEFILE
-OPEN "data.txt" FOR INPUT AS #f
+OPEN #f: NAME "data.txt", ACCESS INPUT
 ```
 
 ### Examples
 
 ```basic
-OPEN "output.txt" FOR OUTPUT AS #1
-OPEN "data.csv" FOR INPUT AS #2
-OPEN "log.txt" FOR APPEND AS #3
-OPEN "record.dat" FOR BINARY AS #4
+OPEN #1: NAME "output.txt", ACCESS OUTPUT
+OPEN #2: NAME "data.csv", ACCESS INPUT
+OPEN #3: NAME "log.txt", ORGANIZATION SEQUENTIAL, ACCESS OUTIN
+OPEN #4: NAME "records.dat", ORGANIZATION RELATIVE, ACCESS OUTIN, RECSIZE 40
+OPEN #5: NAME "data.bin", ORGANIZATION STREAM, ACCESS OUTIN
 ```
+
+When ORGANIZATION is omitted, SEQUENTIAL is assumed.
 
 ---
 
@@ -48,17 +59,17 @@ Always close files when done to ensure data is flushed to disk.
 
 ---
 
-## Text Output
+## Sequential File Output
 
 ### PRINT #
 
 Write formatted text to a file (same syntax as console PRINT):
 
 ```basic
-OPEN "output.txt" FOR OUTPUT AS #1
-PRINT #1, "Hello, World!"
-PRINT #1, "x = "; x
-PRINT #1, a; b; c
+OPEN #1: NAME "output.txt", ACCESS OUTPUT
+PRINT #1: "Hello, World!"
+PRINT #1: "x = "; x
+PRINT #1: a; b; c
 CLOSE #1
 ```
 
@@ -67,9 +78,9 @@ CLOSE #1
 Write comma-delimited output. Strings are automatically quoted, numbers are not:
 
 ```basic
-OPEN "data.csv" FOR OUTPUT AS #1
-WRITE #1, "Alice", 30, 5.5
-WRITE #1, "Bob", 25, 6.1
+OPEN #1: NAME "data.csv", ACCESS OUTPUT
+WRITE #1: "Alice", 30, 5.5
+WRITE #1: "Bob", 25, 6.1
 CLOSE #1
 ```
 
@@ -84,16 +95,16 @@ This format is designed to be read back with `INPUT #`.
 
 ---
 
-## Text Input
+## Sequential File Input
 
 ### INPUT #
 
 Read comma-separated values from a file:
 
 ```basic
-OPEN "data.csv" FOR INPUT AS #1
-INPUT #1, name$, age%, height!
-PRINT name$; " is "; age%; " years old"
+OPEN #1: NAME "data.csv", ACCESS INPUT
+INPUT #1: name, age, height
+PRINT name & " is " & STR(age) & " years old"
 CLOSE #1
 ```
 
@@ -104,95 +115,69 @@ CLOSE #1
 Read an entire line without parsing:
 
 ```basic
-OPEN "text.txt" FOR INPUT AS #1
+OPEN #1: NAME "text.txt", ACCESS INPUT
 DO WHILE NOT EOF(1)
-    LINE INPUT #1, line$
-    PRINT line$
+    LINE INPUT #1: line
+    PRINT line
 LOOP
 CLOSE #1
 ```
 
 ---
 
-## Binary I/O
+## Stream I/O
 
 ### GET and PUT
 
-Read and write raw bytes at specific positions in binary mode:
+Read and write raw bytes at specific positions using STREAM organization:
 
 ```basic
-OPEN "data.bin" FOR BINARY AS #1
+OPEN #1: NAME "data.bin", ORGANIZATION STREAM, ACCESS OUTIN
 
 ' Write data
-x% = 42
-PUT #1, 1, x%          ' Write at position 1
+x = 42
+PUT #1: x
 
 ' Read data
-DIM y AS INTEGER
-GET #1, 1, y            ' Read from position 1
+DIM y AS NUMERIC
+SET #1: POINTER 1
+GET #1: y
 PRINT y                 ' 42
 
 CLOSE #1
 ```
 
-Position is 1-based (first byte is position 1).
+### SET POINTER and ASK POINTER
 
-### FIELD
-
-For RANDOM-mode files, the `FIELD` statement defines named string variables that map to portions of the record buffer:
+Control and query the current file position:
 
 ```basic
-OPEN "records.dat" FOR RANDOM AS #1 LEN = 40
-FIELD #1, 20 AS name$, 2 AS age$, 8 AS salary$
+SET #1: POINTER 10      ' Move to byte position 10
+ASK #1: POINTER p       ' Get current position into variable p
+PRINT p
+```
 
-' Write a record using LSET/RSET and PUT
-LSET name$ = "Alice"
-LSET age$ = MKI$(30)
-LSET salary$ = MKD$(65000.50)
-PUT #1, 1
+---
 
-' Read a record using GET
-GET #1, 1
-PRINT name$
-PRINT CVI(age$)
-PRINT CVD(salary$)
+## Relative File I/O
+
+Relative files provide fixed-length record access by record number:
+
+```basic
+OPEN #1: NAME "records.dat", ORGANIZATION RELATIVE, ACCESS OUTIN, RECSIZE 40
+
+' Write a record
+SET #1: RECORD 1
+PRINT #1: "Alice"
+PRINT #1: 30
+
+' Read a record
+SET #1: RECORD 1
+INPUT #1: name, age
+PRINT name
+PRINT age
+
 CLOSE #1
-```
-
-The total width of all fields must not exceed the record length specified in OPEN.
-
-### SEEK Statement
-
-Set the current file position for the next read or write:
-
-```basic
-SEEK #1, 10    ' Move to byte position 10 (1-based)
-```
-
-The `SEEK` function returns the current file position:
-
-```basic
-PRINT SEEK(1)  ' Current position of file #1
-```
-
-For RANDOM-mode files, SEEK returns the record number rather than the byte position.
-
-### Binary Conversion Functions
-
-Convert between numeric types and binary strings for file I/O:
-
-```basic
-' Encoding
-s$ = MKI$(32767)     ' INTEGER to 2-byte string
-s$ = MKL$(100000)    ' LONG to 4-byte string
-s$ = MKS$(3.14)      ' SINGLE to 4-byte string
-s$ = MKD$(3.14159)   ' DOUBLE to 8-byte string
-
-' Decoding
-n% = CVI(s$)         ' 2-byte string to INTEGER
-n& = CVL(s$)         ' 4-byte string to LONG
-n! = CVS(s$)         ' 4-byte string to SINGLE
-n# = CVD(s$)         ' 8-byte string to DOUBLE
 ```
 
 ---
@@ -201,25 +186,25 @@ n# = CVD(s$)         ' 8-byte string to DOUBLE
 
 ### FREEFILE
 
-Returns the next available file number:
+Returns the next available channel number:
 
 ```basic
 f1 = FREEFILE
-OPEN "file1.txt" FOR INPUT AS #f1
+OPEN #f1: NAME "file1.txt", ACCESS INPUT
 
 f2 = FREEFILE
-OPEN "file2.txt" FOR INPUT AS #f2
+OPEN #f2: NAME "file2.txt", ACCESS INPUT
 ```
 
 ### EOF
 
-Test for end-of-file. Returns `-1` (true) at end of file, `0` (false) otherwise:
+Test for end-of-file. Returns `1` (true) at end of file, `0` (false) otherwise:
 
 ```basic
-OPEN "data.txt" FOR INPUT AS #1
+OPEN #1: NAME "data.txt", ACCESS INPUT
 DO WHILE NOT EOF(1)
-    LINE INPUT #1, line$
-    PRINT line$
+    LINE INPUT #1: line
+    PRINT line
 LOOP
 CLOSE #1
 ```
@@ -229,17 +214,9 @@ CLOSE #1
 Returns the length of an open file in bytes:
 
 ```basic
-OPEN "data.txt" FOR INPUT AS #1
+OPEN #1: NAME "data.txt", ACCESS INPUT
 PRINT "File size:"; LOF(1); "bytes"
 CLOSE #1
-```
-
-### LOC
-
-Returns the current position in the file:
-
-```basic
-PRINT LOC(1)    ' Current position in file #1
 ```
 
 ---
@@ -248,40 +225,19 @@ PRINT LOC(1)    ' Current position in file #1
 
 ```basic
 ' Write structured data
-OPEN "people.dat" FOR OUTPUT AS #1
-WRITE #1, "Alice", 30, 65000.50
-WRITE #1, "Bob", 25, 55000.00
-WRITE #1, "Carol", 35, 75000.75
+OPEN #1: NAME "people.dat", ACCESS OUTPUT
+WRITE #1: "Alice", 30, 65000.50
+WRITE #1: "Bob", 25, 55000.00
+WRITE #1: "Carol", 35, 75000.75
 CLOSE #1
 
 ' Read it back
-OPEN "people.dat" FOR INPUT AS #1
+OPEN #1: NAME "people.dat", ACCESS INPUT
 DO WHILE NOT EOF(1)
-    INPUT #1, name$, age%, salary#
-    PRINT name$; " (age "; age%; "): $"; salary#
+    INPUT #1: name, age, salary
+    PRINT name & " (age " & STR(age) & "): $" & STR(salary)
 LOOP
 CLOSE #1
-```
-
-## Complete Example: Binary File
-
-```basic
-' Write binary data
-OPEN "values.bin" FOR BINARY AS #1
-FOR i = 1 TO 10
-    PUT #1, , i    ' Write integers sequentially
-NEXT i
-CLOSE #1
-
-' Read binary data
-OPEN "values.bin" FOR BINARY AS #1
-DIM v AS INTEGER
-FOR i = 1 TO 10
-    GET #1, , v
-    PRINT v;
-NEXT i
-CLOSE #1
-' Output: 1 2 3 4 5 6 7 8 9 10
 ```
 
 ---

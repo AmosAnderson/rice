@@ -14,20 +14,17 @@ END TYPE
 
 ### Supported Field Types
 
-- `INTEGER` - 2-byte integer
-- `LONG` - 4-byte integer
-- `SINGLE` - 4-byte float
-- `DOUBLE` - 8-byte float
-- `STRING * n` - Fixed-length string of n characters
+- `NUMERIC` - Numeric value
+- `STRING` - Variable-length string
 
 ### Example
 
 ```basic
 TYPE PersonType
-    FirstName AS STRING * 20
-    LastName AS STRING * 20
-    Age AS INTEGER
-    Salary AS DOUBLE
+    FirstName AS STRING
+    LastName AS STRING
+    Age AS NUMERIC
+    Salary AS NUMERIC
 END TYPE
 ```
 
@@ -55,20 +52,6 @@ PRINT person.FirstName
 PRINT person.Age
 ```
 
-### Fixed-Length Strings
-
-`STRING * n` fields are always exactly n characters long. Shorter values are padded with spaces on the right. Longer values are truncated:
-
-```basic
-TYPE RecordType
-    Name AS STRING * 10
-END TYPE
-
-DIM rec AS RecordType
-rec.Name = "Hi"          ' Stored as "Hi        " (padded to 10 chars)
-rec.Name = "TooLongName!" ' Stored as "TooLongNam" (truncated to 10 chars)
-```
-
 ---
 
 ## Arrays of Types
@@ -77,9 +60,9 @@ Declare arrays where each element is a user-defined type:
 
 ```basic
 TYPE StudentType
-    Name AS STRING * 30
-    Grade AS INTEGER
-    GPA AS SINGLE
+    Name AS STRING
+    Grade AS NUMERIC
+    GPA AS NUMERIC
 END TYPE
 
 DIM students(1 TO 30) AS StudentType
@@ -93,7 +76,7 @@ students(2).Grade = 11
 students(2).GPA = 3.42
 
 FOR i = 1 TO 2
-    PRINT students(i).Name; " - Grade"; students(i).Grade; ", GPA:"; students(i).GPA
+    PRINT students(i).Name & " - Grade" & STR(students(i).Grade) & ", GPA:" & STR(students(i).GPA)
 NEXT i
 ```
 
@@ -105,15 +88,15 @@ User-defined types can be passed as parameters to SUB and FUNCTION:
 
 ```basic
 TYPE PointType
-    x AS SINGLE
-    y AS SINGLE
+    x AS NUMERIC
+    y AS NUMERIC
 END TYPE
 
 SUB PrintPoint (p AS PointType)
     PRINT "("; p.x; ","; p.y; ")"
 END SUB
 
-FUNCTION Distance (a AS PointType, b AS PointType) AS DOUBLE
+FUNCTION Distance (a AS PointType, b AS PointType) AS NUMERIC
     dx = a.x - b.x
     dy = a.y - b.y
     Distance = SQR(dx * dx + dy * dy)
@@ -134,10 +117,10 @@ PRINT "Distance:"; Distance(p1, p2)    ' 5
 
 ```basic
 TYPE EmployeeType
-    Name AS STRING * 30
-    Department AS STRING * 20
-    YearsWorked AS INTEGER
-    HourlyRate AS DOUBLE
+    Name AS STRING
+    Department AS STRING
+    YearsWorked AS NUMERIC
+    HourlyRate AS NUMERIC
 END TYPE
 
 DIM employees(1 TO 3) AS EmployeeType
@@ -158,11 +141,11 @@ employees(3).YearsWorked = 8
 employees(3).HourlyRate = 52.00
 
 PRINT "Employee Report"
-PRINT STRING$(50, "-")
+PRINT REPEAT("-", 50)
 
 FOR i = 1 TO 3
     PRINT employees(i).Name
-    PRINT "  Dept: "; employees(i).Department
+    PRINT "  Dept: " & employees(i).Department
     PRINT "  Years: "; employees(i).YearsWorked
     PRINT "  Rate: $"; employees(i).HourlyRate
     PRINT "  Weekly: $"; employees(i).HourlyRate * 40

@@ -1,7 +1,7 @@
 PRINT FREEFILE
-OPEN "test_freefile1.tmp" FOR OUTPUT AS #1
+OPEN #1: NAME "test_freefile1.tmp", ACCESS OUTPUT
 PRINT FREEFILE
-OPEN "test_freefile2.tmp" FOR OUTPUT AS #2
+OPEN #2: NAME "test_freefile2.tmp", ACCESS OUTPUT
 PRINT FREEFILE
 CLOSE #1
 PRINT FREEFILE

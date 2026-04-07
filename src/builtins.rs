@@ -346,7 +346,7 @@ fn builtin_val(args: &[Value]) -> Result<Value, RuntimeError> {
     if let Ok(n) = s.parse::<f64>() {
         return Ok(Value::Numeric(n));
     }
-    // QBasic returns 0 for non-numeric strings after parsing leading digits
+    // BASIC returns 0 for non-numeric strings after parsing leading digits
     let mut num_str = String::new();
     for (i, ch) in s.chars().enumerate() {
         if ch.is_ascii_digit() || ch == '.' || ((ch == '-' || ch == '+') && i == 0) {

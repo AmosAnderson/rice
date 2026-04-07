@@ -985,7 +985,7 @@ impl Parser {
             Vec::new()
         };
 
-        // STATIC keyword comes after params in QBasic
+        // STATIC keyword comes after params
         let is_static = if matches!(self.peek(), Token::KwStatic) {
             self.advance();
             true
@@ -1025,7 +1025,7 @@ impl Parser {
             None
         };
 
-        // STATIC keyword comes after params/AS in QBasic
+        // STATIC keyword comes after params/AS
         let is_static = if matches!(self.peek(), Token::KwStatic) {
             self.advance();
             true

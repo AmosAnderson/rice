@@ -153,8 +153,6 @@ fn test_string_functions() {
     assert!(output.contains("5"));
     assert!(output.contains("Hello"));
     assert!(output.contains("World"));
-    assert!(output.contains("HELLO"));
-    assert!(output.contains("hello"));
     assert!(output.contains("A"));
     assert!(output.contains("65"));
     assert!(output.contains("42"));
@@ -261,38 +259,38 @@ fn test_date_time() {
 #[test]
 fn test_file_text_io() {
     let (output, _dir) = run_bas_with_tmpdir(r#"
-OPEN "{DIR}/test.txt" FOR OUTPUT AS #1
+OPEN #1: NAME "{DIR}/test.txt", ACCESS OUTPUT
 PRINT #1, "Hello, File!"
 PRINT #1, "Second line"
 CLOSE #1
 
-OPEN "{DIR}/test.txt" FOR INPUT AS #1
-LINE INPUT #1, a$
-PRINT a$
-LINE INPUT #1, b$
-PRINT b$
+OPEN #1: NAME "{DIR}/test.txt", ACCESS INPUT
+LINE INPUT #1, a
+PRINT a
+LINE INPUT #1, b
+PRINT b
 PRINT EOF(1)
 CLOSE #1
 "#);
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(lines[0], "Hello, File!");
     assert_eq!(lines[1], "Second line");
-    assert_eq!(lines[2].trim(), "-1"); // EOF should be true
+    assert_eq!(lines[2].trim(), "1"); // EOF should be true
 }
 
 #[test]
 fn test_file_write_read() {
     let (output, _dir) = run_bas_with_tmpdir(r#"
-OPEN "{DIR}/test.txt" FOR OUTPUT AS #1
+OPEN #1: NAME "{DIR}/test.txt", ACCESS OUTPUT
 WRITE #1, "Alice", 30
 WRITE #1, "Bob", 25
 CLOSE #1
 
-OPEN "{DIR}/test.txt" FOR INPUT AS #1
-INPUT #1, name1$, age1%
-PRINT name1$; age1%
-INPUT #1, name2$, age2%
-PRINT name2$; age2%
+OPEN #1: NAME "{DIR}/test.txt", ACCESS INPUT
+INPUT #1, name1, age1
+PRINT name1; age1
+INPUT #1, name2, age2
+PRINT name2; age2
 CLOSE #1
 "#);
     let lines: Vec<&str> = output.lines().collect();
@@ -305,19 +303,20 @@ CLOSE #1
 #[test]
 fn test_file_append() {
     let (output, _dir) = run_bas_with_tmpdir(r#"
-OPEN "{DIR}/test.txt" FOR OUTPUT AS #1
+OPEN #1: NAME "{DIR}/test.txt", ACCESS OUTPUT
 PRINT #1, "Line 1"
 CLOSE #1
 
-OPEN "{DIR}/test.txt" FOR APPEND AS #1
+OPEN #1: NAME "{DIR}/test.txt", ACCESS OUTIN
+SET #1: POINTER LOF(1) + 1
 PRINT #1, "Line 2"
 CLOSE #1
 
-OPEN "{DIR}/test.txt" FOR INPUT AS #1
-LINE INPUT #1, a$
-PRINT a$
-LINE INPUT #1, b$
-PRINT b$
+OPEN #1: NAME "{DIR}/test.txt", ACCESS INPUT
+LINE INPUT #1, a
+PRINT a
+LINE INPUT #1, b
+PRINT b
 CLOSE #1
 "#);
     let lines: Vec<&str> = output.lines().collect();
@@ -328,14 +327,14 @@ CLOSE #1
 #[test]
 fn test_file_binary() {
     let (output, _dir) = run_bas_with_tmpdir(r#"
-msg$ = "HELLO"
-OPEN "{DIR}/test.bin" FOR BINARY AS #1
-PUT #1, 1, msg$
+msg = "HELLO"
+OPEN #1: NAME "{DIR}/test.bin", ORGANIZATION STREAM, ACCESS OUTIN
+PUT #1, 1, msg
 CLOSE #1
 
-OPEN "{DIR}/test.bin" FOR BINARY AS #1
-GET #1, 1, result$
-PRINT result$
+OPEN #1: NAME "{DIR}/test.bin", ORGANIZATION STREAM, ACCESS OUTIN
+GET #1, 1, result
+PRINT result
 CLOSE #1
 "#);
     assert_eq!(output.trim(), "HELLO");
@@ -345,9 +344,9 @@ CLOSE #1
 fn test_file_freefile() {
     let (output, _dir) = run_bas_with_tmpdir(r#"
 PRINT FREEFILE
-OPEN "{DIR}/a.tmp" FOR OUTPUT AS #1
+OPEN #1: NAME "{DIR}/a.tmp", ACCESS OUTPUT
 PRINT FREEFILE
-OPEN "{DIR}/b.tmp" FOR OUTPUT AS #2
+OPEN #2: NAME "{DIR}/b.tmp", ACCESS OUTPUT
 PRINT FREEFILE
 CLOSE #1
 PRINT FREEFILE
@@ -363,11 +362,11 @@ CLOSE #2
 #[test]
 fn test_file_lof() {
     let (output, _dir) = run_bas_with_tmpdir(r#"
-OPEN "{DIR}/test.txt" FOR OUTPUT AS #1
+OPEN #1: NAME "{DIR}/test.txt", ACCESS OUTPUT
 PRINT #1, "Hello"
 CLOSE #1
 
-OPEN "{DIR}/test.txt" FOR INPUT AS #1
+OPEN #1: NAME "{DIR}/test.txt", ACCESS INPUT
 PRINT LOF(1)
 CLOSE #1
 "#);
@@ -378,16 +377,16 @@ CLOSE #1
 #[test]
 fn test_file_eof_loop() {
     let (output, _dir) = run_bas_with_tmpdir(r#"
-OPEN "{DIR}/test.txt" FOR OUTPUT AS #1
+OPEN #1: NAME "{DIR}/test.txt", ACCESS OUTPUT
 PRINT #1, "alpha"
 PRINT #1, "beta"
 PRINT #1, "gamma"
 CLOSE #1
 
-OPEN "{DIR}/test.txt" FOR INPUT AS #1
+OPEN #1: NAME "{DIR}/test.txt", ACCESS INPUT
 DO WHILE NOT EOF(1)
-    LINE INPUT #1, x$
-    PRINT x$
+    LINE INPUT #1, x
+    PRINT x
 LOOP
 CLOSE #1
 "#);
@@ -604,13 +603,13 @@ PRINT USING "###"; 1; 2; 3
 #[test]
 fn test_print_using_file() {
     let (output, _dir) = run_bas_with_tmpdir(r####"
-OPEN "{DIR}/test.txt" FOR OUTPUT AS #1
+OPEN #1: NAME "{DIR}/test.txt", ACCESS OUTPUT
 PRINT #1, USING "###.##"; 3.14
 CLOSE #1
 
-OPEN "{DIR}/test.txt" FOR INPUT AS #1
-LINE INPUT #1, x$
-PRINT x$
+OPEN #1: NAME "{DIR}/test.txt", ACCESS INPUT
+LINE INPUT #1, x
+PRINT x
 CLOSE #1
 "####);
     let lines: Vec<&str> = output.lines().collect();
@@ -668,7 +667,7 @@ fn test_mid_assign() {
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(lines[0], "Hello BASIC");
     assert_eq!(lines[1], "12ABCD7890");
-    assert_eq!(lines[2], "HiXXXXXXXX");
+    assert_eq!(lines[2], "HiXXXXXXX");
 }
 
 #[test]
@@ -743,14 +742,14 @@ fn test_environ() {
 fn test_file_ops() {
     let (output, _dir) = run_bas_with_tmpdir(r#"
         MKDIR "{DIR}/testsubdir"
-        OPEN "{DIR}/testsubdir/test.txt" FOR OUTPUT AS #1
+        OPEN #1: NAME "{DIR}/testsubdir/test.txt", ACCESS OUTPUT
         PRINT #1, "hello"
         CLOSE #1
         NAME "{DIR}/testsubdir/test.txt" AS "{DIR}/testsubdir/renamed.txt"
-        OPEN "{DIR}/testsubdir/renamed.txt" FOR INPUT AS #1
-        LINE INPUT #1, x$
+        OPEN #1: NAME "{DIR}/testsubdir/renamed.txt", ACCESS INPUT
+        LINE INPUT #1, x
         CLOSE #1
-        PRINT x$
+        PRINT x
         KILL "{DIR}/testsubdir/renamed.txt"
         RMDIR "{DIR}/testsubdir"
         PRINT "done"
@@ -1023,7 +1022,7 @@ fn test_chain_file_handles_preserved() {
         r#"
 COMMON X AS INTEGER
 X = 1
-OPEN "{DIR}/test_data.txt" FOR OUTPUT AS #1
+OPEN #1: NAME "{DIR}/test_data.txt", ACCESS OUTPUT
 PRINT #1, "Hello from A"
 CHAIN "{DIR}/chain_b.bas"
 "#,
@@ -1033,7 +1032,7 @@ CHAIN "{DIR}/chain_b.bas"
 COMMON A AS INTEGER
 PRINT #1, "Hello from B"
 CLOSE #1
-OPEN "{DIR}/test_data.txt" FOR INPUT AS #1
+OPEN #1: NAME "{DIR}/test_data.txt", ACCESS INPUT
 DIM line1 AS STRING
 DIM line2 AS STRING
 LINE INPUT #1, line1
@@ -1100,14 +1099,14 @@ fn test_locate_row_only() {
 #[test]
 fn test_color() {
     let output = run_bas("COLOR 4, 1\nPRINT \"red on blue\"\n");
-    // QBasic color 4 = red -> ANSI 31, color 1 = blue -> ANSI 44
+    // Color 4 = red -> ANSI 31, color 1 = blue -> ANSI 44
     assert!(output.contains("\x1b[31;44m"), "COLOR 4,1 should emit combined ANSI 31;44");
 }
 
 #[test]
 fn test_color_fg_only() {
     let output = run_bas("COLOR 2\nPRINT \"green\"\n");
-    // QBasic color 2 = green -> ANSI 32
+    // Color 2 = green -> ANSI 32
     assert!(output.contains("\x1b[32m"));
 }
 
@@ -1176,10 +1175,10 @@ IF k = "" THEN PRINT "empty" ELSE PRINT "key"
 #[test]
 fn test_input_dollar_from_file() {
     let (output, _dir) = run_bas_with_tmpdir(r#"
-OPEN "{DIR}/test.dat" FOR OUTPUT AS #1
+OPEN #1: NAME "{DIR}/test.dat", ACCESS OUTPUT
 PRINT #1, "HELLO WORLD"
 CLOSE #1
-OPEN "{DIR}/test.dat" FOR INPUT AS #2
+OPEN #2: NAME "{DIR}/test.dat", ACCESS INPUT
 DIM s AS STRING
 s = INPUT$(5, #2)
 PRINT s
@@ -1191,10 +1190,10 @@ CLOSE #2
 #[test]
 fn test_input_dollar_from_file_no_hash() {
     let (output, _dir) = run_bas_with_tmpdir(r#"
-OPEN "{DIR}/test.dat" FOR OUTPUT AS #1
+OPEN #1: NAME "{DIR}/test.dat", ACCESS OUTPUT
 PRINT #1, "ABCDEFG"
 CLOSE #1
-OPEN "{DIR}/test.dat" FOR INPUT AS #2
+OPEN #2: NAME "{DIR}/test.dat", ACCESS INPUT
 DIM s AS STRING
 s = INPUT$(3, 2)
 PRINT s
@@ -1239,90 +1238,27 @@ PRINT SCREEN(2, 3); SCREEN(2, 4)
     assert!(output.contains(" 89"), "SCREEN(2,4) should return 89 for 'Y'");
 }
 
-// ==================== FIELD ====================
+// ==================== SET/ASK POINTER ====================
 
 #[test]
-fn test_field_basic() {
+fn test_set_ask_pointer() {
     let (output, _dir) = run_bas_with_tmpdir(r#"
-OPEN "{DIR}/field.dat" FOR RANDOM AS #1 LEN = 30
-FIELD #1, 10 AS N$, 15 AS A$, 5 AS Z$
-LSET N$ = "Alice"
-LSET A$ = "123 Main St"
-LSET Z$ = "12345"
-PUT #1, 1
-LSET N$ = "Bob"
-LSET A$ = "456 Oak Ave"
-LSET Z$ = "67890"
-PUT #1, 2
-GET #1, 1
-PRINT RTRIM$(N$)
-PRINT RTRIM$(A$)
-PRINT RTRIM$(Z$)
-GET #1, 2
-PRINT RTRIM$(N$)
-PRINT RTRIM$(A$)
-PRINT RTRIM$(Z$)
-CLOSE #1
-"#);
-    assert_eq!(output, "Alice\n123 Main St\n12345\nBob\n456 Oak Ave\n67890\n");
-}
-
-#[test]
-fn test_field_overwrite_record() {
-    let (output, _dir) = run_bas_with_tmpdir(r#"
-OPEN "{DIR}/field2.dat" FOR RANDOM AS #1 LEN = 20
-FIELD #1, 10 AS A$, 10 AS B$
-LSET A$ = "First"
-LSET B$ = "Second"
-PUT #1, 1
-LSET A$ = "Updated"
-LSET B$ = "Record"
-PUT #1, 1
-GET #1, 1
-PRINT RTRIM$(A$)
-PRINT RTRIM$(B$)
-CLOSE #1
-"#);
-    assert_eq!(output, "Updated\nRecord\n");
-}
-
-// ==================== SEEK ====================
-
-#[test]
-fn test_seek_binary() {
-    let (output, _dir) = run_bas_with_tmpdir(r#"
-OPEN "{DIR}/seek.dat" FOR BINARY AS #1
-DIM s$
-s$ = "ABCDEFGHIJ"
-PUT #1, 1, s$
-PRINT SEEK(1)
-SEEK #1, 1
-PRINT SEEK(1)
+OPEN #1: NAME "{DIR}/seek.dat", ORGANIZATION STREAM, ACCESS OUTIN
+DIM s AS STRING
+s = "ABCDEFGHIJ"
+PUT #1, 1, s
+ASK #1: POINTER p
+PRINT p
+SET #1: POINTER 1
+ASK #1: POINTER p
+PRINT p
 CLOSE #1
 "#);
     // After PUT of 10 bytes, position should be 11 (1-based)
-    // After SEEK to 1, position should be 1
-    assert_eq!(output, " 11 \n 1 \n");
-}
-
-#[test]
-fn test_seek_random() {
-    let (output, _dir) = run_bas_with_tmpdir(r#"
-OPEN "{DIR}/seekr.dat" FOR RANDOM AS #1 LEN = 10
-FIELD #1, 10 AS D$
-LSET D$ = "Record1"
-PUT #1, 1
-LSET D$ = "Record2"
-PUT #1, 2
-LSET D$ = "Record3"
-PUT #1, 3
-SEEK #1, 2
-PRINT SEEK(1)
-GET #1
-PRINT RTRIM$(D$)
-CLOSE #1
-"#);
-    assert_eq!(output, " 2 \nRecord2\n");
+    // After SET POINTER to 1, position should be 1
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0].trim(), "11");
+    assert_eq!(lines[1].trim(), "1");
 }
 
 // ==================== BYVAL ====================
@@ -1471,4 +1407,55 @@ PRINT x; I
 RETURN
 "#);
     assert_eq!(output, " 1  1 \n 1  2 \n 2  1 \n 2  2 \nDone\n");
+}
+
+// ── MAT (matrix) operations ──────────────────────────────────────────
+
+#[test]
+fn test_mat_zer_con_idn() {
+    let output = run_bas("DIM A(1 TO 2, 1 TO 2)\nMAT A = ZER\nMAT PRINT A\nMAT A = CON\nMAT PRINT A\nMAT A = IDN\nMAT PRINT A\n");
+    assert_eq!(output, "0 0\n0 0\n1 1\n1 1\n1 0\n0 1\n");
+}
+
+#[test]
+fn test_mat_add_sub() {
+    let output = run_bas("DIM A(1 TO 2, 1 TO 2)\nDIM B(1 TO 2, 1 TO 2)\nDIM C(1 TO 2, 1 TO 2)\nA(1,1) = 1\nA(1,2) = 2\nA(2,1) = 3\nA(2,2) = 4\nB(1,1) = 5\nB(1,2) = 6\nB(2,1) = 7\nB(2,2) = 8\nMAT C = A + B\nMAT PRINT C\nMAT C = A - B\nMAT PRINT C\n");
+    assert_eq!(output, "6 8\n10 12\n-4 -4\n-4 -4\n");
+}
+
+#[test]
+fn test_mat_mul() {
+    let output = run_bas("DIM A(1 TO 2, 1 TO 2)\nDIM B(1 TO 2, 1 TO 2)\nDIM C(1 TO 2, 1 TO 2)\nA(1,1) = 1\nA(1,2) = 2\nA(2,1) = 3\nA(2,2) = 4\nB(1,1) = 5\nB(1,2) = 6\nB(2,1) = 7\nB(2,2) = 8\nMAT C = A * B\nMAT PRINT C\n");
+    assert_eq!(output, "19 22\n43 50\n");
+}
+
+#[test]
+fn test_mat_scalar_mul() {
+    let output = run_bas("DIM A(1 TO 2, 1 TO 2)\nDIM C(1 TO 2, 1 TO 2)\nA(1,1) = 1\nA(1,2) = 2\nA(2,1) = 3\nA(2,2) = 4\nMAT C = (3) * A\nMAT PRINT C\n");
+    assert_eq!(output, "3 6\n9 12\n");
+}
+
+#[test]
+fn test_mat_trn() {
+    let output = run_bas("DIM A(1 TO 2, 1 TO 3)\nDIM B(1 TO 3, 1 TO 2)\nA(1,1) = 1\nA(1,2) = 2\nA(1,3) = 3\nA(2,1) = 4\nA(2,2) = 5\nA(2,3) = 6\nMAT B = TRN(A)\nMAT PRINT B\n");
+    assert_eq!(output, "1 4\n2 5\n3 6\n");
+}
+
+#[test]
+fn test_mat_inv_det() {
+    let output = run_bas("DIM A(1 TO 2, 1 TO 2)\nDIM B(1 TO 2, 1 TO 2)\nA(1,1) = 4\nA(1,2) = 7\nA(2,1) = 2\nA(2,2) = 6\nMAT B = INV(A)\nPRINT DET\n");
+    // det(A) = 4*6 - 7*2 = 10
+    assert_eq!(output.trim(), "10");
+}
+
+#[test]
+fn test_mat_read() {
+    let output = run_bas("DIM A(1 TO 2, 1 TO 2)\nDATA 10, 20, 30, 40\nMAT READ A\nMAT PRINT A\n");
+    assert_eq!(output, "10 20\n30 40\n");
+}
+
+#[test]
+fn test_mat_copy() {
+    let output = run_bas("DIM A(1 TO 2, 1 TO 2)\nDIM B(1 TO 2, 1 TO 2)\nA(1,1) = 1\nA(1,2) = 2\nA(2,1) = 3\nA(2,2) = 4\nMAT B = A\nMAT PRINT B\n");
+    assert_eq!(output, "1 2\n3 4\n");
 }

@@ -26,7 +26,7 @@ The REPL maintains state between lines, so you can define variables and use them
 
 ```
 Ok
-DIM x AS INTEGER
+DIM x AS NUMERIC
 Ok
 x = 42
 Ok
@@ -81,23 +81,13 @@ NEXT i
 Variables are auto-initialized (0 for numbers, "" for strings). You can declare them explicitly or just use them:
 
 ```basic
-x = 10              ' Auto-created as numeric
-name$ = "Alice"     ' $ suffix means STRING
-DIM count AS INTEGER ' Explicit declaration
-CONST PI = 3.14159  ' Constant (cannot be reassigned)
+x = 10                   ' Auto-created as numeric
+name = "Alice"           ' String value
+DIM count AS NUMERIC     ' Explicit declaration
+CONST PI = 3.14159       ' Constant (cannot be reassigned)
 ```
 
-### Type Suffixes
-
-Append a suffix to a variable name to specify its type:
-
-| Suffix | Type    | Example   |
-|--------|---------|-----------|
-| `%`    | INTEGER | `count%`  |
-| `&`    | LONG    | `big&`    |
-| `!`    | SINGLE  | `price!`  |
-| `#`    | DOUBLE  | `exact#`  |
-| `$`    | STRING  | `name$`   |
+ANSI BASIC has two types: NUMERIC and STRING. There are no type suffixes.
 
 ### Control Flow
 
@@ -116,25 +106,36 @@ FOR i = 1 TO 10 STEP 2
     PRINT i
 NEXT i
 
-' WHILE loop
-WHILE x < 100
-    x = x * 2
-WEND
-
 ' DO loop
 DO
     INPUT "Enter a number (0 to quit): ", n
 LOOP UNTIL n = 0
 ```
 
+### String Operations
+
+ANSI BASIC uses `&` for string concatenation and colon slicing for substrings:
+
+```basic
+greeting = "Hello" & ", " & "World!"
+PRINT greeting
+
+' String slicing (1-based)
+word = "Hello"
+PRINT word(1:3)    ' "Hel" - characters 1 through 3
+PRINT word(3:5)    ' "llo" - characters 3 through 5
+```
+
+See [String Slicing](string-slicing.md) for full details.
+
 ### Subroutines and Functions
 
 ```basic
 SUB Greet (name AS STRING)
-    PRINT "Hello, "; name; "!"
+    PRINT "Hello, " & name & "!"
 END SUB
 
-FUNCTION Square (x AS DOUBLE) AS DOUBLE
+FUNCTION Square (x AS NUMERIC) AS NUMERIC
     Square = x * x
 END FUNCTION
 
@@ -144,12 +145,14 @@ PRINT Square(5)
 
 ### Arrays
 
+Arrays default to base 1 in ANSI BASIC:
+
 ```basic
-DIM scores(10) AS INTEGER       ' 11 elements (0-10)
-DIM grid(3, 3) AS DOUBLE        ' 2D array
+DIM scores(10) AS NUMERIC       ' 10 elements (1-10)
+DIM grid(3, 3) AS NUMERIC       ' 2D array
 DIM names(1 TO 5) AS STRING     ' Custom bounds
 
-scores(0) = 95
+scores(1) = 95
 grid(1, 2) = 3.14
 names(1) = "Alice"
 ```
@@ -158,15 +161,29 @@ names(1) = "Alice"
 
 ```basic
 ' Write to a file
-OPEN "output.txt" FOR OUTPUT AS #1
-PRINT #1, "Hello, file!"
+OPEN #1: NAME "output.txt", ACCESS OUTPUT
+PRINT #1: "Hello, file!"
 CLOSE #1
 
 ' Read from a file
-OPEN "output.txt" FOR INPUT AS #1
-LINE INPUT #1, text$
-PRINT text$
+OPEN #1: NAME "output.txt", ACCESS INPUT
+LINE INPUT #1: text
+PRINT text
 CLOSE #1
+```
+
+### Error Handling
+
+ANSI BASIC uses structured exception handling:
+
+```basic
+WHEN EXCEPTION IN
+    OPEN #1: NAME "data.txt", ACCESS INPUT
+    INPUT #1: value
+    CLOSE #1
+USE
+    PRINT "Error: "; EXTEXT$
+END WHEN
 ```
 
 ## Case Insensitivity

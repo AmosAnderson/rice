@@ -616,12 +616,12 @@ impl Interpreter {
                 let mut seq = String::from("\x1b[");
                 let mut need_sep = false;
                 if let Some(f) = fg_val {
-                    seq.push_str(&Self::qb_fg_to_ansi(f).to_string());
+                    seq.push_str(&Self::color_fg_to_ansi(f).to_string());
                     need_sep = true;
                 }
                 if let Some(b) = bg_val {
                     if need_sep { seq.push(';'); }
-                    seq.push_str(&Self::qb_bg_to_ansi(b).to_string());
+                    seq.push_str(&Self::color_bg_to_ansi(b).to_string());
                 }
                 seq.push('m');
                 write!(self.output, "{}", seq).ok();
@@ -653,7 +653,7 @@ impl Interpreter {
             Stmt::Retry => Ok(ControlFlow::Retry),
             Stmt::Continue => Ok(ControlFlow::Continue),
 
-            // Removed QBasic-only statements (parser should reject these)
+            // Legacy statements not supported in ANSI BASIC mode
             // MAT operations
             Stmt::Mat(op) => self.exec_mat(op),
 
@@ -673,7 +673,7 @@ impl Interpreter {
             Stmt::Lset { .. } | Stmt::Rset { .. } | Stmt::Chain { .. } |
             Stmt::Common(_) | Stmt::Field { .. } => {
                 Err(RuntimeError::General {
-                    msg: "unsupported statement (removed QBasic feature)".to_string(),
+                    msg: "unsupported statement (legacy feature not available)".to_string(),
                 })
             }
         }
@@ -1294,6 +1294,9 @@ impl Interpreter {
                     }
                     if builtin_name == "INKEY$" {
                         return Ok(Value::Str(self.read_inkey()?));
+                    }
+                    if builtin_name == "DET" {
+                        return Ok(Value::Numeric(self.last_det));
                     }
                     if builtin_name == "EXTYPE" {
                         return Ok(Value::Numeric(
@@ -2116,7 +2119,7 @@ impl Interpreter {
         );
     }
 
-    /// Map QBasic foreground color index (0–15) to ANSI SGR code.
+    /// Map foreground color index (0–15) to ANSI SGR code.
 
     /// Non-blocking read of a single keypress. Returns "" if no key available.
     /// In non-interactive mode (tests, piped input), always returns "".
@@ -2179,7 +2182,7 @@ impl Interpreter {
         }
     }
 
-    fn qb_fg_to_ansi(c: u8) -> u8 {
+    fn color_fg_to_ansi(c: u8) -> u8 {
         match c {
             0 => 30,   // Black
             1 => 34,   // Blue
@@ -2201,8 +2204,8 @@ impl Interpreter {
         }
     }
 
-    /// Map QBasic background color index (0–15) to ANSI SGR code.
-    fn qb_bg_to_ansi(c: u8) -> u8 {
+    /// Map background color index (0–15) to ANSI SGR code.
+    fn color_bg_to_ansi(c: u8) -> u8 {
         match c {
             0 => 40,
             1 => 44,

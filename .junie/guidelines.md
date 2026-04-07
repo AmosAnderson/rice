@@ -1,7 +1,7 @@
 # Junie Guidelines for RICE BASIC
 
 ## Project Overview
-RICE BASIC is a QBasic/FreeBASIC dialect BASIC interpreter written in Rust. It supports interactive REPL and file execution. No graphics or sound.
+RICE BASIC is an ANSI X3.113-1991 Full BASIC interpreter written in Rust. It supports interactive REPL and file execution. No graphics or sound.
 
 ## Build & Test
 - `cargo build` — build the project
@@ -22,7 +22,7 @@ Key modules: `token.rs`, `lexer.rs`, `ast.rs`, `parser.rs`, `interpreter.rs`, `e
 - Hand-written lexer and recursive descent parser (no parser generators)
 - `Rc<RefCell<Environment>>` scope chain for variables
 - `ControlFlow` enum for non-local control flow (GOTO, GOSUB, EXIT, etc.)
-- QBasic-style PRINT formatting (leading space for positive numbers)
+- ANSI BASIC-style PRINT formatting (leading space for positive numbers)
 - Type suffix convention: `X%` (integer), `X&` (long), `X!` (single), `X#` (double), `X$` (string)
 
 ## Testing
