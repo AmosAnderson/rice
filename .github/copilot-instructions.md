@@ -8,7 +8,7 @@
 - Prefer extending existing files (`src/parser.rs`, `src/interpreter.rs`, `src/value.rs`, `src/builtins.rs`) over adding new modules/abstractions.
 
 ## Architecture
-- Two execution paths from a shared frontend: (1) Interpreter: Source → Lexer → Tokens → Parser → AST → Tree-walking Interpreter → Output. (2) Compiler: Source → Lexer → Tokens → Parser → AST → RiceIR → Cranelift → Native Executable. All hand-written (no parser generators).
+- Execution pipeline: Source → Lexer → Tokens → Parser → AST → Tree-walking Interpreter → Output. All hand-written (no parser generators).
 - `Interpreter::run_source` is the execution entry point; it pre-scans labels, DATA, SUB/FUNCTION, and DEF FN definitions before execution. Prescan recurses into nested blocks (IF, FOR, WHILE, DO, SELECT CASE); preserve this ordering.
 - Control transfer (`GOTO`, `GOSUB`, `RETURN`, `EXIT*`, `END`) relies on `ControlFlow` enum variants bubbling up through `exec_block()`.
 - Environment keying is name + type suffix (`X%` and `X$` are distinct) in `src/environment.rs`. Scopes use `Rc<RefCell<Environment>>` chain.
@@ -25,7 +25,7 @@
 - Unit tests only: `cargo test --lib`
 - Integration tests only: `cargo test --test integration`
 - Single test by name: `cargo test test_hello`
-- Rust edition 2024. Dependencies: `thiserror`, `rustyline`, `crossterm`, `tower-lsp`/`tokio`/`serde_json`, `cranelift-*`. Dev: `pretty_assertions`, `tempfile`.
+- Rust edition 2024. Dependencies: `thiserror`, `rustyline`, `crossterm`, `tower-lsp`/`tokio`/`serde_json`, Dev: `pretty_assertions`, `tempfile`.
 
 ### Integration Test Helpers
 - `run_file("tests/programs/foo.bas")` — load and execute a `.bas` file, returns captured output.

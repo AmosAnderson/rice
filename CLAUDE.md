@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-RICE BASIC is a structured BASIC interpreter written in Rust (QBasic/FreeBASIC dialect). No graphics or sound support. Supports both interactive REPL and file execution.
+RICE BASIC is a structured BASIC interpreter written in Rust (QBasic/FreeBASIC dialect). No graphics or sound support. Supports interactive REPL and file execution.
 
 ## Build & Test Commands
 
@@ -16,9 +16,6 @@ RICE BASIC is a structured BASIC interpreter written in Rust (QBasic/FreeBASIC d
 cargo build                    # Build
 cargo run                     # Start REPL
 cargo run -- file.bas          # Execute a .bas file
-cargo run -- --compile file.bas        # Compile to native executable (outputs ./file)
-cargo run -- --compile file.bas -o out # Compile with custom output path
-cargo run -- --emit-ir file.bas        # Dump intermediate representation
 cargo test                    # Run all tests (unit + integration)
 cargo test --lib              # Run unit tests only
 cargo test --test integration  # Run integration tests only
@@ -26,18 +23,15 @@ cargo test test_hello          # Run a single test by name
 cargo build --bin rice-lsp     # Build the language server (stdio-based)
 ```
 
-Rust edition 2024 (`Cargo.toml`). Uses `thiserror` for error types, `rustyline` for REPL, `crossterm` for terminal manipulation, `pretty_assertions` and `tempfile` for tests, `tower-lsp`/`tokio`/`serde_json` for the LSP server, `cranelift-*` crates for the native compiler backend.
+Rust edition 2024 (`Cargo.toml`). Uses `thiserror` for error types, `rustyline` for REPL, `crossterm` for terminal manipulation, `pretty_assertions` and `tempfile` for tests, `tower-lsp`/`tokio`/`serde_json` for the LSP server.
 
-REPL and file execution share interpreter code paths; keep behavior parity between them.
+REPL and file execution share interpreter code paths; keep behavior parity between them. The REPL features 24-bit ANSI syntax highlighting and automatic multi-line block detection (FOR/NEXT, IF/END IF, SUB/END SUB, etc.).
 
 ## Architecture
 
-Two execution paths from a shared frontend:
+`Source → Lexer → Tokens → Parser → AST → Tree-Walking Interpreter → Output`
 
-1. **Interpreter**: `Source → Lexer → Tokens → Parser → AST → Tree-Walking Interpreter → Output`
-2. **Compiler**: `Source → Lexer → Tokens → Parser → AST → RiceIR → Cranelift → Native Executable`
-
-All hand-written (no parser generators). The compiler is at near-parity with the interpreter; the main exception is CHAIN (requires the interpreter).
+All hand-written (no parser generators).
 
 ### Module Map
 
@@ -53,18 +47,8 @@ All hand-written (no parser generators). The compiler is at near-parity with the
 - **`repl.rs`** — Interactive REPL using rustyline. Environment persists across lines.
 - **`error.rs`** — `LexError`, `ParseError`, `RuntimeError` enums via `thiserror`. `RuntimeError::IoError` carries QBasic-compatible error codes for file/directory operations. `io_error_to_qbasic_code()` is the shared mapping function used by both interpreter and runtime.
 - **`bin/rice_lsp.rs`** — LSP server binary (stdio transport, `tower-lsp`).
-- **`main.rs`** — CLI: no args → REPL, one arg → execute file, `--compile` → native compilation, `--emit-ir` → dump IR.
+- **`main.rs`** — CLI: no args → REPL, one arg → execute file.
 - **`lib.rs`** — Module declarations. Also provides shared utility functions: `poll_inkey()` for non-blocking key reading via crossterm, `update_screen_buffer()` for tracking printed characters in an 80×25 buffer (used by both interpreter and runtime for `SCREEN()` support).
-- **`compiler/`** — Native compiler backend (AST → machine code via Cranelift):
-  - `mod.rs` — Public API (`compile_file`, `compile_source`, `emit_ir`); shared parse step.
-  - `ir.rs` — `RiceIR`, a flat intermediate representation (typed instructions, basic blocks). Includes `CheckError`, `SetResumePoint`, and `ResumeDispatch` instructions for ON ERROR GOTO support.
-  - `lower.rs` — `Lowerer`: AST → RiceIR translation. Inlines single-line DEF FN at call sites. Emits failable runtime calls with error checking when ON ERROR GOTO is active. BYREF parameters use copy-in/copy-out via runtime `byref_stack`. FIELD variables are synced between local vars and runtime `field_vars`. CHAIN returns a compile-time error.
-  - `cranelift_codegen.rs` — `CodeGenerator`: RiceIR → Cranelift IR → object file bytes.
-  - `linker.rs` — Invokes system linker (`cc` on Unix, MSVC `link.exe` on Windows) to produce final executable. Detects host architecture (x64/ARM64) for MSVC paths.
-- **`runtime/`** — C-ABI runtime library linked into compiled executables:
-  - `value_ffi.rs` — extern "C" functions for Value creation, arithmetic, string ops, type coercion. Strings use `Box<String>` (not CString) to support interior null bytes (MKI$/MKL$ etc.).
-  - `io_ffi.rs` — extern "C" functions for PRINT, file I/O, console operations, error handling (error flag/resume point), screen buffer tracking for SCREEN(), BYREF copy-in/copy-out stack, and FIELD variable sync.
-
 ### Key Design Decisions
 
 - **`=` disambiguation**: at statement level `=` is assignment; inside expressions `=` is comparison
@@ -74,7 +58,6 @@ All hand-written (no parser generators). The compiler is at near-parity with the
 - **GOTO/GOSUB**: label map built during prescan; ControlFlow::Goto bubbles up to exec_block which resolves it
 - **Truth values**: true = `-1`, false = `0` (QBasic convention); do not change
 - **Prescan ordering**: `Interpreter::run_source` pre-scans labels, DATA, SUB/FUNCTION, and DEF FN definitions before execution; prescan recurses into nested blocks (IF, FOR, WHILE, DO, SELECT CASE); preserve this ordering
-- **Compiler runtime**: compiled executables link against `runtime/` (exposed as `staticlib`). Runtime functions use `extern "C"` ABI and are `#[no_mangle]` so the linker can resolve symbols emitted by Cranelift codegen
 - **Stack size**: `main.rs` spawns an 8MB-stack thread because debug-mode `match` arms in the interpreter create ~100KB frames, exhausting the default Windows 1MB stack
 
 ### Code Conventions
@@ -100,6 +83,8 @@ To add a new integration test: create a `.bas` file in `tests/programs/`, then a
 
 The interpreter's `SharedOutput` captures PRINT output for assertion.
 
+**Note on nondeterministic builtins**: TIMER, DATE$, TIME$, and RND produce varying output. Avoid asserting exact values for these in tests; test structure/format instead.
+
 ### Extending the Interpreter
 
 **Adding a new statement:**
@@ -113,6 +98,7 @@ The interpreter's `SharedOutput` captures PRINT output for assertion.
 **Adding a builtin function:**
 1. Write `fn builtin_name(args: &[Value]) -> Result<Value, RuntimeError>` in `builtins.rs`
 2. Call `reg.register("NAME", builtin_name, arity)` in `BuiltinRegistry::new()` (use arity `0` for variadic)
+3. Use `args[n].to_f64()?`, `.to_i64()?`, `.to_string_val()?` for type coercion; return `Value::Integer`, `Value::Double`, `Value::Str`, etc.
 
 **Adding a new error:**
 1. Add variant to `LexError`, `ParseError`, or `RuntimeError` in `error.rs` with `#[error(...)]` attribute
@@ -122,4 +108,4 @@ The interpreter's `SharedOutput` captures PRINT output for assertion.
 
 **Working**: PRINT, PRINT USING, LET, DIM, CONST, INPUT, LINE INPUT, IF/ELSEIF/ELSE, FOR/NEXT, WHILE/WEND, DO/LOOP, SELECT CASE, GOTO, GOSUB/RETURN, EXIT FOR/DO/SUB/FUNCTION, SUB/FUNCTION definitions, CALL, DECLARE, DATA/READ/RESTORE, SWAP, all string/math/conversion builtins, ERR/ERL, OPTION BASE, REDIM, ERASE, File I/O (OPEN, CLOSE, PRINT#, WRITE#, INPUT#, LINE INPUT#, GET, PUT, FIELD, SEEK), file functions (FREEFILE, EOF, LOF, LOC, SEEK), ON ERROR GOTO/RESUME, ON n GOTO/GOSUB, RANDOMIZE/RND, WRITE (console), SLEEP, CLEAR, NAME/KILL/MKDIR/RMDIR/CHDIR, SHELL, ENVIRON$, MID$ (statement form), LSET/RSET, SHARED, STATIC, DEFtype (DEFINT/DEFLNG/DEFSNG/DEFDBL/DEFSTR), DEF FN, MKI$/MKL$/MKS$/MKD$/CVI/CVL/CVS/CVD, TYPE (user-defined types with dot-notation, STRING * n, arrays of TYPE), CHAIN/COMMON (multi-module programming), text/console features (CLS, LOCATE, COLOR, BEEP, WIDTH, VIEW PRINT, CSRLIN, POS, INKEY$, INPUT$, SCREEN()), BYVAL parameter semantics.
 
-**Not implemented**: proper array storage (currently uses flattened key hack), LBOUND/UBOUND (stubs only), CHAIN in compiled mode (compile-time error; use interpreter), CLEAR in compiled mode only resets runtime state (arrays, DATA) but not local SSA variables.
+**Not implemented**: proper array storage (currently uses flattened key hack), LBOUND/UBOUND (stubs only).

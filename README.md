@@ -1,6 +1,6 @@
 # RICE BASIC
 
-A structured BASIC interpreter and compiler written in Rust, in the style of QBasic/FreeBASIC. Supports an interactive REPL, file execution, and native compilation via Cranelift. No graphics or sound -- pure text-mode BASIC.
+A structured BASIC interpreter written in Rust, in the style of QBasic/FreeBASIC. Supports an interactive REPL and file execution. No graphics or sound -- pure text-mode BASIC.
 
 ## Getting Started
 
@@ -33,16 +33,6 @@ The REPL features 24-bit ANSI syntax highlighting, persistent environment across
 ```bash
 cargo run -- myprogram.bas
 ```
-
-### Compile to Native Executable
-
-```bash
-cargo run -- --compile myprogram.bas           # Produces ./myprogram
-cargo run -- --compile myprogram.bas -o out     # Specify output name
-cargo run -- --emit-ir myprogram.bas            # Print intermediate representation
-```
-
-Native compilation uses Cranelift and is at near-parity with the interpreter. The main exception is CHAIN (multi-module), which requires the interpreter.
 
 ### Run Tests
 
@@ -184,11 +174,10 @@ Replace `"rice-lsp"` in `binary.path` with the full path to the binary if it is 
 
 ## Architecture
 
-Two execution paths from a shared frontend, entirely hand-written (no parser generators):
+Entirely hand-written (no parser generators):
 
 ```
-Interpreter: Source -> Lexer -> Tokens -> Parser -> AST -> Tree-Walking Interpreter -> Output
-Compiler:    Source -> Lexer -> Tokens -> Parser -> AST -> RiceIR -> Cranelift -> Native Executable
+Source -> Lexer -> Tokens -> Parser -> AST -> Tree-Walking Interpreter -> Output
 ```
 
 ### Module Map
@@ -206,8 +195,6 @@ Compiler:    Source -> Lexer -> Tokens -> Parser -> AST -> RiceIR -> Cranelift -
 | `builtins.rs`      | Built-in function registry                           |
 | `repl.rs`          | Interactive REPL with syntax highlighting            |
 | `error.rs`         | Lexer, parser, and runtime error types               |
-| `compiler/`        | Cranelift-based native compiler (IR, lowering, codegen, linker) |
-| `runtime/`         | FFI runtime support for compiled executables         |
 | `bin/rice_lsp.rs`  | Language server binary (stdio-based)                 |
 | `main.rs`          | CLI entry point                                      |
 
@@ -225,9 +212,6 @@ Compiler:    Source -> Lexer -> Tokens -> Parser -> AST -> RiceIR -> Cranelift -
 - [tower-lsp](https://crates.io/crates/tower-lsp) -- LSP server framework
 - [tokio](https://crates.io/crates/tokio) -- async runtime (for LSP)
 - [serde_json](https://crates.io/crates/serde_json) -- JSON serialization (for LSP)
-- [cranelift-*](https://crates.io/crates/cranelift-codegen) -- native code generation backend
-- [target-lexicon](https://crates.io/crates/target-lexicon) -- platform target detection (for compiler)
-
 ## License
 
 This project is licensed under the [MIT License](LICENSE).

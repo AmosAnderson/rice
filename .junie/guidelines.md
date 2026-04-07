@@ -1,7 +1,7 @@
 # Junie Guidelines for RICE BASIC
 
 ## Project Overview
-RICE BASIC is a QBasic/FreeBASIC dialect BASIC interpreter and compiler written in Rust. It supports interactive REPL, file execution, and native compilation via Cranelift. No graphics or sound.
+RICE BASIC is a QBasic/FreeBASIC dialect BASIC interpreter written in Rust. It supports interactive REPL and file execution. No graphics or sound.
 
 ## Build & Test
 - `cargo build` — build the project
@@ -10,14 +10,12 @@ RICE BASIC is a QBasic/FreeBASIC dialect BASIC interpreter and compiler written 
 - `cargo test --test integration` — integration tests only
 - `cargo test <test_name>` — run a single test by name
 
-Rust edition 2024. Dependencies: `thiserror`, `rustyline`, `crossterm`, `tower-lsp`/`tokio`/`serde_json`, `cranelift-*`. Dev: `pretty_assertions`, `tempfile`.
+Rust edition 2024. Dependencies: `thiserror`, `rustyline`, `crossterm`, `tower-lsp`/`tokio`/`serde_json`, Dev: `pretty_assertions`, `tempfile`.
 
 ## Architecture
-Two execution paths from a shared frontend:
-1. Interpreter: Source → Lexer → Tokens → Parser → AST → Tree-Walking Interpreter → Output
-2. Compiler: Source → Lexer → Tokens → Parser → AST → RiceIR → Cranelift → Native Executable
+Source → Lexer → Tokens → Parser → AST → Tree-Walking Interpreter → Output
 
-Key modules: `token.rs`, `lexer.rs`, `ast.rs`, `parser.rs`, `interpreter.rs`, `environment.rs`, `value.rs`, `builtins.rs`, `repl.rs`, `error.rs`, `main.rs`, `compiler/` (ir, lowerer, codegen, linker), `runtime/` (value_ffi, io_ffi).
+Key modules: `token.rs`, `lexer.rs`, `ast.rs`, `parser.rs`, `interpreter.rs`, `environment.rs`, `value.rs`, `builtins.rs`, `repl.rs`, `error.rs`, `main.rs`.
 
 ## Code Style
 - All identifiers stored UPPERCASE internally

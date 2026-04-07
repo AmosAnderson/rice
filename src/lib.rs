@@ -1,6 +1,5 @@
 pub mod ast;
 pub mod builtins;
-pub mod compiler;
 pub mod environment;
 pub mod error;
 pub mod format_using;
@@ -8,7 +7,6 @@ pub mod interpreter;
 pub mod lexer;
 pub mod parser;
 pub mod repl;
-pub mod runtime;
 pub mod token;
 pub mod value;
 
