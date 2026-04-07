@@ -19,6 +19,7 @@ cargo run
 ```
 RICE BASIC v0.10.0
 Type SYSTEM or press Ctrl+D to exit.
+Commands: RUN, LIST, NEW, DELETE
 
 Ok
 PRINT "Hello, World!"
@@ -26,7 +27,28 @@ Hello, World!
 Ok
 ```
 
-The REPL features 24-bit ANSI syntax highlighting, persistent environment across lines, and automatic multi-line block detection (FOR/NEXT, IF/END IF, SUB/END SUB, etc.).
+The REPL features 24-bit ANSI syntax highlighting, automatic multi-line block detection (FOR/NEXT, IF/END IF, SUB/END SUB, etc.), and old-school line-number program editing:
+
+```
+Ok
+10 FOR i = 1 TO 5
+20 PRINT i
+30 NEXT i
+RUN
+1
+2
+3
+4
+5
+Ok
+LIST
+10 FOR i = 1 TO 5
+20 PRINT i
+30 NEXT i
+Ok
+```
+
+Unnumbered lines execute immediately. Numbered lines are stored and can be managed with `RUN`, `LIST`, `NEW`, and `DELETE`.
 
 ### Execute a File
 
@@ -237,7 +259,7 @@ Source -> Lexer -> Tokens -> Parser -> AST -> Tree-Walking Interpreter -> Output
 | `value.rs`         | Value types (Numeric, Str, Record), formatting       |
 | `mat.rs`           | MAT operations (arithmetic, inverse, transpose, etc.) |
 | `builtins.rs`      | Built-in function registry                           |
-| `repl.rs`          | Interactive REPL with syntax highlighting            |
+| `repl.rs`          | Interactive REPL with syntax highlighting and line-number editing |
 | `error.rs`         | Lexer, parser, and runtime error types               |
 | `bin/rice_lsp.rs`  | Language server binary (stdio-based)                 |
 | `main.rs`          | CLI entry point                                      |

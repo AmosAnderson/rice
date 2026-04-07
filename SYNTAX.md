@@ -11,6 +11,8 @@ rice myprogram.bas    # Execute a file
 
 In the REPL, type statements and press Enter to execute them. Type `SYSTEM` or press Ctrl+D to exit.
 
+The REPL supports old-school line-number editing: type numbered lines to build a program, then use `RUN`, `LIST`, `NEW`, and `DELETE` to manage and execute it. Unnumbered lines execute immediately.
+
 ---
 
 ## Comments
@@ -25,15 +27,16 @@ x = 5  ' Inline comment after a statement
 
 ## Data Types
 
-| Type      | Suffix | Description               |
-|-----------|--------|---------------------------|
-| INTEGER   | `%`    | Whole numbers             |
-| LONG      | `&`    | Large whole numbers       |
-| SINGLE    | `!`    | Single-precision float    |
-| DOUBLE    | `#`    | Double-precision float    |
-| STRING    | `$`    | Text                      |
+RICE BASIC follows the ANSI standard with two fundamental types:
 
-Variables with different suffixes are distinct — `x%`, `x$`, and `x` are three separate variables.
+| Type    | Description                                       |
+|---------|---------------------------------------------------|
+| NUMERIC | All numbers. Stored as double-precision float (f64). |
+| STRING  | Variable-length text.                             |
+
+There are no type suffixes for numeric subtypes. All numeric values are double-precision. Variables ending in `$` are strings; all others are numeric.
+
+Undeclared variables auto-initialize to `0` (numeric) or `""` (string).
 
 ---
 
@@ -43,23 +46,26 @@ Variables with different suffixes are distinct — `x%`, `x$`, and `x` are three
 ' Implicit declaration (no DIM needed)
 x = 10
 name$ = "Alice"
-rate# = 3.14159
 
 ' Explicit declaration
-DIM count AS INTEGER
+DIM count AS NUMERIC
 DIM message AS STRING
 
 ' Constants (cannot be changed after definition)
 CONST PI = 3.14159
 CONST MAX_SIZE = 100
-CONST GREETING = "Hello"
+CONST GREETING$ = "Hello"
 
 ' LET is optional
 LET y = 20
 y = 20          ' Same thing
-```
 
-Undeclared variables auto-initialize to `0` (numeric) or `""` (string).
+' SWAP two variables
+SWAP a, b
+
+' CLEAR all variables back to defaults
+CLEAR
+```
 
 ---
 
@@ -73,13 +79,20 @@ Undeclared variables auto-initialize to `0` (numeric) or `""` (string).
 | `-`      | Subtraction            | `5 - 3` → `2`   |
 | `*`      | Multiplication         | `5 * 3` → `15`  |
 | `/`      | Division (float)       | `7 / 2` → `3.5` |
-| `\`      | Integer division       | `7 \ 2` → `3`   |
-| `MOD`    | Modulo (remainder)     | `7 MOD 3` → `1` |
+| `MOD`    | Modulo (works on reals) | `7 MOD 3` → `1` |
 | `^`      | Exponentiation         | `2 ^ 10` → `1024` |
+
+### String Concatenation
+
+Use `&` for string concatenation (`+` is always arithmetic):
+
+```basic
+greeting$ = "Hello, " & "World!"
+```
 
 ### Comparison
 
-All return `-1` (true) or `0` (false).
+All return `1` (true) or `0` (false):
 
 | Operator | Description       |
 |----------|-------------------|
@@ -90,38 +103,30 @@ All return `-1` (true) or `0` (false).
 | `<=`     | Less than/equal   |
 | `>=`     | Greater than/equal|
 
-### Logical / Bitwise
+### Logical
 
-| Operator | Description                  |
-|----------|------------------------------|
-| `AND`    | Logical/bitwise AND          |
-| `OR`     | Logical/bitwise OR           |
-| `NOT`    | Logical/bitwise NOT (unary)  |
-| `XOR`    | Exclusive OR                 |
-| `EQV`    | Equivalence (NOT XOR)        |
-| `IMP`    | Implication                  |
+These are logical (not bitwise) operators:
 
-### String Concatenation
-
-```basic
-greeting$ = "Hello, " + "World!"
-```
+| Operator | Description      |
+|----------|------------------|
+| `AND`    | Logical AND      |
+| `OR`     | Logical OR       |
+| `NOT`    | Logical NOT      |
+| `XOR`    | Exclusive OR     |
 
 ### Operator Precedence (highest to lowest)
 
 1. `^` (right-associative)
 2. Unary `-`, `+`
 3. `*`, `/`
-4. `\`
-5. `MOD`
-6. `+`, `-`
+4. `MOD`
+5. `+`, `-`
+6. `&` (string concatenation)
 7. `=`, `<>`, `<`, `>`, `<=`, `>=`
 8. `NOT`
 9. `AND`
 10. `OR`
 11. `XOR`
-12. `EQV`
-13. `IMP`
 
 ---
 
@@ -133,17 +138,17 @@ greeting$ = "Hello, " + "World!"
 PRINT "Hello, World!"
 PRINT 42
 PRINT "Value:"; x           ' Semicolon: no gap between items
-PRINT "A", "B", "C"         ' Comma: tab to next 14-column zone
+PRINT "A", "B", "C"         ' Comma: tab to next 16-column zone
 PRINT x;                    ' Trailing semicolon: suppress newline
 PRINT                       ' Print a blank line
 PRINT TAB(20); "Indented"   ' Move to column 20
 PRINT SPC(5); "Spaced"      ' Insert 5 spaces
 ```
 
-**Number formatting**: positive numbers are printed with a leading and trailing space. Negative numbers have a `-` instead of the leading space.
+**Number formatting**: numbers are printed without leading or trailing spaces. Negative numbers have a leading `-`.
 
 ```basic
-PRINT 42          ' Outputs:  42
+PRINT 42          ' Outputs: 42
 PRINT -7          ' Outputs: -7
 PRINT "abc"       ' Outputs: abc
 ```
@@ -276,23 +281,14 @@ Case tests can be:
 - A range: `CASE 10 TO 20`
 - A comparison: `CASE IS > 100`
 
-### GOTO and GOSUB
+### GOTO
 
 ```basic
-' Jump to a label
+' Jump to a named label
 GOTO skip
 PRINT "This is skipped"
 skip:
 PRINT "Jumped here"
-
-' Subroutine call (use GOSUB/RETURN, not to be confused with SUB)
-GOSUB greet
-PRINT "Back from gosub"
-END
-
-greet:
-    PRINT "Hello!"
-    RETURN
 ```
 
 Labels can be names (followed by `:`) or line numbers:
@@ -315,7 +311,7 @@ Greet "World"
 CALL Greet("World")    ' Alternative call syntax
 
 SUB Greet(name AS STRING)
-    PRINT "Hello, " + name + "!"
+    PRINT "Hello, " & name & "!"
 END SUB
 ```
 
@@ -324,11 +320,11 @@ END SUB
 Assign to the function name to set the return value.
 
 ```basic
-DECLARE FUNCTION Square(n AS DOUBLE)
+DECLARE FUNCTION Square(n AS NUMERIC)
 
 PRINT Square(5)        ' Prints 25
 
-FUNCTION Square(n AS DOUBLE)
+FUNCTION Square(n AS NUMERIC)
     Square = n * n
 END FUNCTION
 ```
@@ -336,7 +332,7 @@ END FUNCTION
 Functions can be recursive:
 
 ```basic
-FUNCTION Factorial(n AS INTEGER)
+FUNCTION Factorial(n AS NUMERIC)
     IF n <= 1 THEN
         Factorial = 1
     ELSE
@@ -349,27 +345,14 @@ PRINT Factorial(10)    ' Prints 3628800
 
 Use `EXIT SUB` or `EXIT FUNCTION` to return early.
 
-### Parameters: BYVAL
+### Parameters: BYVAL (default)
 
-By default, parameters are passed by reference. Use `BYVAL` to pass by value:
+In ANSI Full BASIC, parameters are passed by value by default. Changes inside the procedure do not affect the original variable:
 
 ```basic
-SUB Test (BYVAL x AS INTEGER)
+SUB Test (x AS NUMERIC)
     x = x + 1        ' Does not affect the caller's variable
 END SUB
-```
-
-### DEF FN
-
-Define simple inline functions (or multi-line with END DEF):
-
-```basic
-DEF FNSquare(x) = x * x
-PRINT FNSquare(5)       ' 25
-
-DEF FNMax(a, b)
-    IF a > b THEN FNMax = a ELSE FNMax = b
-END DEF
 ```
 
 ---
@@ -378,9 +361,9 @@ END DEF
 
 ```basic
 TYPE PersonType
-    Name AS STRING * 20
-    Age AS INTEGER
-    Salary AS DOUBLE
+    Name AS STRING
+    Age AS NUMERIC
+    Salary AS NUMERIC
 END TYPE
 
 DIM p AS PersonType
@@ -390,51 +373,47 @@ p.Salary = 65000.50
 PRINT p.Name; p.Age
 ```
 
-Fields can be: `INTEGER`, `LONG`, `SINGLE`, `DOUBLE`, or `STRING * n` (fixed-length). Arrays of types and passing types to procedures are supported. See the [User-Defined Types guide](docs/user-defined-types.md) for details.
+Arrays of types and passing types to procedures are supported. See the [User-Defined Types guide](docs/user-defined-types.md) for details.
 
 ---
 
-## Multi-Module Programming
+## Strings
 
-### CHAIN
-
-Load and execute another BASIC program:
+ANSI Full BASIC uses colon slicing instead of LEFT$/RIGHT$/MID$:
 
 ```basic
-CHAIN "nextprogram.bas"
+LET A$ = "Hello, World!"
+PRINT A$(1:5)          ' "Hello"
+PRINT A$(8:12)         ' "World"
+PRINT A$(1:)           ' Entire string from position 1
 ```
 
-### COMMON
-
-Declare variables to pass between CHAINed programs:
+String concatenation uses `&`:
 
 ```basic
-COMMON x AS INTEGER, name$ AS STRING        ' Unnamed block (positional)
-COMMON /settings/ width AS INTEGER          ' Named block (matched by name)
-COMMON SHARED /config/ maxItems AS INTEGER  ' Shared with SUBs/FUNCTIONs
+LET A$ = "Hello" & ", " & "World!"
+PRINT A$               ' Hello, World!
 ```
-
-See the [Multi-Module guide](docs/multi-module.md) for details.
 
 ---
 
 ## Arrays
 
 ```basic
-DIM scores(10) AS INTEGER         ' Indices 0 to 10
-DIM grid(1 TO 5, 1 TO 5) AS DOUBLE   ' 2D array with explicit bounds
+DIM scores(10) AS NUMERIC         ' Indices 1 to 10 (OPTION BASE 1 is the default)
+DIM grid(1 TO 5, 1 TO 5) AS NUMERIC   ' 2D array with explicit bounds
 DIM names(20) AS STRING
 
-scores(0) = 95
-scores(1) = 87
+scores(1) = 95
+scores(2) = 87
 grid(1, 1) = 3.14
 
 ' Change default lower bound
-OPTION BASE 1
+OPTION BASE 0
 
 ' Resize a dynamic array
-REDIM arr(50) AS INTEGER
-REDIM PRESERVE arr(100) AS INTEGER   ' Keep existing data
+REDIM arr(50) AS NUMERIC
+REDIM PRESERVE arr(100) AS NUMERIC   ' Keep existing data
 
 ' Clear an array
 ERASE scores
@@ -461,23 +440,22 @@ READ x                   ' x=10 again
 
 ## File I/O
 
+RICE BASIC uses ANSI Full BASIC file I/O syntax.
+
 ### Opening and Closing Files
 
 ```basic
 ' Open for sequential text output (creates/overwrites)
-OPEN "data.txt" FOR OUTPUT AS #1
+OPEN #1: NAME "data.txt", ACCESS OUTPUT
 
 ' Open for sequential text input (file must exist)
-OPEN "data.txt" FOR INPUT AS #1
+OPEN #1: NAME "data.txt", ACCESS INPUT
 
-' Open for appending to end of file
-OPEN "data.txt" FOR APPEND AS #1
+' Open for read/write (OUTIN)
+OPEN #1: NAME "data.txt", ACCESS OUTIN
 
-' Open for random access (fixed-length records)
-OPEN "data.dat" FOR RANDOM AS #1 LEN = 64
-
-' Open for binary access (raw bytes)
-OPEN "data.bin" FOR BINARY AS #1
+' Specify organization explicitly
+OPEN #1: NAME "data.bin", ORGANIZATION STREAM, ACCESS OUTIN
 
 ' Close a specific file
 CLOSE #1
@@ -493,34 +471,29 @@ File numbers range from 1 to 255. Use `FREEFILE` to get the next available numbe
 
 ```basic
 f = FREEFILE
-OPEN "myfile.txt" FOR OUTPUT AS #f
+OPEN #f: NAME "myfile.txt", ACCESS OUTPUT
 ```
+
+Access modes: INPUT, OUTPUT, OUTIN. Organization: SEQUENTIAL (default), STREAM.
 
 ### Writing to Files
 
 **PRINT#** -- writes formatted output (same formatting as PRINT):
 
 ```basic
-OPEN "output.txt" FOR OUTPUT AS #1
-PRINT #1, "Hello, World!"
-PRINT #1, x; y; z
-PRINT #1, "Name:"; name$
+OPEN #1: NAME "output.txt", ACCESS OUTPUT
+PRINT #1: "Hello, World!"
+PRINT #1: x; y; z
 CLOSE #1
 ```
 
 **WRITE#** -- writes comma-separated values with strings in quotes (CSV-style):
 
 ```basic
-OPEN "data.csv" FOR OUTPUT AS #1
+OPEN #1: NAME "data.csv", ACCESS OUTPUT
 WRITE #1, "Alice", 30, 95.5
 WRITE #1, "Bob", 25, 88.0
 CLOSE #1
-```
-
-This produces:
-```
-"Alice",30,95.5
-"Bob",25,88
 ```
 
 ### Reading from Files
@@ -528,9 +501,9 @@ This produces:
 **LINE INPUT#** -- reads an entire line:
 
 ```basic
-OPEN "data.txt" FOR INPUT AS #1
+OPEN #1: NAME "data.txt", ACCESS INPUT
 DO WHILE NOT EOF(1)
-    LINE INPUT #1, x$
+    LINE INPUT #1: x$
     PRINT x$
 LOOP
 CLOSE #1
@@ -539,78 +512,46 @@ CLOSE #1
 **INPUT#** -- reads comma-delimited fields (pairs with WRITE#):
 
 ```basic
-OPEN "data.csv" FOR INPUT AS #1
-INPUT #1, name$, age%, score#
-PRINT name$; age%; score#
+OPEN #1: NAME "data.csv", ACCESS INPUT
+INPUT #1: name$, age, score
+PRINT name$; age; score
 CLOSE #1
 ```
 
-### Binary and Random Access
+### File Positioning
 
-**GET** -- reads data from a file:
-
-```basic
-' Read from current position
-GET #1, , var$
-
-' Read from a specific record (1-based, for RANDOM mode)
-GET #1, 5, var$
-```
-
-**PUT** -- writes data to a file:
+Use SET POINTER and ASK POINTER for stream I/O positioning:
 
 ```basic
-' Write at current position
-PUT #1, , var$
-
-' Write to a specific record
-PUT #1, 5, var$
+OPEN #1: NAME "data.bin", ORGANIZATION STREAM, ACCESS OUTIN
+SET #1: POINTER 100       ' Move to byte position 100
+ASK #1: POINTER pos       ' Get current position
 ```
-
-In RANDOM mode, records are padded to the `LEN` specified in OPEN (default 128 bytes). In BINARY mode, data is read/written at exact byte positions.
 
 ### File Functions
 
 | Function     | Description                                    |
 |--------------|------------------------------------------------|
 | `FREEFILE`   | Returns lowest unused file number (1-255)      |
-| `EOF(n)`     | Returns -1 (true) at end of file, 0 otherwise |
+| `EOF(n)`     | Returns 1 (true) at end of file, 0 otherwise  |
 | `LOF(n)`     | Returns file length in bytes                   |
 | `LOC(n)`     | Returns current byte position in file          |
-| `SEEK(n)`    | Returns current file position (1-based)        |
-
-### FIELD Statement
-
-For RANDOM-mode files, define fields that map to buffer positions:
-
-```basic
-OPEN "data.dat" FOR RANDOM AS #1 LEN = 40
-FIELD #1, 20 AS name$, 2 AS age$, 8 AS salary$
-```
-
-### SEEK Statement
-
-Set the file position for the next read or write:
-
-```basic
-SEEK #1, 10    ' Move to position 10 (1-based)
-```
 
 ### Complete Example
 
 ```basic
 ' Write records
-OPEN "people.txt" FOR OUTPUT AS #1
+OPEN #1: NAME "people.txt", ACCESS OUTPUT
 WRITE #1, "Alice", 30
 WRITE #1, "Bob", 25
 WRITE #1, "Carol", 35
 CLOSE #1
 
 ' Read them back
-OPEN "people.txt" FOR INPUT AS #1
+OPEN #1: NAME "people.txt", ACCESS INPUT
 DO WHILE NOT EOF(1)
-    INPUT #1, name$, age%
-    PRINT name$; " is"; age%; "years old"
+    INPUT #1: name$, age
+    PRINT name$; " is"; age; "years old"
 LOOP
 CLOSE #1
 ```
@@ -624,24 +565,18 @@ CLOSE #1
 | Function                 | Description                            | Example                       |
 |--------------------------|----------------------------------------|-------------------------------|
 | `LEN(s$)`               | Length of string                        | `LEN("abc")` → `3`           |
-| `LEFT$(s$, n)`           | First n characters                     | `LEFT$("Hello", 3)` → `"Hel"` |
-| `RIGHT$(s$, n)`          | Last n characters                      | `RIGHT$("Hello", 3)` → `"llo"` |
-| `MID$(s$, start)`        | Substring from position (1-based)      | `MID$("Hello", 2)` → `"ello"` |
-| `MID$(s$, start, len)`   | Substring with length                  | `MID$("Hello", 2, 3)` → `"ell"` |
-| `INSTR(s$, find$)`       | Find substring (0 if not found)        | `INSTR("Hello", "ll")` → `3` |
-| `INSTR(start, s$, find$)` | Find from position                    | `INSTR(4, "abcabc", "abc")` → `4` |
-| `UCASE$(s$)`             | Convert to uppercase                   | `UCASE$("hello")` → `"HELLO"` |
-| `LCASE$(s$)`             | Convert to lowercase                   | `LCASE$("HELLO")` → `"hello"` |
+| `INSTR(s$, find$)`      | Find substring (0 if not found)        | `INSTR("Hello", "ll")` → `3` |
+| `INSTR(start, s$, find$)` | Find from position                   | `INSTR(4, "abcabc", "abc")` → `4` |
 | `LTRIM$(s$)`             | Remove leading spaces                  | `LTRIM$("  hi")` → `"hi"`    |
 | `RTRIM$(s$)`             | Remove trailing spaces                 | `RTRIM$("hi  ")` → `"hi"`    |
 | `SPACE$(n)`              | String of n spaces                     | `SPACE$(3)` → `"   "`        |
 | `STRING$(n, s$)`         | Repeat character n times               | `STRING$(5, "*")` → `"*****"` |
 | `CHR$(n)`                | Character from ASCII code              | `CHR$(65)` → `"A"`           |
 | `ASC(s$)`                | ASCII code of first character          | `ASC("A")` → `65`            |
-| `STR$(n)`                | Number to string                       | `STR$(42)` → `" 42"`         |
+| `STR$(n)`                | Number to string                       | `STR$(42)` → `"42"`          |
 | `VAL(s$)`                | String to number                       | `VAL("3.14")` → `3.14`       |
-| `HEX$(n)`                | Number to hexadecimal string           | `HEX$(255)` → `"FF"`         |
-| `OCT$(n)`                | Number to octal string                 | `OCT$(8)` → `"10"`           |
+
+For substring operations, use colon slicing: `A$(3:7)` instead of MID$/LEFT$/RIGHT$.
 
 ### Math Functions
 
@@ -658,16 +593,19 @@ CLOSE #1
 | `COS(n)`        | Cosine (radians)               | `COS(0)` → `1`          |
 | `TAN(n)`        | Tangent (radians)              | `TAN(0)` → `0`          |
 | `ATN(n)`        | Arctangent (returns radians)   | `ATN(1)` → `0.7854...`  |
+| `ASIN(n)`       | Arc sine                       | `ASIN(1)` → `1.5708...` |
+| `ACOS(n)`       | Arc cosine                     | `ACOS(0)` → `1.5708...` |
+| `COT(n)`        | Cotangent                      | `COT(1)` → `0.6421...`  |
+| `CSC(n)`        | Cosecant                       | `CSC(1)` → `1.1884...`  |
+| `SEC(n)`        | Secant                         | `SEC(0)` → `1`          |
+| `ANGLE(x, y)`   | Angle of vector (x, y)        | `ANGLE(1, 1)` → `0.785...` |
+| `CEIL(n)`       | Ceiling                        | `CEIL(2.1)` → `3`       |
+| `TRUNCATE(n)`   | Truncate toward zero           | `TRUNCATE(-2.9)` → `-2` |
+| `REMAINDER(a,b)` | IEEE remainder                | `REMAINDER(7, 3)` → `1` |
+| `ROUND(n)`      | Round to nearest integer       | `ROUND(2.5)` → `3`      |
+| `MAXNUM`        | Maximum numeric value          | `MAXNUM` → `1.798e+308` |
+| `PI`            | Pi constant                    | `PI` → `3.14159...`     |
 | `RND`           | Random number in [0, 1)        | `RND` → `0.317...`      |
-
-### Type Conversion Functions
-
-| Function   | Converts to   |
-|------------|---------------|
-| `CINT(n)`  | INTEGER       |
-| `CLNG(n)`  | LONG          |
-| `CSNG(n)`  | SINGLE        |
-| `CDBL(n)`  | DOUBLE        |
 
 ### Date/Time Functions
 
@@ -677,18 +615,15 @@ CLOSE #1
 | `TIME$`   | Current time as HH:MM:SS                 |
 | `TIMER`   | Seconds elapsed since midnight           |
 
----
+### System Functions
 
-## SWAP
-
-Exchange the values of two variables:
-
-```basic
-a = 10
-b = 20
-SWAP a, b
-PRINT a; b    ' Prints 20  10
-```
+| Function        | Description                              |
+|-----------------|------------------------------------------|
+| `ENVIRON$(s$)`  | Get environment variable value           |
+| `FREEFILE`      | Next available file number               |
+| `EOF(n)`        | End-of-file test (1 if true, 0 if false) |
+| `LOF(n)`        | File length in bytes                     |
+| `LOC(n)`        | Current position in file                 |
 
 ---
 
@@ -704,59 +639,54 @@ x = 1 : y = 2 : PRINT x + y
 
 ## Error Handling
 
-### ON ERROR GOTO
+RICE BASIC uses ANSI structured exception handling (not ON ERROR GOTO):
+
+### WHEN EXCEPTION
 
 ```basic
-ON ERROR GOTO handler       ' Enable error trapping
-ON ERROR GOTO 0             ' Disable error trapping
-
-' ... code that might fail ...
-
-END
-
-handler:
-PRINT "Error"; ERR; "at line"; ERL
-RESUME NEXT                 ' Continue with the next statement
+WHEN EXCEPTION IN
+    ' Code that might cause errors
+    OPEN #1: NAME "missing.txt", ACCESS INPUT
+    LINE INPUT #1: x$
+    CLOSE #1
+USE
+    PRINT "Error:"; EXTYPE; EXTEXT$
+END WHEN
 ```
 
-### RESUME
+### EXTYPE and EXTEXT$
 
-| Form              | Behavior                                       |
-|-------------------|-------------------------------------------------|
-| `RESUME`          | Retry the statement that caused the error        |
-| `RESUME NEXT`     | Skip the failed statement, continue with next    |
-| `RESUME label`    | Jump to the specified label                      |
+| Function   | Description                                      |
+|------------|--------------------------------------------------|
+| `EXTYPE`   | Numeric exception type code                      |
+| `EXTEXT$`  | Descriptive text for the exception               |
 
-### ERR and ERL
+### RETRY and CONTINUE
 
-| Function | Description                                      |
-|----------|--------------------------------------------------|
-| `ERR`    | Error code of the most recent trapped error      |
-| `ERL`    | Source line of the most recent trapped error      |
-
-Common ANSI BASIC exception types (EXTYPE):
-
-| Code | Error                  |
-|------|------------------------|
-| 3    | RETURN without GOSUB   |
-| 5    | Illegal function call  |
-| 6    | Overflow               |
-| 9    | Subscript out of range |
-| 11   | Division by zero       |
-| 13   | Type mismatch          |
-| 20   | RESUME without error   |
-
-### Example: Safe Division
+Use `RETRY` in the `USE` block to re-execute the statement that caused the exception:
 
 ```basic
-ON ERROR GOTO divErr
-result = a / b
-PRINT result
-END
+DIM filename AS STRING
+filename = "primary.txt"
 
-divErr:
-PRINT "Cannot divide by zero"
-RESUME NEXT
+WHEN EXCEPTION IN
+    OPEN #1: NAME filename, ACCESS INPUT
+USE
+    filename = "backup.txt"
+    RETRY
+END WHEN
+```
+
+Use `CONTINUE` to skip the failed statement and resume with the next one:
+
+```basic
+WHEN EXCEPTION IN
+    x = 1 / 0         ' Division by zero - will be skipped
+    PRINT "Continued"  ' This runs after CONTINUE
+USE
+    PRINT "Skipping error: "; EXTEXT$
+    CONTINUE
+END WHEN
 ```
 
 ---
@@ -836,7 +766,53 @@ VIEW PRINT                ' Reset scrolling region
 | `INPUT$(n)`       | Reads n characters from keyboard                 |
 | `INPUT$(n, #f)`   | Reads n bytes from file #f                       |
 | `SCREEN(r, c)`    | Returns ASCII code of character at row r, col c  |
-| `SCREEN(r, c, 1)` | Color attribute at row r, col c (stub: returns 7)|
+
+---
+
+## MAT Operations
+
+Full matrix support for numeric arrays:
+
+```basic
+DIM A(3, 3), B(3, 3), C(3, 3)
+MAT A = ZER
+MAT B = IDN
+MAT C = A + B
+MAT PRINT C
+```
+
+Operations: MAT PRINT, MAT READ, MAT INPUT, MAT arithmetic (+, -, *), scalar multiply, INV (inverse), TRN (transpose), DET (determinant), ZER (zeros), CON (ones), IDN (identity). See the [MAT Operations guide](docs/mat-operations.md) for details.
+
+---
+
+## REPL Line-Number Mode
+
+The interactive REPL supports classic BASIC line-number editing:
+
+```
+Ok
+10 PRINT "Hello"
+20 PRINT "World"
+LIST
+10 PRINT "Hello"
+20 PRINT "World"
+RUN
+Hello
+World
+Ok
+```
+
+| Command              | Description                           |
+|----------------------|---------------------------------------|
+| `RUN`                | Execute the stored program            |
+| `LIST`               | Display all stored lines              |
+| `LIST 10`            | Display line 10                       |
+| `LIST 10-50`         | Display lines 10 through 50          |
+| `NEW`                | Clear the stored program              |
+| `DELETE 10`          | Delete line 10                        |
+| `DELETE 10-50`       | Delete lines 10 through 50           |
+
+Typing a line number with a statement stores it. Typing a bare line number deletes that line. Lines without numbers execute immediately.
 
 ---
 
@@ -845,7 +821,7 @@ VIEW PRINT                ' Reset scrolling region
 ```basic
 END     ' Terminate the program
 STOP    ' Halt execution (same as END)
-SYSTEM  ' Exit to system
+SYSTEM  ' Exit to system (also exits the REPL)
 ```
 
 ---
@@ -891,7 +867,7 @@ LOOP UNTIL guess = secret
 
 ```basic
 CONST N = 10
-DIM a(N) AS INTEGER
+DIM a(N) AS NUMERIC
 
 ' Fill with random values
 RANDOMIZE TIMER
@@ -918,14 +894,14 @@ PRINT
 ### Fibonacci with FUNCTION
 
 ```basic
-DECLARE FUNCTION Fib(n AS INTEGER)
+DECLARE FUNCTION Fib(n AS NUMERIC)
 
 FOR i = 1 TO 15
     PRINT Fib(i);
 NEXT i
 PRINT
 
-FUNCTION Fib(n AS INTEGER)
+FUNCTION Fib(n AS NUMERIC)
     IF n <= 2 THEN
         Fib = 1
     ELSE
@@ -943,6 +919,10 @@ RICE BASIC intentionally omits:
 - **Graphics modes**: No `SCREEN` (mode switching), `PSET`, `LINE`, `CIRCLE`, `DRAW`, `PAINT`, `PALETTE`, `WINDOW`
 - **Sound**: No `SOUND`, `PLAY`
 - **Memory access**: No `DEF SEG`, `PEEK`, `POKE`
+- **Legacy error handling**: No `ON ERROR GOTO`, `ERR`, `ERL` (use `WHEN EXCEPTION` instead)
+- **Legacy procedures**: No `GOSUB`/`RETURN`, `DEF FN` (use `SUB`/`FUNCTION` instead)
+- **Legacy string functions**: No `LEFT$`, `RIGHT$`, `MID$` (use colon slicing instead)
+- **Legacy operators**: No `\` (integer division), `IMP`, `EQV`
 - **Proper array storage**: Arrays use a flattened key representation; `LBOUND`/`UBOUND` are stubs only
 
 RICE BASIC supports text-mode console features including `CLS`, `LOCATE`, `COLOR`, `BEEP`, `WIDTH`, `VIEW PRINT`, `CSRLIN`, `POS`, `INKEY$`, `INPUT$`, and `SCREEN()`.

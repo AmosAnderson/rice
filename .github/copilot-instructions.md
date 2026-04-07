@@ -9,12 +9,12 @@
 
 ## Architecture
 - Execution pipeline: Source → Lexer → Tokens → Parser → AST → Tree-walking Interpreter → Output. All hand-written (no parser generators).
-- `Interpreter::run_source` is the execution entry point; it pre-scans labels, DATA, SUB/FUNCTION, and DEF FN definitions before execution. Prescan recurses into nested blocks (IF, FOR, WHILE, DO, SELECT CASE); preserve this ordering.
-- Control transfer (`GOTO`, `GOSUB`, `RETURN`, `EXIT*`, `END`) relies on `ControlFlow` enum variants bubbling up through `exec_block()`.
-- Environment keying is name + type suffix (`X%` and `X$` are distinct) in `src/environment.rs`. Scopes use `Rc<RefCell<Environment>>` chain.
+- `Interpreter::run_source` is the execution entry point; it pre-scans labels, DATA, SUB/FUNCTION definitions before execution. Prescan recurses into nested blocks (IF, FOR, WHILE, DO, SELECT CASE); preserve this ordering.
+- Control transfer (`GOTO`, `EXIT*`, `END`) relies on `ControlFlow` enum variants bubbling up through `exec_block()`. GOSUB/RETURN are not supported; use SUB/FUNCTION instead.
+- Environment keying is by name (all identifiers normalized to UPPERCASE). Only two types: NUMERIC and STRING. No type suffixes. Variables ending in `$` are strings; all others are numeric. Scopes use `Rc<RefCell<Environment>>` chain.
 - Builtins are centralized in `src/builtins.rs`; resolution order: builtin → user-defined function → array.
 - `=` disambiguation: at statement level `=` is assignment; inside expressions `=` is comparison.
-- Expression parsing uses precedence climbing: IMP → EQV → XOR → OR → AND → NOT → comparison → +/- → MOD → \\ → */÷ → unary → ^.
+- Expression parsing uses precedence climbing: XOR → OR → AND → NOT → comparison → &(concat) → +/- → MOD → */÷ → unary → ^.
 
 ## Build and Test
 - Build: `cargo build`
@@ -47,17 +47,17 @@
 ### Adding a builtin function
 1. Write `fn builtin_name(args: &[Value]) -> Result<Value, RuntimeError>` in `src/builtins.rs`.
 2. Call `reg.register("NAME", builtin_name, arity)` in `BuiltinRegistry::new()`. Use arity `0` for variadic.
-3. Use `args[n].to_f64()?`, `.to_i64()?`, `.to_string_val()?` for type coercion; return `Value::Integer`, `Value::Double`, `Value::Str`, etc.
+3. Use `args[n].to_f64()?` or `.to_string_val()?` for type coercion; return `Value::Numeric(...)` or `Value::Str(...)`.
 
 ### Adding a new error
 1. Add variant to `LexError`, `ParseError`, or `RuntimeError` in `src/error.rs` with `#[error(...)]` attribute.
 2. For `RuntimeError`: add error code mapping in `basic_error_code()` if applicable.
 
 ## Project Conventions
-- BASIC truth values are numeric: true = `-1`, false = `0`; do not change casually.
-- `PRINT` formatting follows ANSI BASIC behavior (leading space for positive numbers, comma zones).
+- BASIC truth values are numeric: true = `1`, false = `0` (ANSI BASIC convention); do not change casually.
+- `PRINT` formatting follows ANSI BASIC behavior (no leading space for positive numbers, 16-char comma zones).
 - Single-line vs block `IF` is parser-sensitive; `ELSE` is treated as statement terminator in relevant contexts.
-- Undefined variables auto-initialize by suffix (`0` for numeric, `""` for string).
+- Undefined variables auto-initialize to `0` (numeric) or `""` (string). String variables end in `$`; all others are numeric.
 - Arrays are currently implemented with flattened keys; avoid broad refactors without targeted tests.
 - Not yet implemented: proper array storage, LBOUND/UBOUND (stubs only).
 

@@ -23,9 +23,9 @@ MySubroutine arg1, arg2         ' CALL keyword is optional
 
 ```basic
 SUB PrintBanner (title AS STRING, width AS NUMERIC)
-    PRINT REPEAT("=", width)
+    PRINT STRING$(width, "=")
     PRINT title
-    PRINT REPEAT("=", width)
+    PRINT STRING$(width, "=")
 END SUB
 
 CALL PrintBanner("Welcome", 20)

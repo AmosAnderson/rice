@@ -141,7 +141,7 @@ employees(3).YearsWorked = 8
 employees(3).HourlyRate = 52.00
 
 PRINT "Employee Report"
-PRINT REPEAT("-", 50)
+PRINT STRING$(50, "-")
 
 FOR i = 1 TO 3
     PRINT employees(i).Name

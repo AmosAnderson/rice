@@ -122,6 +122,7 @@ These are logical (not bitwise) operators, operating on truth values:
 | `AND`    | Logical AND      | `(x > 0) AND (x < 10)`    |
 | `OR`     | Logical OR       | `(x = 0) OR (x = 1)`      |
 | `NOT`    | Logical NOT      | `NOT (x = 0)`             |
+| `XOR`    | Exclusive OR     | `(x = 1) XOR (y = 1)`     |
 
 ### String Concatenation
 
@@ -146,7 +147,8 @@ From highest to lowest:
 | 7          | `=`, `<>`, `<`, `>`, `<=`, `>=`  | Left          |
 | 8          | `NOT`                            | Prefix        |
 | 9          | `AND`                            | Left          |
-| 10 (lowest)| `OR`                             | Left          |
+| 10         | `OR`                             | Left          |
+| 11 (lowest)| `XOR`                            | Left          |
 
 Use parentheses to override precedence:
 
@@ -388,15 +390,15 @@ x = RND            ' Next random number (0 to 1, exclusive)
 | Function               | Description                              | Example                       |
 |------------------------|------------------------------------------|-------------------------------|
 | `LEN(s)`               | Length of string                          | `LEN("Hi")` = 2             |
-| `UCASE(s)`             | Convert to uppercase                     | `UCASE("hi")` = "HI"        |
-| `LCASE(s)`             | Convert to lowercase                     | `LCASE("HI")` = "hi"        |
-| `LTRIM(s)`             | Remove leading spaces                    | `LTRIM("  hi")` = "hi"      |
-| `RTRIM(s)`             | Remove trailing spaces                   | `RTRIM("hi  ")` = "hi"      |
-| `SPACE(n)`             | String of n spaces                       | `SPACE(3)` = "   "           |
-| `REPEAT(ch, n)`        | Repeat character n times                 | `REPEAT("*", 3)` = "***"    |
-| `CHR(n)`               | Character from character code            | `CHR(65)` = "A"              |
-| `ORD(s)`               | Character code of first character        | `ORD("A")` = 65              |
-| `STR(n)`               | Number to string                         | `STR(42)` = "42"             |
+| `INSTR(s, find)`       | Find substring (0 if not found)          | `INSTR("Hello", "ll")` = 3  |
+| `INSTR(start, s, find)`| Find from position                       | `INSTR(4, "abcabc", "abc")` = 4 |
+| `LTRIM$(s)`            | Remove leading spaces                    | `LTRIM$("  hi")` = "hi"     |
+| `RTRIM$(s)`            | Remove trailing spaces                   | `RTRIM$("hi  ")` = "hi"     |
+| `SPACE$(n)`            | String of n spaces                       | `SPACE$(3)` = "   "          |
+| `STRING$(n, ch)`       | Repeat character n times                 | `STRING$(3, "*")` = "***"   |
+| `CHR$(n)`              | Character from ASCII code                | `CHR$(65)` = "A"             |
+| `ASC(s)`               | ASCII code of first character            | `ASC("A")` = 65              |
+| `STR$(n)`              | Number to string                         | `STR$(42)` = "42"            |
 | `VAL(s)`               | Parse number from string                 | `VAL("42")` = 42             |
 
 String slicing with colon notation replaces LEFT$, MID$, and RIGHT$. See [String Slicing](string-slicing.md).
@@ -406,14 +408,18 @@ String slicing with colon notation replaces LEFT$, MID$, and RIGHT$. See [String
 | Function       | Description                          | Example Return            |
 |----------------|--------------------------------------|---------------------------|
 | `TIMER`        | Seconds since midnight               | `43261.5`                |
-| `DATE`         | Current date string                  | `"2026-03-08"`           |
-| `TIME`         | Current time string                  | `"14:30:45"`             |
+| `DATE$`        | Current date string (MM-DD-YYYY)     | `"03-08-2026"`           |
+| `TIME$`        | Current time string (HH:MM:SS)      | `"14:30:45"`             |
+| `ENVIRON$(s)`  | Get environment variable             | `ENVIRON$("PATH")`      |
 | `FREEFILE`     | Next available file number           | `1`                      |
 | `EOF(n)`       | End-of-file test (1 if true)         | `EOF(1)`                 |
 | `LOF(n)`       | File length in bytes                 | `LOF(1)`                 |
+| `LOC(n)`       | Current position in file             | `LOC(1)`                 |
 | `CSRLIN`       | Current cursor row (1-based)         | `CSRLIN`                 |
 | `POS(0)`       | Current cursor column (1-based)      | `POS(0)`                 |
-| `INKEY`        | Read key without waiting ("" if none)| `INKEY`                  |
+| `INKEY$`       | Read key without waiting ("" if none)| `INKEY$`                 |
+| `INPUT$(n)`    | Read n characters from keyboard      | `INPUT$(1)`              |
+| `SCREEN(r, c)` | ASCII code of character at position  | `SCREEN(1, 1)`           |
 
 ---
 

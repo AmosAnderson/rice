@@ -31,7 +31,19 @@ Ok
 x = 42
 Ok
 PRINT x
- 42
+42
+Ok
+```
+
+The REPL also supports old-school line-number editing. Type numbered lines to build a program, then use `RUN` to execute, `LIST` to display, `NEW` to clear, and `DELETE` to remove lines:
+
+```
+Ok
+10 PRINT "Hello, World!"
+20 PRINT "Goodbye!"
+RUN
+Hello, World!
+Goodbye!
 Ok
 ```
 
