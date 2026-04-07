@@ -4,7 +4,6 @@ use std::rc::Rc;
 
 use crate::ast::Label;
 use crate::error::RuntimeError;
-use crate::token::TypeSuffix;
 use crate::value::Value;
 
 pub type EnvRef = Rc<RefCell<Environment>>;
@@ -46,48 +45,47 @@ impl Environment {
         }))
     }
 
-    pub fn get(&self, name: &str, suffix: Option<TypeSuffix>) -> Option<Value> {
-        let key = Self::var_key(name, suffix);
-        if let Some(v) = self.constants.get(&key) {
+    pub fn get(&self, name: &str) -> Option<Value> {
+        let key = name;
+        if let Some(v) = self.constants.get(key) {
             return Some(v.clone());
         }
         // If variable is shared, read from root
-        if self.shared_vars.contains(&key) {
+        if self.shared_vars.contains(key) {
             if let Some(parent) = &self.parent {
-                return Self::get_from_root(parent, &key);
+                return Self::get_from_root(parent, key);
             }
         }
-        if let Some(v) = self.vars.get(&key) {
+        if let Some(v) = self.vars.get(key) {
             return Some(v.clone());
         }
         if let Some(parent) = &self.parent {
-            return parent.borrow().get(name, suffix);
+            return parent.borrow().get(name);
         }
         None
     }
 
-    pub fn set(&mut self, name: &str, suffix: Option<TypeSuffix>, value: Value) {
-        let key = Self::var_key(name, suffix);
+    pub fn set(&mut self, name: &str, value: Value) {
+        let key = name;
         // Don't overwrite constants
-        if self.constants.contains_key(&key) || self.is_const_in_parents(&key) {
+        if self.constants.contains_key(key) || self.is_const_in_parents(key) {
             return; // Constant cannot be reassigned
         }
         // If variable is shared, write to root
-        if self.shared_vars.contains(&key) {
+        if self.shared_vars.contains(key) {
             if let Some(parent) = &self.parent {
-                Self::set_in_root(parent, &key, value);
+                Self::set_in_root(parent, key, value);
                 return;
             }
         }
-        self.vars.insert(key, value);
+        self.vars.insert(name.to_string(), value);
     }
 
-    pub fn define_const(&mut self, name: &str, suffix: Option<TypeSuffix>, value: Value) -> Result<(), RuntimeError> {
-        let key = Self::var_key(name, suffix);
-        if self.constants.contains_key(&key) {
+    pub fn define_const(&mut self, name: &str, value: Value) -> Result<(), RuntimeError> {
+        if self.constants.contains_key(name) {
             return Err(RuntimeError::DuplicateDefinition { name: name.into() });
         }
-        self.constants.insert(key, value);
+        self.constants.insert(name.to_string(), value);
         Ok(())
     }
 
@@ -119,13 +117,6 @@ impl Environment {
         self.vars.iter()
     }
 
-    pub fn var_key(name: &str, suffix: Option<TypeSuffix>) -> String {
-        match suffix {
-            Some(s) => format!("{}{}", name, s.to_char()),
-            None => name.to_string(),
-        }
-    }
-
     fn is_const_in_parents(&self, key: &str) -> bool {
         if let Some(parent) = &self.parent {
             let p = parent.borrow();
@@ -139,7 +130,7 @@ impl Environment {
     }
 
     /// Low-level key lookup by pre-built key string.
-    /// Does NOT follow shared_vars routing — use only on the global scope.
+    /// Does NOT follow shared_vars routing -- use only on the global scope.
     pub(crate) fn get_by_key(&self, key: &str) -> Option<Value> {
         if let Some(v) = self.constants.get(key) {
             return Some(v.clone());
@@ -154,8 +145,7 @@ impl Environment {
     }
 
     /// Low-level key set by pre-built key string.
-    /// Bypasses constant protection and shared_vars routing — use only on a
-    /// fresh global scope (e.g., during CHAIN variable transfer).
+    /// Bypasses constant protection and shared_vars routing.
     pub(crate) fn set_by_key(&mut self, key: &str, value: Value) {
         self.vars.insert(key.to_string(), value);
     }

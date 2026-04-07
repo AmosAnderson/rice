@@ -1,5 +1,3 @@
-use crate::token::TypeSuffix;
-
 #[derive(Debug, Clone)]
 pub struct Program {
     pub statements: Vec<LabeledStmt>,
@@ -113,7 +111,7 @@ pub enum Stmt {
     // Random
     Randomize(Option<Expr>),
 
-    // Phase 1: new statements
+    // Statements
     Write(Vec<Expr>),
     Sleep(Option<Expr>),
     Clear,
@@ -124,16 +122,16 @@ pub enum Stmt {
     Chdir(Expr),
     Shell(Option<Expr>),
 
-    // Phase 2: string mutation
+    // String mutation
     MidAssign { var: Variable, start: Expr, length: Option<Expr>, replacement: Expr },
     Lset { var: Variable, expr: Expr },
     Rset { var: Variable, expr: Expr },
 
-    // Phase 3: scope
+    // Scope
     Shared(Vec<Variable>),
     Static(Vec<DimDecl>),
 
-    // Phase 4: DEFtype and DEF FN
+    // DEFtype and DEF FN
     DefType { typ: BasicType, ranges: Vec<(char, char)> },
     DefFn { name: String, params: Vec<Param>, body: DefFnBody },
 
@@ -174,7 +172,6 @@ pub struct TypeField {
 #[derive(Debug, Clone)]
 pub struct CommonVar {
     pub name: String,
-    pub suffix: Option<TypeSuffix>,
     pub as_type: Option<BasicType>,
     pub is_array: bool,
 }
@@ -275,7 +272,6 @@ pub enum CaseTest {
 #[derive(Debug, Clone)]
 pub struct DimDecl {
     pub name: String,
-    pub suffix: Option<TypeSuffix>,
     pub as_type: Option<BasicType>,
     pub dimensions: Option<Vec<(Expr, Option<Expr>)>>, // (upper,) or (lower, upper)
 }
@@ -291,7 +287,6 @@ pub struct SubDef {
 #[derive(Debug, Clone)]
 pub struct FunctionDef {
     pub name: String,
-    pub suffix: Option<TypeSuffix>,
     pub params: Vec<Param>,
     pub as_type: Option<BasicType>,
     pub body: Vec<LabeledStmt>,
@@ -301,7 +296,6 @@ pub struct FunctionDef {
 #[derive(Debug, Clone)]
 pub struct Param {
     pub name: String,
-    pub suffix: Option<TypeSuffix>,
     pub as_type: Option<BasicType>,
     pub by_val: bool,
     pub is_array: bool,
@@ -311,7 +305,6 @@ pub struct Param {
 pub struct DeclareStmt {
     pub is_function: bool, // true = FUNCTION, false = SUB
     pub name: String,
-    pub suffix: Option<TypeSuffix>,
     pub params: Vec<Param>,
 }
 
@@ -383,13 +376,11 @@ pub struct FieldDef {
 
 #[derive(Debug, Clone)]
 pub enum Expr {
-    IntegerLit(i64),
-    DoubleLit(f64),
+    NumericLit(f64),
     StringLit(String),
     Variable(Variable),
     ArrayIndex {
         name: String,
-        suffix: Option<TypeSuffix>,
         indices: Vec<Expr>,
     },
     BinaryOp {
@@ -403,7 +394,6 @@ pub enum Expr {
     },
     FunctionCall {
         name: String,
-        suffix: Option<TypeSuffix>,
         args: Vec<Expr>,
     },
     Paren(Box<Expr>),
@@ -416,7 +406,6 @@ pub enum Expr {
 #[derive(Debug, Clone)]
 pub struct Variable {
     pub name: String,
-    pub suffix: Option<TypeSuffix>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

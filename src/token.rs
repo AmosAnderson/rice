@@ -10,60 +10,14 @@ pub struct SpannedToken {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TypeSuffix {
-    Integer, // %
-    Long,    // &
-    Single,  // !
-    Double,  // #
-    String,  // $
-}
-
-impl TypeSuffix {
-    pub fn from_char(ch: char) -> Option<Self> {
-        match ch {
-            '%' => Some(Self::Integer),
-            '&' => Some(Self::Long),
-            '!' => Some(Self::Single),
-            '#' => Some(Self::Double),
-            '$' => Some(Self::String),
-            _ => None,
-        }
-    }
-
-    pub fn to_char(self) -> char {
-        match self {
-            Self::Integer => '%',
-            Self::Long => '&',
-            Self::Single => '!',
-            Self::Double => '#',
-            Self::String => '$',
-        }
-    }
-
-    pub fn to_basic_type(self) -> crate::value::BasicType {
-        match self {
-            Self::Integer => crate::value::BasicType::Integer,
-            Self::Long => crate::value::BasicType::Long,
-            Self::Single => crate::value::BasicType::Single,
-            Self::Double => crate::value::BasicType::Double,
-            Self::String => crate::value::BasicType::String,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     // Literals
-    IntegerLiteral(i64),
-    DoubleLiteral(f64),
+    NumericLiteral(f64),
     StringLiteral(String),
 
     // Identifiers
-    Identifier {
-        name: String, // always UPPERCASE
-        suffix: Option<TypeSuffix>,
-    },
+    Identifier(String), // always UPPERCASE
 
     // Line structure
     LineNumber(u32),
@@ -76,7 +30,7 @@ pub enum Token {
     Minus,
     Star,
     Slash,
-    Backslash, // \ integer division
+    Backslash, // \ integer division (to be removed in Phase 5)
     Caret,     // ^
     Equal,     // = (assignment AND comparison)
     NotEqual,  // <>
@@ -84,6 +38,7 @@ pub enum Token {
     Greater,
     LessEqual,
     GreaterEqual,
+    Ampersand, // & (string concatenation)
     LeftParen,
     RightParen,
     Comma,
@@ -162,7 +117,7 @@ pub enum Token {
     KwError,
     KwResume,
 
-    // Logical/bitwise operators (keywords)
+    // Logical operators (keywords)
     KwAnd,
     KwOr,
     KwNot,
@@ -189,7 +144,7 @@ pub enum Token {
     KwTimer,
     KwSystem,
 
-    // Phase 1: new keywords
+    // Statements
     KwSleep,
     KwClear,
     KwName,
@@ -199,11 +154,11 @@ pub enum Token {
     KwChdir,
     KwShell,
 
-    // Phase 2: string mutation
+    // String mutation
     KwLset,
     KwRset,
 
-    // Phase 4: DEFtype and DEF FN
+    // DEFtype and DEF FN
     KwDef,
     KwEndDef,
     KwDefInt,

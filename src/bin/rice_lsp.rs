@@ -171,11 +171,10 @@ fn collect_symbols(stmts: &[LabeledStmt], syms: &mut DocumentSymbols, seen_vars:
             }
             Stmt::FunctionDef(func) => {
                 let params: Vec<String> = func.params.iter().map(param_signature).collect();
-                let suffix = suffix_str(func.suffix);
                 syms.functions.push(SymbolInfo {
                     name: func.name.clone(),
                     line: ls.line,
-                    detail: Some(format!("FUNCTION {}{}({})", func.name, suffix, params.join(", "))),
+                    detail: Some(format!("FUNCTION {}({})", func.name, params.join(", "))),
                 });
                 collect_symbols(&func.body, syms, seen_vars);
             }
@@ -185,7 +184,7 @@ fn collect_symbols(stmts: &[LabeledStmt], syms: &mut DocumentSymbols, seen_vars:
             Stmt::Dim(decls) | Stmt::Redim { decls, .. } => {
                 let tag = if matches!(&ls.stmt, Stmt::Redim { .. }) { "REDIM" } else { "DIM" };
                 for d in decls {
-                    let full = format!("{}{}", d.name, suffix_str(d.suffix));
+                    let full = d.name.clone();
                     if seen_vars.insert(full.clone()) {
                         syms.variables.push(SymbolInfo {
                             name: full,
@@ -242,7 +241,7 @@ fn collect_symbols(stmts: &[LabeledStmt], syms: &mut DocumentSymbols, seen_vars:
 }
 
 fn add_variable(syms: &mut DocumentSymbols, var: &Variable, line: usize, seen: &mut HashSet<String>) {
-    let full = format!("{}{}", var.name, suffix_str(var.suffix));
+    let full = var.name.clone();
     if seen.insert(full.clone()) {
         syms.variables.push(SymbolInfo {
             name: full,
@@ -252,16 +251,11 @@ fn add_variable(syms: &mut DocumentSymbols, var: &Variable, line: usize, seen: &
     }
 }
 
-fn suffix_str(suffix: Option<rice::token::TypeSuffix>) -> String {
-    suffix.map(|s| s.to_char().to_string()).unwrap_or_default()
-}
-
 fn param_signature(p: &Param) -> String {
-    let suffix = suffix_str(p.suffix);
     if p.is_array {
-        format!("{}{}()", p.name, suffix)
+        format!("{}()", p.name)
     } else {
-        format!("{}{}", p.name, suffix)
+        p.name.clone()
     }
 }
 
@@ -537,8 +531,8 @@ fn resolve_token_name(state: &DocumentState, pos: Position) -> Option<String> {
 
 fn token_name(tok: &rice::token::Token) -> Option<String> {
     match tok {
-        rice::token::Token::Identifier { name, suffix } => {
-            Some(format!("{}{}", name, suffix_str(*suffix)))
+        rice::token::Token::Identifier(name) => {
+            Some(name.clone())
         }
         rice::token::Token::KwPrint => Some("PRINT".into()),
         rice::token::Token::KwInput => Some("INPUT".into()),

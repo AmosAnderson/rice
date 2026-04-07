@@ -151,7 +151,7 @@ fn token_source_len(token: &Token, source_from_token: &str) -> usize {
                 s.len() + 2
             }
         }
-        Token::IntegerLiteral(_) | Token::DoubleLiteral(_) | Token::LineNumber(_) => {
+        Token::NumericLiteral(_) | Token::LineNumber(_) => {
             // Count digits and optional decimal point, then optional exponent
             let bytes = source_from_token.as_bytes();
             let mut len = 0;
@@ -177,8 +177,8 @@ fn token_source_len(token: &Token, source_from_token: &str) -> usize {
             }
             len.max(1)
         }
-        Token::Identifier { name, suffix } => {
-            name.len() + if suffix.is_some() { 1 } else { 0 }
+        Token::Identifier(name) => {
+            name.len()
         }
         // Two-character operators
         Token::NotEqual | Token::LessEqual | Token::GreaterEqual => 2,
@@ -332,8 +332,8 @@ fn keyword_name(token: &Token) -> &'static str {
 fn token_color(token: &Token) -> &'static str {
     match token {
         Token::StringLiteral(_) => COLOR_STRING,
-        Token::IntegerLiteral(_) | Token::DoubleLiteral(_) | Token::LineNumber(_) => COLOR_NUMBER,
-        Token::Identifier { .. } => COLOR_IDENT,
+        Token::NumericLiteral(_) | Token::LineNumber(_) => COLOR_NUMBER,
+        Token::Identifier(_) => COLOR_IDENT,
         Token::KwRem => COLOR_COMMENT,
         Token::Plus | Token::Minus | Token::Star | Token::Slash | Token::Backslash
         | Token::Caret | Token::Equal | Token::NotEqual | Token::Less | Token::Greater

@@ -1,6 +1,6 @@
 use crate::ast::*;
 use crate::error::ParseError;
-use crate::token::{SpannedToken, Token, TypeSuffix};
+use crate::token::{SpannedToken, Token};
 
 pub struct Parser {
     tokens: Vec<SpannedToken>,
@@ -35,7 +35,7 @@ impl Parser {
 
         // Check for named label (identifier followed by colon, not part of a statement)
         if label.is_none()
-            && let Token::Identifier { name, suffix: None } = self.peek()
+            && let Token::Identifier(name) = self.peek()
         {
             let name = name.clone();
             if self.peek_at(1) == Some(&Token::Colon) {
@@ -240,7 +240,7 @@ impl Parser {
                 };
                 Ok(Stmt::KeyOp { n, state })
             }
-            Token::Identifier { .. } => self.parse_assignment_or_call(),
+            Token::Identifier(_) => self.parse_assignment_or_call(),
             _ => {
                 let tok = self.peek().clone();
                 Err(ParseError::Unexpected {
@@ -384,14 +384,14 @@ impl Parser {
 
     fn parse_assignment_or_call(&mut self) -> Result<Stmt, ParseError> {
         // This is only called when peek() is Token::Identifier
-        let Token::Identifier { name, suffix } = self.peek().clone() else {
+        let Token::Identifier(name) = self.peek().clone() else {
             // Unreachable: parse_statement only calls this for Identifier tokens
             let expr = self.parse_expr()?;
             return Ok(Stmt::ExprStmt(expr));
         };
 
         // MID$ statement: MID$(var$, start[, len]) = replacement$
-        if name == "MID" && suffix == Some(TypeSuffix::String) && self.peek_at(1) == Some(&Token::LeftParen) {
+        if name == "MID$" && self.peek_at(1) == Some(&Token::LeftParen) {
             return self.parse_mid_assign();
         }
 
@@ -415,7 +415,7 @@ impl Parser {
 
             // Member access on array element: name(indices).field[.field...] = expr
             if matches!(self.peek(), Token::Dot) {
-                let base = Expr::ArrayIndex { name: name.clone(), suffix, indices };
+                let base = Expr::ArrayIndex { name: name.clone(), indices };
                 let target = self.parse_dot_chain(base)?;
                 self.expect(Token::Equal)?;
                 let value = self.parse_expr()?;
@@ -429,12 +429,10 @@ impl Parser {
                 return Ok(Stmt::Let {
                     var: Variable {
                         name: name.clone(),
-                        suffix,
                     },
                     expr: Expr::BinaryOp {
                         left: Box::new(Expr::ArrayIndex {
                             name,
-                            suffix,
                             indices,
                         }),
                         op: BinOp::Eq, // marker — interpreter handles this specially
@@ -461,7 +459,7 @@ impl Parser {
 
         // Member access on scalar: name.field[.field...] = expr
         if matches!(self.peek(), Token::Dot) {
-            let base = Expr::Variable(Variable { name: name.clone(), suffix });
+            let base = Expr::Variable(Variable { name: name.clone() });
             let target = self.parse_dot_chain(base)?;
             self.expect(Token::Equal)?;
             let value = self.parse_expr()?;
@@ -473,7 +471,7 @@ impl Parser {
             self.advance();
             let expr = self.parse_expr()?;
             return Ok(Stmt::Let {
-                var: Variable { name, suffix },
+                var: Variable { name },
                 expr,
             });
         }
@@ -509,7 +507,7 @@ impl Parser {
     }
 
     fn parse_dim_decl(&mut self) -> Result<DimDecl, ParseError> {
-        let (name, suffix) = self.expect_identifier()?;
+        let (name, _) = self.expect_identifier()?;
 
         let dimensions = if matches!(self.peek(), Token::LeftParen) {
             self.advance();
@@ -533,7 +531,6 @@ impl Parser {
 
         Ok(DimDecl {
             name,
-            suffix,
             as_type,
             dimensions,
         })
@@ -731,7 +728,7 @@ impl Parser {
         self.expect(Token::KwNext)?;
 
         // Optional variable name after NEXT
-        if let Token::Identifier { .. } = self.peek() {
+        if let Token::Identifier(_) = self.peek() {
             self.advance();
         }
 
@@ -944,7 +941,7 @@ impl Parser {
 
     fn parse_function_def(&mut self) -> Result<Stmt, ParseError> {
         self.advance(); // consume FUNCTION
-        let (name, suffix) = self.expect_identifier()?;
+        let (name, _) = self.expect_identifier()?;
 
         let params = if matches!(self.peek(), Token::LeftParen) {
             self.advance();
@@ -976,7 +973,6 @@ impl Parser {
 
         Ok(Stmt::FunctionDef(FunctionDef {
             name,
-            suffix,
             params,
             as_type,
             body,
@@ -1005,7 +1001,7 @@ impl Parser {
             false
         };
 
-        let (name, suffix) = self.expect_identifier()?;
+        let (name, _) = self.expect_identifier()?;
 
         // Check for array param: name()
         let is_array = if matches!(self.peek(), Token::LeftParen) {
@@ -1025,7 +1021,6 @@ impl Parser {
 
         Ok(Param {
             name,
-            suffix,
             as_type,
             by_val,
             is_array,
@@ -1075,7 +1070,7 @@ impl Parser {
             }
         };
 
-        let (name, suffix) = self.expect_identifier()?;
+        let (name, _) = self.expect_identifier()?;
 
         let params = if matches!(self.peek(), Token::LeftParen) {
             self.advance();
@@ -1089,7 +1084,6 @@ impl Parser {
         Ok(Stmt::Declare(DeclareStmt {
             is_function,
             name,
-            suffix,
             params,
         }))
     }
@@ -1131,7 +1125,7 @@ impl Parser {
             self.advance();
         }
         let n = match self.peek() {
-            Token::IntegerLiteral(n) => {
+            Token::NumericLiteral(n) => {
                 let n = *n as i32;
                 self.advance();
                 n
@@ -1164,22 +1158,14 @@ impl Parser {
                     items.push(DataItem::Str(s.clone()));
                     self.advance();
                 }
-                Token::IntegerLiteral(n) => {
-                    items.push(DataItem::Number(*n as f64));
-                    self.advance();
-                }
-                Token::DoubleLiteral(n) => {
+                Token::NumericLiteral(n) => {
                     items.push(DataItem::Number(*n));
                     self.advance();
                 }
                 Token::Minus => {
                     self.advance();
                     match self.peek() {
-                        Token::IntegerLiteral(n) => {
-                            items.push(DataItem::Number(-(*n as f64)));
-                            self.advance();
-                        }
-                        Token::DoubleLiteral(n) => {
+                        Token::NumericLiteral(n) => {
                             items.push(DataItem::Number(-*n));
                             self.advance();
                         }
@@ -1192,7 +1178,7 @@ impl Parser {
                         }
                     }
                 }
-                Token::Identifier { name, .. } => {
+                Token::Identifier(name) => {
                     // Unquoted string in DATA
                     items.push(DataItem::Str(name.clone()));
                     self.advance();
@@ -1375,9 +1361,11 @@ impl Parser {
             self.advance();
             self.expect(Token::KwGoto)?;
             // ON ERROR GOTO 0 disables error handling
-            if let Token::IntegerLiteral(0) = self.peek() {
-                self.advance();
-                return Ok(Stmt::OnErrorGoto(None));
+            if let Token::NumericLiteral(n) = self.peek() {
+                if *n == 0.0 {
+                    self.advance();
+                    return Ok(Stmt::OnErrorGoto(None));
+                }
             }
             let label = self.parse_label()?;
             return Ok(Stmt::OnErrorGoto(Some(label)));
@@ -1501,10 +1489,10 @@ impl Parser {
 
     fn parse_deftype(&mut self) -> Result<Stmt, ParseError> {
         let typ = match self.peek().clone() {
-            Token::KwDefInt => BasicType::Integer,
-            Token::KwDefLng => BasicType::Long,
-            Token::KwDefSng => BasicType::Single,
-            Token::KwDefDbl => BasicType::Double,
+            Token::KwDefInt => BasicType::Numeric,
+            Token::KwDefLng => BasicType::Numeric,
+            Token::KwDefSng => BasicType::Numeric,
+            Token::KwDefDbl => BasicType::Numeric,
             Token::KwDefStr => BasicType::String,
             _ => unreachable!(),
         };
@@ -1551,7 +1539,7 @@ impl Parser {
     /// Accept an identifier or certain keywords as a field name in TYPE definitions.
     fn expect_field_name(&mut self) -> Result<String, ParseError> {
         match self.peek().clone() {
-            Token::Identifier { name, .. } => {
+            Token::Identifier(name) => {
                 self.advance();
                 Ok(name)
             }
@@ -1669,7 +1657,7 @@ impl Parser {
     }
 
     fn parse_common_var(&mut self) -> Result<CommonVar, ParseError> {
-        let (name, suffix) = self.expect_identifier()?;
+        let (name, _) = self.expect_identifier()?;
 
         // Check for array marker ()
         let is_array = if matches!(self.peek(), Token::LeftParen) {
@@ -1688,7 +1676,7 @@ impl Parser {
             None
         };
 
-        Ok(CommonVar { name, suffix, as_type, is_array })
+        Ok(CommonVar { name, as_type, is_array })
     }
 
     fn parse_def_fn(&mut self) -> Result<Stmt, ParseError> {
@@ -1947,13 +1935,9 @@ impl Parser {
 
     fn parse_primary(&mut self) -> Result<Expr, ParseError> {
         let expr = match self.peek().clone() {
-            Token::IntegerLiteral(n) => {
+            Token::NumericLiteral(n) => {
                 self.advance();
-                Expr::IntegerLit(n)
-            }
-            Token::DoubleLiteral(n) => {
-                self.advance();
-                Expr::DoubleLit(n)
+                Expr::NumericLit(n)
             }
             Token::StringLiteral(s) => {
                 self.advance();
@@ -1965,7 +1949,7 @@ impl Parser {
                 self.expect(Token::RightParen)?;
                 Expr::Paren(Box::new(inner))
             }
-            Token::Identifier { name, suffix } => {
+            Token::Identifier(name) => {
                 self.advance();
 
                 // Check for function call / array index
@@ -1984,26 +1968,18 @@ impl Parser {
                     }
                     self.expect(Token::RightParen)?;
 
-                    // Build canonical function name with suffix
-                    let func_name = match suffix {
-                        Some(s) => format!("{}{}", name, s.to_char()),
-                        None => name.clone(),
-                    };
-
                     Expr::FunctionCall {
-                        name: func_name,
-                        suffix,
+                        name: name.clone(),
                         args,
                     }
                 } else {
-                    Expr::Variable(Variable { name, suffix })
+                    Expr::Variable(Variable { name })
                 }
             }
             Token::KwTimer => {
                 self.advance();
                 Expr::FunctionCall {
                     name: "TIMER".into(),
-                    suffix: None,
                     args: vec![],
                 }
             }
@@ -2011,7 +1987,6 @@ impl Parser {
                 self.advance();
                 Expr::FunctionCall {
                     name: "FREEFILE".into(),
-                    suffix: None,
                     args: vec![],
                 }
             }
@@ -2032,14 +2007,12 @@ impl Parser {
                     self.expect(Token::RightParen)?;
                     Expr::FunctionCall {
                         name,
-                        suffix: None,
                         args,
                     }
                 } else {
                     // No parens — treat as 0-arg function call
                     Expr::FunctionCall {
                         name,
-                        suffix: None,
                         args: vec![],
                     }
                 }
@@ -2088,13 +2061,13 @@ impl Parser {
     // ==================== Helpers ====================
 
     fn parse_variable(&mut self) -> Result<Variable, ParseError> {
-        let (name, suffix) = self.expect_identifier()?;
-        Ok(Variable { name, suffix })
+        let (name, _) = self.expect_identifier()?;
+        Ok(Variable { name })
     }
 
     fn parse_label(&mut self) -> Result<Label, ParseError> {
         match self.peek().clone() {
-            Token::IntegerLiteral(n) => {
+            Token::NumericLiteral(n) => {
                 self.advance();
                 Ok(Label::Number(n as u32))
             }
@@ -2102,7 +2075,7 @@ impl Parser {
                 self.advance();
                 Ok(Label::Number(n))
             }
-            Token::Identifier { name, .. } => {
+            Token::Identifier(name) => {
                 let name = name.clone();
                 self.advance();
                 Ok(Label::Name(name))
@@ -2117,22 +2090,22 @@ impl Parser {
 
     fn parse_type_keyword(&mut self) -> Result<BasicType, ParseError> {
         match self.peek().clone() {
-            Token::KwInteger => { self.advance(); Ok(BasicType::Integer) }
-            Token::KwLong => { self.advance(); Ok(BasicType::Long) }
-            Token::KwSingle => { self.advance(); Ok(BasicType::Single) }
-            Token::KwDouble => { self.advance(); Ok(BasicType::Double) }
+            Token::KwInteger => { self.advance(); Ok(BasicType::Numeric) }
+            Token::KwLong => { self.advance(); Ok(BasicType::Numeric) }
+            Token::KwSingle => { self.advance(); Ok(BasicType::Numeric) }
+            Token::KwDouble => { self.advance(); Ok(BasicType::Numeric) }
             Token::KwString => {
                 self.advance();
-                // Check for STRING * n (fixed-length string)
+                // Check for STRING * n (treat as plain String in ANSI BASIC)
                 if matches!(self.peek(), Token::Star) {
                     self.advance(); // consume *
-                    if let Token::IntegerLiteral(n) = self.peek().clone() {
+                    if let Token::NumericLiteral(_n) = self.peek().clone() {
                         self.advance();
-                        Ok(BasicType::FixedString(n as usize))
+                        Ok(BasicType::String)
                     } else {
                         Err(ParseError::Expected {
                             line: self.current_line(),
-                            expected: "integer constant after STRING *".into(),
+                            expected: "numeric constant after STRING *".into(),
                             found: format!("{:?}", self.peek()),
                         })
                     }
@@ -2140,7 +2113,7 @@ impl Parser {
                     Ok(BasicType::String)
                 }
             }
-            Token::Identifier { ref name, suffix: None } => {
+            Token::Identifier(ref name) => {
                 let name = name.clone();
                 self.advance();
                 Ok(BasicType::UserDefined(name))
@@ -2169,11 +2142,11 @@ impl Parser {
         std::mem::discriminant(self.peek()) == std::mem::discriminant(expected)
     }
 
-    fn expect_identifier(&mut self) -> Result<(String, Option<TypeSuffix>), ParseError> {
+    fn expect_identifier(&mut self) -> Result<(String, ()), ParseError> {
         match self.peek().clone() {
-            Token::Identifier { name, suffix } => {
+            Token::Identifier(name) => {
                 self.advance();
-                Ok((name, suffix))
+                Ok((name, ()))
             }
             _ => Err(ParseError::Expected {
                 line: self.current_line(),

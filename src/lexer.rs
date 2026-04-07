@@ -1,5 +1,5 @@
 use crate::error::LexError;
-use crate::token::{Span, SpannedToken, Token, TypeSuffix};
+use crate::token::{Span, SpannedToken, Token};
 
 pub struct Lexer {
     source: Vec<char>,
@@ -117,6 +117,7 @@ impl Lexer {
             ';' => Token::Semicolon,
             ':' => Token::Colon,
             '#' => Token::Hash,
+            '&' => Token::Ampersand,
             '.' => Token::Dot,
             _ => {
                 return Err(LexError::UnexpectedChar {
@@ -147,12 +148,6 @@ impl Lexer {
             }
         }
 
-        // Check for type suffix on number
-        let suffix = self.peek_char().and_then(TypeSuffix::from_char);
-        if suffix.is_some() {
-            self.advance_char();
-        }
-
         // Check for scientific notation (E or D)
         if let Some(ch) = self.peek_char()
             && matches!(ch, 'E' | 'e' | 'D' | 'd')
@@ -174,16 +169,10 @@ impl Lexer {
         }
 
         let num_str: String = self.source[start..self.pos].iter().collect();
-        // Remove suffix char from parse string if present
-        let parse_str = if suffix.is_some() {
-            &num_str[..num_str.len() - 1]
-        } else {
-            &num_str
-        };
         // Replace D with E for Rust parsing
-        let parse_str = parse_str.replace(['D', 'd'], "E");
+        let parse_str = num_str.replace(['D', 'd'], "E");
 
-        if self.at_line_start && !has_dot && suffix.is_none() {
+        if self.at_line_start && !has_dot {
             // Line number
             let n: u32 = parse_str.parse().map_err(|_| LexError::InvalidNumber {
                 line: span.line,
@@ -198,21 +187,12 @@ impl Lexer {
 
         self.at_line_start = false;
 
-        let token = if has_dot || matches!(suffix, Some(TypeSuffix::Single | TypeSuffix::Double)) {
-            let n: f64 = parse_str.parse().map_err(|_| LexError::InvalidNumber {
-                line: span.line,
-                col: span.col,
-            })?;
-            Token::DoubleLiteral(n)
-        } else {
-            let n: i64 = parse_str.parse().map_err(|_| LexError::InvalidNumber {
-                line: span.line,
-                col: span.col,
-            })?;
-            Token::IntegerLiteral(n)
-        };
+        let n: f64 = parse_str.parse().map_err(|_| LexError::InvalidNumber {
+            line: span.line,
+            col: span.col,
+        })?;
 
-        Ok(SpannedToken { token, span })
+        Ok(SpannedToken { token: Token::NumericLiteral(n), span })
     }
 
     fn read_string(&mut self) -> Result<SpannedToken, LexError> {
@@ -263,12 +243,6 @@ impl Lexer {
             .flat_map(|c| c.to_uppercase())
             .collect();
 
-        // Check for type suffix
-        let suffix = self.peek_char().and_then(TypeSuffix::from_char);
-        if suffix.is_some() {
-            self.advance_char();
-        }
-
         // Check for compound keywords
         if let Some(token) = self.match_compound_keyword(&word) {
             self.at_line_start = false;
@@ -276,7 +250,7 @@ impl Lexer {
         }
 
         // Check for REM (rest of line is comment)
-        if word == "REM" && suffix.is_none() {
+        if word == "REM" {
             self.skip_to_eol();
             // Don't set at_line_start to false; newline will handle it
             return Ok(SpannedToken {
@@ -286,8 +260,7 @@ impl Lexer {
         }
 
         // Match keywords
-        let token = if suffix.is_none() {
-            match word.as_str() {
+        let token = match word.as_str() {
                 "PRINT" => Token::KwPrint,
                 "INPUT" => Token::KwInput,
                 "LET" => Token::KwLet,
@@ -395,10 +368,7 @@ impl Lexer {
                 "VIEW" => Token::KwView,
                 "FIELD" => Token::KwField,
                 "SEEK" => Token::KwSeek,
-                _ => Token::Identifier { name: word, suffix },
-            }
-        } else {
-            Token::Identifier { name: word, suffix }
+            _ => Token::Identifier(word),
         };
 
         self.at_line_start = false;
@@ -577,11 +547,11 @@ mod tests {
             tokens,
             vec![
                 Token::KwPrint,
-                Token::IntegerLiteral(2),
+                Token::NumericLiteral(2.0),
                 Token::Plus,
-                Token::IntegerLiteral(3),
+                Token::NumericLiteral(3.0),
                 Token::Star,
-                Token::IntegerLiteral(4),
+                Token::NumericLiteral(4.0),
             ]
         );
     }
@@ -594,20 +564,14 @@ mod tests {
     }
 
     #[test]
-    fn test_type_suffix() {
+    fn test_identifier() {
         assert_eq!(
-            tokenize("x%"),
-            vec![Token::Identifier {
-                name: "X".into(),
-                suffix: Some(TypeSuffix::Integer)
-            }]
+            tokenize("x"),
+            vec![Token::Identifier("X".into())]
         );
         assert_eq!(
-            tokenize("name$"),
-            vec![Token::Identifier {
-                name: "NAME".into(),
-                suffix: Some(TypeSuffix::String)
-            }]
+            tokenize("myVar"),
+            vec![Token::Identifier("MYVAR".into())]
         );
     }
 
@@ -625,7 +589,7 @@ mod tests {
             vec![
                 Token::LineNumber(100),
                 Token::KwPrint,
-                Token::IntegerLiteral(5),
+                Token::NumericLiteral(5.0),
             ]
         );
     }
@@ -665,6 +629,6 @@ mod tests {
 
     #[test]
     fn test_float() {
-        assert_eq!(tokenize("3.14"), vec![Token::DoubleLiteral(314_f64 / 100.0)]);
+        assert_eq!(tokenize("3.14"), vec![Token::NumericLiteral(314_f64 / 100.0)]);
     }
 }

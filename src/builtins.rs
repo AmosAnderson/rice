@@ -109,28 +109,19 @@ impl BuiltinRegistry {
 
 // Math builtins
 
-fn preserve_type(result: f64, original: &Value) -> Value {
-    match original {
-        Value::Integer(_) => Value::Integer(result as i64),
-        Value::Long(_) => Value::Long(result as i64),
-        Value::Single(_) => Value::Single(result),
-        _ => Value::Double(result),
-    }
-}
-
 fn builtin_abs(args: &[Value]) -> Result<Value, RuntimeError> {
     let n = args[0].to_f64()?;
-    Ok(preserve_type(n.abs(), &args[0]))
+    Ok(Value::Numeric(n.abs()))
 }
 
 fn builtin_int(args: &[Value]) -> Result<Value, RuntimeError> {
     let n = args[0].to_f64()?;
-    Ok(preserve_type(n.floor(), &args[0]))
+    Ok(Value::Numeric(n.floor()))
 }
 
 fn builtin_fix(args: &[Value]) -> Result<Value, RuntimeError> {
     let n = args[0].to_f64()?;
-    Ok(preserve_type(n.trunc(), &args[0]))
+    Ok(Value::Numeric(n.trunc()))
 }
 
 fn builtin_sgn(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -142,7 +133,7 @@ fn builtin_sgn(args: &[Value]) -> Result<Value, RuntimeError> {
     } else {
         0
     };
-    Ok(Value::Integer(s))
+    Ok(Value::Numeric(s as f64))
 }
 
 fn builtin_sqr(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -152,27 +143,27 @@ fn builtin_sqr(args: &[Value]) -> Result<Value, RuntimeError> {
             msg: "SQR of negative number".into(),
         });
     }
-    Ok(Value::Double(n.sqrt()))
+    Ok(Value::Numeric(n.sqrt()))
 }
 
 fn builtin_sin(args: &[Value]) -> Result<Value, RuntimeError> {
-    Ok(Value::Double(args[0].to_f64()?.sin()))
+    Ok(Value::Numeric(args[0].to_f64()?.sin()))
 }
 
 fn builtin_cos(args: &[Value]) -> Result<Value, RuntimeError> {
-    Ok(Value::Double(args[0].to_f64()?.cos()))
+    Ok(Value::Numeric(args[0].to_f64()?.cos()))
 }
 
 fn builtin_tan(args: &[Value]) -> Result<Value, RuntimeError> {
-    Ok(Value::Double(args[0].to_f64()?.tan()))
+    Ok(Value::Numeric(args[0].to_f64()?.tan()))
 }
 
 fn builtin_atn(args: &[Value]) -> Result<Value, RuntimeError> {
-    Ok(Value::Double(args[0].to_f64()?.atan()))
+    Ok(Value::Numeric(args[0].to_f64()?.atan()))
 }
 
 fn builtin_exp(args: &[Value]) -> Result<Value, RuntimeError> {
-    Ok(Value::Double(args[0].to_f64()?.exp()))
+    Ok(Value::Numeric(args[0].to_f64()?.exp()))
 }
 
 fn builtin_log(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -182,32 +173,32 @@ fn builtin_log(args: &[Value]) -> Result<Value, RuntimeError> {
             msg: "LOG of non-positive number".into(),
         });
     }
-    Ok(Value::Double(n.ln()))
+    Ok(Value::Numeric(n.ln()))
 }
 
 fn builtin_cint(args: &[Value]) -> Result<Value, RuntimeError> {
     let n = args[0].to_f64()?.round();
-    Ok(Value::Integer(n as i64))
+    Ok(Value::Numeric(n))
 }
 
 fn builtin_clng(args: &[Value]) -> Result<Value, RuntimeError> {
     let n = args[0].to_f64()?.round();
-    Ok(Value::Long(n as i64))
+    Ok(Value::Numeric(n))
 }
 
 fn builtin_csng(args: &[Value]) -> Result<Value, RuntimeError> {
-    Ok(Value::Single(args[0].to_f64()?))
+    Ok(Value::Numeric(args[0].to_f64()?))
 }
 
 fn builtin_cdbl(args: &[Value]) -> Result<Value, RuntimeError> {
-    Ok(Value::Double(args[0].to_f64()?))
+    Ok(Value::Numeric(args[0].to_f64()?))
 }
 
 // String builtins
 
 fn builtin_len(args: &[Value]) -> Result<Value, RuntimeError> {
     match &args[0] {
-        Value::Str(s) => Ok(Value::Integer(s.chars().count() as i64)),
+        Value::Str(s) => Ok(Value::Numeric(s.chars().count() as f64)),
         _ => Err(RuntimeError::TypeMismatch {
             msg: "LEN expects a string".into(),
         }),
@@ -259,7 +250,7 @@ fn builtin_instr(args: &[Value]) -> Result<Value, RuntimeError> {
             let haystack = args[0].to_string_val()?;
             let needle = args[1].to_string_val()?;
             let pos = haystack.find(&needle).map(|p| p + 1).unwrap_or(0);
-            Ok(Value::Integer(pos as i64))
+            Ok(Value::Numeric(pos as f64))
         }
         3 => {
             let start = (args[0].to_i64()? - 1).max(0) as usize;
@@ -269,7 +260,7 @@ fn builtin_instr(args: &[Value]) -> Result<Value, RuntimeError> {
                 .find(&needle)
                 .map(|p| p + start + 1)
                 .unwrap_or(0);
-            Ok(Value::Integer(pos as i64))
+            Ok(Value::Numeric(pos as f64))
         }
         _ => Err(RuntimeError::ArityMismatch {
             expected: 2,
@@ -332,7 +323,7 @@ fn builtin_asc(args: &[Value]) -> Result<Value, RuntimeError> {
             msg: "ASC of empty string".into(),
         });
     }
-    Ok(Value::Integer(s.as_bytes()[0] as i64))
+    Ok(Value::Numeric(s.as_bytes()[0] as f64))
 }
 
 fn builtin_str(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -350,14 +341,14 @@ fn builtin_val(args: &[Value]) -> Result<Value, RuntimeError> {
     let s = args[0].to_string_val()?;
     let s = s.trim();
     if s.is_empty() {
-        return Ok(Value::Double(0.0));
+        return Ok(Value::Numeric(0.0));
     }
     // Try integer first, then float
     if let Ok(n) = s.parse::<i64>() {
-        return Ok(Value::Double(n as f64));
+        return Ok(Value::Numeric(n as f64));
     }
     if let Ok(n) = s.parse::<f64>() {
-        return Ok(Value::Double(n));
+        return Ok(Value::Numeric(n));
     }
     // QBasic returns 0 for non-numeric strings after parsing leading digits
     let mut num_str = String::new();
@@ -369,9 +360,9 @@ fn builtin_val(args: &[Value]) -> Result<Value, RuntimeError> {
         }
     }
     if num_str.is_empty() {
-        Ok(Value::Double(0.0))
+        Ok(Value::Numeric(0.0))
     } else {
-        Ok(Value::Double(num_str.parse::<f64>().unwrap_or(0.0)))
+        Ok(Value::Numeric(num_str.parse::<f64>().unwrap_or(0.0)))
     }
 }
 
@@ -465,7 +456,7 @@ fn local_date_parts() -> (u16, u16, u16) {
 fn builtin_timer(_args: &[Value]) -> Result<Value, RuntimeError> {
     let (h, m, s, ms) = local_time_parts();
     let secs_today = h * 3600 + m * 60 + s;
-    Ok(Value::Single(secs_today as f64 + ms as f64 / 1000.0))
+    Ok(Value::Numeric(secs_today as f64 + ms as f64 / 1000.0))
 }
 
 fn builtin_date(_args: &[Value]) -> Result<Value, RuntimeError> {
@@ -479,7 +470,7 @@ fn builtin_time(_args: &[Value]) -> Result<Value, RuntimeError> {
 }
 
 fn builtin_stub(_args: &[Value]) -> Result<Value, RuntimeError> {
-    Ok(Value::Integer(0))
+    Ok(Value::Numeric(0.0))
 }
 
 fn builtin_environ(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -529,7 +520,7 @@ fn builtin_cvi(args: &[Value]) -> Result<Value, RuntimeError> {
         });
     }
     let n = i16::from_le_bytes([bytes[0], bytes[1]]);
-    Ok(Value::Integer(n as i64))
+    Ok(Value::Numeric(n as f64))
 }
 
 fn builtin_cvl(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -541,7 +532,7 @@ fn builtin_cvl(args: &[Value]) -> Result<Value, RuntimeError> {
         });
     }
     let n = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-    Ok(Value::Long(n as i64))
+    Ok(Value::Numeric(n as f64))
 }
 
 fn builtin_cvs(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -553,7 +544,7 @@ fn builtin_cvs(args: &[Value]) -> Result<Value, RuntimeError> {
         });
     }
     let n = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-    Ok(Value::Single(n as f64))
+    Ok(Value::Numeric(n as f64))
 }
 
 fn builtin_cvd(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -568,5 +559,5 @@ fn builtin_cvd(args: &[Value]) -> Result<Value, RuntimeError> {
         bytes[0], bytes[1], bytes[2], bytes[3],
         bytes[4], bytes[5], bytes[6], bytes[7],
     ]);
-    Ok(Value::Double(n))
+    Ok(Value::Numeric(n))
 }

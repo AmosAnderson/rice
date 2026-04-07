@@ -38,7 +38,6 @@ use crate::ast::*;
 use crate::builtins::BuiltinRegistry;
 use crate::environment::{EnvRef, Environment};
 use crate::error::RuntimeError;
-use crate::token::TypeSuffix;
 use crate::value::Value;
 
 enum ControlFlow {
@@ -88,7 +87,6 @@ struct UserSub {
 #[derive(Clone)]
 struct UserFunction {
     name: String,
-    suffix: Option<TypeSuffix>,
     params: Vec<Param>,
     body: Vec<LabeledStmt>,
     is_static: bool,
@@ -104,7 +102,6 @@ struct DefFnDef {
 struct FieldMapping {
     width: usize,
     var_name: String,
-    var_suffix: Option<TypeSuffix>,
 }
 
 struct FileHandle {
@@ -145,6 +142,7 @@ pub struct Interpreter {
     static_vars: HashMap<String, HashMap<String, Value>>,
     current_static_vars: HashSet<String>,
     // Phase 4: DEFtype map (A=0 .. Z=25)
+    #[allow(dead_code)]
     deftype_map: [Option<BasicType>; 26],
     type_defs: HashMap<String, Vec<crate::ast::TypeField>>,
     array_type_map: HashMap<String, String>,
@@ -313,15 +311,10 @@ impl Interpreter {
                     );
                 }
                 Stmt::FunctionDef(func) => {
-                    let func_name = match func.suffix {
-                        Some(s) => format!("{}{}", func.name, s.to_char()),
-                        None => func.name.clone(),
-                    };
                     self.functions.insert(
-                        func_name,
+                        func.name.clone(),
                         UserFunction {
                             name: func.name.clone(),
-                            suffix: func.suffix,
                             params: func.params.clone(),
                             body: func.body.clone(),
                             is_static: func.is_static,
@@ -345,13 +338,12 @@ impl Interpreter {
                     // Only unnamed blocks participate in CHAIN variable transfer
                     if common_stmt.block_name.is_none() {
                         for var in &common_stmt.vars {
-                            let key = Environment::var_key(&var.name, var.suffix);
                             let spec = CommonVarSpec {
                                 as_type: var.as_type.clone(),
                                 is_array: var.is_array,
                                 is_shared: common_stmt.shared,
                             };
-                            self.common_declarations.push((spec, key));
+                            self.common_declarations.push((spec, var.name.clone()));
                         }
                     }
                 }
@@ -577,7 +569,7 @@ impl Interpreter {
             Stmt::Dim(decls) => self.exec_dim(decls),
             Stmt::Const { name, value } => {
                 let val = self.eval_expr(value)?;
-                self.env.borrow_mut().define_const(name, None, val)?;
+                self.env.borrow_mut().define_const(name, val)?;
                 Ok(ControlFlow::Normal)
             }
             Stmt::Input(input) => {
@@ -594,7 +586,7 @@ impl Interpreter {
                 let line = line.trim_end_matches('\n').trim_end_matches('\r').to_string();
                 self.env
                     .borrow_mut()
-                    .set(&var.name, var.suffix, Value::Str(line));
+                    .set(&var.name, Value::Str(line));
                 Ok(ControlFlow::Normal)
             }
             Stmt::If(if_stmt) => self.exec_if(if_stmt),
@@ -611,7 +603,7 @@ impl Interpreter {
             Stmt::ExitFunction => {
                 // ExitFunction doesn't need to carry a value here;
                 // the caller (call_user_function) reads the function-name variable.
-                Ok(ControlFlow::ExitFunction(Value::Integer(0)))
+                Ok(ControlFlow::ExitFunction(Value::Numeric(0.0)))
             }
             Stmt::End | Stmt::System | Stmt::Stop => Ok(ControlFlow::End),
             Stmt::Rem => Ok(ControlFlow::Normal),
@@ -627,10 +619,10 @@ impl Interpreter {
                 self.exec_sub_call(name, args)
             }
             Stmt::Swap { a, b } => {
-                let va = self.env.borrow().get(&a.name, a.suffix).unwrap_or(Value::Integer(0));
-                let vb = self.env.borrow().get(&b.name, b.suffix).unwrap_or(Value::Integer(0));
-                self.env.borrow_mut().set(&a.name, a.suffix, vb);
-                self.env.borrow_mut().set(&b.name, b.suffix, va);
+                let va = self.env.borrow().get(&a.name).unwrap_or(Value::Numeric(0.0));
+                let vb = self.env.borrow().get(&b.name).unwrap_or(Value::Numeric(0.0));
+                self.env.borrow_mut().set(&a.name, vb);
+                self.env.borrow_mut().set(&b.name, va);
                 Ok(ControlFlow::Normal)
             }
             Stmt::Read(vars) => self.exec_read(vars),
@@ -843,8 +835,7 @@ impl Interpreter {
             // Phase 3: SHARED
             Stmt::Shared(vars) => {
                 for var in vars {
-                    let key = Environment::var_key(&var.name, var.suffix);
-                    self.env.borrow_mut().shared_vars.insert(key);
+                    self.env.borrow_mut().shared_vars.insert(var.name.clone());
                 }
                 Ok(ControlFlow::Normal)
             }
@@ -853,12 +844,11 @@ impl Interpreter {
             Stmt::Static(decls) => {
                 // Mark variables as static and initialize with defaults if not already loaded
                 for decl in decls {
-                    let key = Environment::var_key(&decl.name, decl.suffix);
-                    if self.env.borrow().get(&decl.name, decl.suffix).is_none() {
+                    if self.env.borrow().get(&decl.name).is_none() {
                         let default = Value::default_for(Self::resolve_decl_type(decl));
-                        self.env.borrow_mut().set(&decl.name, decl.suffix, default);
+                        self.env.borrow_mut().set(&decl.name, default);
                     }
-                    self.current_static_vars.insert(key);
+                    self.current_static_vars.insert(decl.name.clone());
                 }
                 Ok(ControlFlow::Normal)
             }
@@ -892,8 +882,7 @@ impl Interpreter {
                 // COMMON SHARED: register vars as shared in the current environment
                 if common_stmt.shared && common_stmt.block_name.is_none() {
                     for var in &common_stmt.vars {
-                        let key = Environment::var_key(&var.name, var.suffix);
-                        self.env.borrow_mut().shared_vars.insert(key);
+                        self.env.borrow_mut().shared_vars.insert(var.name.clone());
                     }
                 }
                 Ok(ControlFlow::Normal)
@@ -1024,7 +1013,6 @@ impl Interpreter {
         } = expr
             && let Expr::ArrayIndex {
                 name,
-                suffix,
                 indices,
             } = left.as_ref()
         {
@@ -1033,12 +1021,12 @@ impl Interpreter {
                 .iter()
                 .map(|e| self.eval_expr(e).and_then(|v| v.to_i64()))
                 .collect::<Result<Vec<_>, _>>()?;
-            let key = Self::array_key(name, *suffix, &idx_vals);
-            self.env.borrow_mut().set(&key, None, val);
+            let key = Self::array_key(name, &idx_vals);
+            self.env.borrow_mut().set(&key, val);
             return Ok(ControlFlow::Normal);
         }
         let val = self.eval_expr(expr)?;
-        self.env.borrow_mut().set(&var.name, var.suffix, val);
+        self.env.borrow_mut().set(&var.name, val);
         Ok(ControlFlow::Normal)
     }
 
@@ -1050,11 +1038,11 @@ impl Interpreter {
                     self.array_type_map.insert(decl.name.clone(), type_name.clone());
                 } else {
                     let record = self.create_default_record(type_name)?;
-                    self.env.borrow_mut().set(&decl.name, decl.suffix, record);
+                    self.env.borrow_mut().set(&decl.name, record);
                 }
             } else {
                 let default = Value::default_for(resolved);
-                self.env.borrow_mut().set(&decl.name, decl.suffix, default);
+                self.env.borrow_mut().set(&decl.name, default);
             }
         }
         Ok(ControlFlow::Normal)
@@ -1070,10 +1058,10 @@ impl Interpreter {
             let item = &self.data_values[self.data_pos];
             self.data_pos += 1;
             let val = match item {
-                DataItem::Number(n) => Value::Double(*n),
+                DataItem::Number(n) => Value::Numeric(*n),
                 DataItem::Str(s) => Value::Str(s.clone()),
             };
-            self.env.borrow_mut().set(&var.name, var.suffix, val);
+            self.env.borrow_mut().set(&var.name, val);
         }
         Ok(ControlFlow::Normal)
     }
@@ -1081,7 +1069,7 @@ impl Interpreter {
     fn exec_redim(&mut self, decls: &[DimDecl], preserve: bool) -> Result<ControlFlow, RuntimeError> {
         for decl in decls {
             let default = Value::default_for(Self::resolve_decl_type(decl));
-            self.env.borrow_mut().set(&decl.name, decl.suffix, default);
+            self.env.borrow_mut().set(&decl.name, default);
             if !preserve {
                 let prefix = format!("{}_", decl.name);
                 let keys: Vec<String> = self.env.borrow().var_keys()
@@ -1098,7 +1086,7 @@ impl Interpreter {
 
     fn exec_erase(&mut self, names: &[String]) -> Result<ControlFlow, RuntimeError> {
         for name in names {
-            self.env.borrow_mut().set(name, None, Value::Integer(0));
+            self.env.borrow_mut().set(name, Value::Numeric(0.0));
             let prefix = format!("{name}_");
             let keys: Vec<String> = self.env.borrow().var_keys()
                 .into_iter()
@@ -1119,16 +1107,7 @@ impl Interpreter {
             let val = self.eval_expr(expr)?;
             match &val {
                 Value::Str(s) => self.write_text(&format!("\"{}\"", s)),
-                Value::Integer(n) => self.write_text(&format!("{}", n)),
-                Value::Long(n) => self.write_text(&format!("{}", n)),
-                Value::Single(n) => {
-                    if *n == (*n as i64) as f64 && n.abs() < 1e15 {
-                        self.write_text(&format!("{}", *n as i64));
-                    } else {
-                        self.write_text(&format!("{}", n));
-                    }
-                }
-                Value::Double(n) => {
+                Value::Numeric(n) => {
                     if *n == (*n as i64) as f64 && n.abs() < 1e15 {
                         self.write_text(&format!("{}", *n as i64));
                     } else {
@@ -1151,7 +1130,7 @@ impl Interpreter {
         length: Option<&Expr>,
         replacement: &Expr,
     ) -> Result<ControlFlow, RuntimeError> {
-        let current = self.env.borrow().get(&var.name, var.suffix)
+        let current = self.env.borrow().get(&var.name)
             .unwrap_or(Value::Str(String::new()))
             .to_string_val()?;
         let start_pos = (self.eval_expr(start)?.to_i64()? - 1).max(0) as usize;
@@ -1172,12 +1151,12 @@ impl Interpreter {
             }
         }
         let result: String = chars.into_iter().collect();
-        self.env.borrow_mut().set(&var.name, var.suffix, Value::Str(result));
+        self.env.borrow_mut().set(&var.name, Value::Str(result));
         Ok(ControlFlow::Normal)
     }
 
     fn exec_lset(&mut self, var: &Variable, expr: &Expr) -> Result<ControlFlow, RuntimeError> {
-        let current = self.env.borrow().get(&var.name, var.suffix)
+        let current = self.env.borrow().get(&var.name)
             .unwrap_or(Value::Str(String::new()))
             .to_string_val()?;
         let target_len = current.chars().count();
@@ -1192,12 +1171,12 @@ impl Interpreter {
             }
             s
         };
-        self.env.borrow_mut().set(&var.name, var.suffix, Value::Str(result));
+        self.env.borrow_mut().set(&var.name, Value::Str(result));
         Ok(ControlFlow::Normal)
     }
 
     fn exec_rset(&mut self, var: &Variable, expr: &Expr) -> Result<ControlFlow, RuntimeError> {
-        let current = self.env.borrow().get(&var.name, var.suffix)
+        let current = self.env.borrow().get(&var.name)
             .unwrap_or(Value::Str(String::new()))
             .to_string_val()?;
         let target_len = current.chars().count();
@@ -1214,7 +1193,7 @@ impl Interpreter {
             s.extend(new_chars);
             s
         };
-        self.env.borrow_mut().set(&var.name, var.suffix, Value::Str(result));
+        self.env.borrow_mut().set(&var.name, Value::Str(result));
         Ok(ControlFlow::Normal)
     }
 
@@ -1339,19 +1318,17 @@ impl Interpreter {
             }
 
             for (var, part) in input.vars.iter().zip(parts.iter()) {
-                let val = if matches!(var.suffix, Some(TypeSuffix::String)) {
+                let val = if var.name.ends_with('$') {
                     Value::Str(part.to_string())
                 } else {
                     // Try to parse as number
-                    if let Ok(n) = part.parse::<i64>() {
-                        Value::Integer(n)
-                    } else if let Ok(n) = part.parse::<f64>() {
-                        Value::Double(n)
+                    if let Ok(n) = part.parse::<f64>() {
+                        Value::Numeric(n)
                     } else {
                         Value::Str(part.to_string())
                     }
                 };
-                self.env.borrow_mut().set(&var.name, var.suffix, val);
+                self.env.borrow_mut().set(&var.name, val);
             }
             break;
         }
@@ -1386,21 +1363,21 @@ impl Interpreter {
         let step = if let Some(s) = &for_stmt.step {
             self.eval_expr(s)?
         } else {
-            Value::Integer(1)
+            Value::Numeric(1.0)
         };
 
         let step_val = step.to_f64()?;
         let end_val = end.to_f64()?;
         self.env
             .borrow_mut()
-            .set(&for_stmt.var.name, for_stmt.var.suffix, start);
+            .set(&for_stmt.var.name, start);
 
         loop {
             let current = self
                 .env
                 .borrow()
-                .get(&for_stmt.var.name, for_stmt.var.suffix)
-                .unwrap_or(Value::Integer(0));
+                .get(&for_stmt.var.name)
+                .unwrap_or(Value::Numeric(0.0));
             let cur_val = current.to_f64()?;
 
             // Check loop condition
@@ -1429,18 +1406,12 @@ impl Interpreter {
             let current = self
                 .env
                 .borrow()
-                .get(&for_stmt.var.name, for_stmt.var.suffix)
-                .unwrap_or(Value::Integer(0));
+                .get(&for_stmt.var.name)
+                .unwrap_or(Value::Numeric(0.0));
             let new_val = current.to_f64()? + step_val;
-            let new_value = if matches!(current, Value::Integer(_)) && step_val == step_val.trunc()
-            {
-                Value::Integer(new_val as i64)
-            } else {
-                Value::Double(new_val)
-            };
             self.env
                 .borrow_mut()
-                .set(&for_stmt.var.name, for_stmt.var.suffix, new_value);
+                .set(&for_stmt.var.name, Value::Numeric(new_val));
         }
 
         Ok(ControlFlow::Normal)
@@ -1582,7 +1553,7 @@ impl Interpreter {
             for (param, val) in sub.params.iter().zip(args.iter()) {
                 child_env
                     .borrow_mut()
-                    .set(&param.name, param.suffix, val.clone());
+                    .set(&param.name, val.clone());
             }
 
             // Load static variables
@@ -1605,7 +1576,7 @@ impl Interpreter {
             if sub.is_static {
                 // Save all non-param local variables
                 let param_keys: HashSet<String> = sub.params.iter()
-                    .map(|p| Environment::var_key(&p.name, p.suffix))
+                    .map(|p| p.name.clone())
                     .collect();
                 let locals: HashMap<String, Value> = child_env.borrow().var_entries()
                     .filter(|(k, _)| !param_keys.contains(k.as_str()))
@@ -1648,9 +1619,9 @@ impl Interpreter {
                 continue;
             }
             if let Some(Expr::Variable(caller_var)) = arg_exprs.get(i) {
-                let val = child_env.borrow().get(&param.name, param.suffix)
-                    .unwrap_or(Value::Integer(0));
-                self.env.borrow_mut().set(&caller_var.name, caller_var.suffix, val);
+                let val = child_env.borrow().get(&param.name)
+                    .unwrap_or(Value::Numeric(0.0));
+                self.env.borrow_mut().set(&caller_var.name, val);
             }
         }
     }
@@ -1659,26 +1630,22 @@ impl Interpreter {
 
     pub fn eval_expr(&mut self, expr: &Expr) -> Result<Value, RuntimeError> {
         match expr {
-            Expr::IntegerLit(n) => Ok(Value::Integer(*n)),
-            Expr::DoubleLit(n) => Ok(Value::Double(*n)),
+            Expr::NumericLit(n) => Ok(Value::Numeric(*n)),
             Expr::StringLit(s) => Ok(Value::Str(s.clone())),
             Expr::Variable(var) => {
                 // Auto-initialize undefined variables (classic BASIC behavior)
-                if let Some(val) = self.env.borrow().get(&var.name, var.suffix) {
+                if let Some(val) = self.env.borrow().get(&var.name) {
                     Ok(val)
                 } else {
                     // Some 0-arg builtins are commonly used like variables in BASIC (e.g. DATE$, TIME$).
                     // Resolve those before default variable auto-initialization.
-                    let builtin_name = match var.suffix {
-                        Some(s) => format!("{}{}", var.name, s.to_char()),
-                        None => var.name.clone(),
-                    };
+                    let builtin_name = &var.name;
                     // ERR and ERL are special interpreter-state functions used without parens
                     if builtin_name == "ERR" || builtin_name == "ERL" {
-                        return Ok(self.get_error_value(&builtin_name));
+                        return Ok(self.get_error_value(builtin_name));
                     }
                     if builtin_name == "CSRLIN" {
-                        return Ok(Value::Integer(self.print_row as i64));
+                        return Ok(Value::Numeric(self.print_row as f64));
                     }
                     if builtin_name == "INKEY$" {
                         return Ok(Value::Str(self.read_inkey()?));
@@ -1686,21 +1653,20 @@ impl Interpreter {
 
                     let is_implicit_builtin = matches!(builtin_name.as_str(), "DATE$" | "TIME$" | "TIMER");
                     if is_implicit_builtin
-                        && let Some(result) = self.builtins.call(&builtin_name, &[])?
+                        && let Some(result) = self.builtins.call(builtin_name, &[])?
                     {
                         return Ok(result);
                     }
 
-                    let default = self.default_for_var(&var.name, var.suffix);
+                    let default = self.default_for_var(&var.name);
                     self.env
                         .borrow_mut()
-                        .set(&var.name, var.suffix, default.clone());
+                        .set(&var.name, default.clone());
                     Ok(default)
                 }
             }
             Expr::ArrayIndex {
                 name,
-                suffix,
                 indices,
             } => {
                 let idx_vals: Vec<i64> = indices
@@ -1708,8 +1674,8 @@ impl Interpreter {
                     .map(|e| self.eval_expr(e).and_then(|v| v.to_i64()))
                     .collect::<Result<Vec<_>, _>>()?;
                 // Simplified array lookup using flattened key
-                let key = Self::array_key(name, *suffix, &idx_vals);
-                self.get_or_init_array_element(name, *suffix, &key)
+                let key = Self::array_key(name, &idx_vals);
+                self.get_or_init_array_element(name, &key)
             }
             Expr::BinaryOp { left, op, right } => {
                 let lval = self.eval_expr(left)?;
@@ -1720,17 +1686,13 @@ impl Interpreter {
                 let val = self.eval_expr(operand)?;
                 self.eval_unary_op(*op, &val)
             }
-            Expr::FunctionCall { name, suffix, args } => {
+            Expr::FunctionCall { name, args } => {
                 let arg_vals: Vec<Value> = args
                     .iter()
                     .map(|e| self.eval_expr(e))
                     .collect::<Result<Vec<_>, _>>()?;
 
-                // Build canonical name
-                let func_name = match suffix {
-                    Some(s) => format!("{}{}", name, s.to_char()),
-                    None => name.clone(),
-                };
+                let func_name = name.clone();
 
                 // Stateful functions (need access to interpreter state)
                 match name.as_str() {
@@ -1743,7 +1705,7 @@ impl Interpreter {
                         }
                         let arg = if arg_vals.is_empty() { 1.0 } else { arg_vals[0].to_f64()? };
                         if arg == 0.0 {
-                            return Ok(Value::Single(self.last_rnd as f32 as f64));
+                            return Ok(Value::Numeric(self.last_rnd));
                         }
                         if arg < 0.0 {
                             self.rng_state = arg.to_bits();
@@ -1754,7 +1716,7 @@ impl Interpreter {
                             .wrapping_add(1442695040888963407);
                         let r = ((self.rng_state >> 33) as f64) / ((1u64 << 31) as f64);
                         self.last_rnd = r;
-                        return Ok(Value::Single(r as f32 as f64));
+                        return Ok(Value::Numeric(r));
                     }
                     "ERR" | "ERL" => {
                         if !arg_vals.is_empty() {
@@ -1766,14 +1728,14 @@ impl Interpreter {
                         if !arg_vals.is_empty() {
                             return Err(RuntimeError::ArityMismatch { expected: 0, got: arg_vals.len() });
                         }
-                        return Ok(Value::Integer(self.print_row as i64));
+                        return Ok(Value::Numeric(self.print_row as f64));
                     }
                     "POS" => {
                         // POS takes 1 arg (ignored) — returns current column (1-indexed)
                         if arg_vals.len() != 1 {
                             return Err(RuntimeError::ArityMismatch { expected: 1, got: arg_vals.len() });
                         }
-                        return Ok(Value::Integer((self.print_col + 1) as i64));
+                        return Ok(Value::Numeric((self.print_col + 1) as f64));
                     }
                     "INKEY$" => {
                         if !arg_vals.is_empty() {
@@ -1806,7 +1768,7 @@ impl Interpreter {
                         } else {
                             b' '
                         };
-                        return Ok(Value::Integer(ch as i64));
+                        return Ok(Value::Numeric(ch as f64));
                     }
                     "FREEFILE" => {
                         if !arg_vals.is_empty() {
@@ -1815,7 +1777,7 @@ impl Interpreter {
                         let n = (1..=255i64)
                             .find(|n| !self.file_handles.contains_key(n))
                             .unwrap_or(0);
-                        return Ok(Value::Integer(n));
+                        return Ok(Value::Numeric(n as f64));
                     }
                     "EOF" => {
                         if arg_vals.len() != 1 {
@@ -1836,7 +1798,7 @@ impl Interpreter {
                                 fh.eof_flag = true;
                             }
                         }
-                        return Ok(Value::Integer(if fh.eof_flag { -1 } else { 0 }));
+                        return Ok(Value::Numeric(if fh.eof_flag { -1.0 } else { 0.0 }));
                     }
                     "LOF" => {
                         if arg_vals.len() != 1 {
@@ -1853,7 +1815,7 @@ impl Interpreter {
                         } else {
                             0
                         };
-                        return Ok(Value::Integer(len));
+                        return Ok(Value::Numeric(len as f64));
                     }
                     "LOC" => {
                         if arg_vals.len() != 1 {
@@ -1870,7 +1832,7 @@ impl Interpreter {
                         } else {
                             0
                         };
-                        return Ok(Value::Integer(pos));
+                        return Ok(Value::Numeric(pos as f64));
                     }
                     "SEEK" => {
                         if arg_vals.len() != 1 {
@@ -1899,7 +1861,7 @@ impl Interpreter {
                         } else {
                             byte_pos as i64 + 1
                         };
-                        return Ok(Value::Integer(result));
+                        return Ok(Value::Numeric(result as f64));
                     }
                     _ => {}
                 }
@@ -1930,8 +1892,8 @@ impl Interpreter {
                     .iter()
                     .map(|v| v.to_i64())
                     .collect::<Result<Vec<_>, _>>()?;
-                let key = Self::array_key(name, *suffix, &idx_vals);
-                self.get_or_init_array_element(name, *suffix, &key)
+                let key = Self::array_key(name, &idx_vals);
+                self.get_or_init_array_element(name, &key)
             }
             Expr::Paren(inner) => self.eval_expr(inner),
             Expr::MemberAccess { object, field } => {
@@ -1971,14 +1933,11 @@ impl Interpreter {
         for (param, val) in func.params.iter().zip(args.iter()) {
             child_env
                 .borrow_mut()
-                .set(&param.name, param.suffix, val.clone());
+                .set(&param.name, val.clone());
         }
 
         // Load static variables
-        let func_key = match func.suffix {
-            Some(s) => format!("{}{}", func.name, s.to_char()),
-            None => func.name.clone(),
-        };
+        let func_key = func.name.clone();
         if let Some(saved) = self.static_vars.get(&func_key) {
             for (key, val) in saved {
                 child_env.borrow_mut().vars_mut().insert(key.clone(), val.clone());
@@ -1986,10 +1945,14 @@ impl Interpreter {
         }
 
         // Initialize function return variable
-        let return_default = Value::default_for_suffix(func.suffix);
+        let return_default = if func.name.ends_with('$') {
+            Value::Str(String::new())
+        } else {
+            Value::Numeric(0.0)
+        };
         child_env
             .borrow_mut()
-            .set(&func.name, func.suffix, return_default);
+            .set(&func.name, return_default);
 
         let prev_env = self.env.clone();
         let prev_static = std::mem::take(&mut self.current_static_vars);
@@ -2000,9 +1963,9 @@ impl Interpreter {
         // Save static variables
         if func.is_static {
             let param_keys: HashSet<String> = func.params.iter()
-                .map(|p| Environment::var_key(&p.name, p.suffix))
+                .map(|p| p.name.clone())
                 .collect();
-            let ret_key = Environment::var_key(&func.name, func.suffix);
+            let ret_key = func.name.clone();
             let locals: HashMap<String, Value> = child_env.borrow().var_entries()
                 .filter(|(k, _)| !param_keys.contains(k.as_str()) && *k != &ret_key)
                 .map(|(k, v)| (k.clone(), v.clone()))
@@ -2026,8 +1989,8 @@ impl Interpreter {
                 // Return value is stored in the function name variable
                 Ok(child_env
                     .borrow()
-                    .get(&func.name, func.suffix)
-                    .unwrap_or(Value::Integer(0)))
+                    .get(&func.name)
+                    .unwrap_or(Value::Numeric(0.0)))
             }
         }
     }
@@ -2047,20 +2010,19 @@ impl Interpreter {
         match &def_fn.body {
             DefFnBody::SingleLine(expr) => {
                 // DEF FN shares the current scope — bind params temporarily
-                let mut old_vals: Vec<(String, Option<TypeSuffix>, Option<Value>)> = Vec::new();
+                let mut old_vals: Vec<(String, Option<Value>)> = Vec::new();
                 for (param, val) in def_fn.params.iter().zip(args.iter()) {
-                    let old = self.env.borrow().get(&param.name, param.suffix);
-                    old_vals.push((param.name.clone(), param.suffix, old));
-                    self.env.borrow_mut().set(&param.name, param.suffix, val.clone());
+                    let old = self.env.borrow().get(&param.name);
+                    old_vals.push((param.name.clone(), old));
+                    self.env.borrow_mut().set(&param.name, val.clone());
                 }
                 let result = self.eval_expr(expr);
                 // Restore old values
-                for (name, suffix, old) in old_vals {
+                for (name, old) in old_vals {
                     match old {
-                        Some(v) => self.env.borrow_mut().set(&name, suffix, v),
+                        Some(v) => self.env.borrow_mut().set(&name, v),
                         None => {
-                            let key = Environment::var_key(&name, suffix);
-                            self.env.borrow_mut().vars_mut().remove(&key);
+                            self.env.borrow_mut().vars_mut().remove(&name);
                         }
                     }
                 }
@@ -2070,10 +2032,10 @@ impl Interpreter {
                 // Multi-line DEF FN: execute body, return value from function name variable
                 let child_env = Environment::new_child(self.env.clone());
                 for (param, val) in def_fn.params.iter().zip(args.iter()) {
-                    child_env.borrow_mut().set(&param.name, param.suffix, val.clone());
+                    child_env.borrow_mut().set(&param.name, val.clone());
                 }
                 // Initialize return variable
-                child_env.borrow_mut().set(&def_fn.name, None, Value::Double(0.0));
+                child_env.borrow_mut().set(&def_fn.name, Value::Numeric(0.0));
 
                 let prev_env = self.env.clone();
                 self.env = child_env.clone();
@@ -2082,7 +2044,7 @@ impl Interpreter {
 
                 match result? {
                     ControlFlow::ExitFunction(v) => Ok(v),
-                    _ => Ok(child_env.borrow().get(&def_fn.name, None).unwrap_or(Value::Double(0.0))),
+                    _ => Ok(child_env.borrow().get(&def_fn.name).unwrap_or(Value::Numeric(0.0))),
                 }
             }
         }
@@ -2116,7 +2078,7 @@ impl Interpreter {
                 BinOp::Ge => a >= b,
                 _ => unreachable!(),
             };
-            return Ok(Value::Integer(if result { -1 } else { 0 }));
+            return Ok(Value::Numeric(if result { -1.0 } else { 0.0 }));
         }
 
         // Numeric operations
@@ -2124,55 +2086,43 @@ impl Interpreter {
         let b = right.to_f64()?;
 
         match op {
-            BinOp::Add => {
-                let common = Value::common_numeric_type(left, right)?;
-                let result = a + b;
-                Self::make_numeric(result, common)
-            }
-            BinOp::Sub => {
-                let common = Value::common_numeric_type(left, right)?;
-                let result = a - b;
-                Self::make_numeric(result, common)
-            }
-            BinOp::Mul => {
-                let common = Value::common_numeric_type(left, right)?;
-                let result = a * b;
-                Self::make_numeric(result, common)
-            }
+            BinOp::Add => Ok(Value::Numeric(a + b)),
+            BinOp::Sub => Ok(Value::Numeric(a - b)),
+            BinOp::Mul => Ok(Value::Numeric(a * b)),
             BinOp::Div => {
                 if b == 0.0 {
                     return Err(RuntimeError::DivisionByZero);
                 }
-                Ok(Value::Double(a / b))
+                Ok(Value::Numeric(a / b))
             }
             BinOp::IntDiv => {
                 let bi = b as i64;
                 if bi == 0 {
                     return Err(RuntimeError::DivisionByZero);
                 }
-                Ok(Value::Integer(a as i64 / bi))
+                Ok(Value::Numeric((a as i64 / bi) as f64))
             }
             BinOp::Mod => {
                 let bi = b as i64;
                 if bi == 0 {
                     return Err(RuntimeError::DivisionByZero);
                 }
-                Ok(Value::Integer(a as i64 % bi))
+                Ok(Value::Numeric((a as i64 % bi) as f64))
             }
             BinOp::Pow => {
-                Ok(Value::Double(a.powf(b)))
+                Ok(Value::Numeric(a.powf(b)))
             }
-            BinOp::Eq => Ok(Value::Integer(if a == b { -1 } else { 0 })),
-            BinOp::Ne => Ok(Value::Integer(if a != b { -1 } else { 0 })),
-            BinOp::Lt => Ok(Value::Integer(if a < b { -1 } else { 0 })),
-            BinOp::Gt => Ok(Value::Integer(if a > b { -1 } else { 0 })),
-            BinOp::Le => Ok(Value::Integer(if a <= b { -1 } else { 0 })),
-            BinOp::Ge => Ok(Value::Integer(if a >= b { -1 } else { 0 })),
-            BinOp::And => Ok(Value::Integer(a as i64 & b as i64)),
-            BinOp::Or => Ok(Value::Integer(a as i64 | b as i64)),
-            BinOp::Xor => Ok(Value::Integer(a as i64 ^ b as i64)),
-            BinOp::Eqv => Ok(Value::Integer(!(a as i64 ^ b as i64))),
-            BinOp::Imp => Ok(Value::Integer(!(a as i64) | b as i64)),
+            BinOp::Eq => Ok(Value::Numeric(if a == b { -1.0 } else { 0.0 })),
+            BinOp::Ne => Ok(Value::Numeric(if a != b { -1.0 } else { 0.0 })),
+            BinOp::Lt => Ok(Value::Numeric(if a < b { -1.0 } else { 0.0 })),
+            BinOp::Gt => Ok(Value::Numeric(if a > b { -1.0 } else { 0.0 })),
+            BinOp::Le => Ok(Value::Numeric(if a <= b { -1.0 } else { 0.0 })),
+            BinOp::Ge => Ok(Value::Numeric(if a >= b { -1.0 } else { 0.0 })),
+            BinOp::And => Ok(Value::Numeric((a as i64 & b as i64) as f64)),
+            BinOp::Or => Ok(Value::Numeric((a as i64 | b as i64) as f64)),
+            BinOp::Xor => Ok(Value::Numeric((a as i64 ^ b as i64) as f64)),
+            BinOp::Eqv => Ok(Value::Numeric((!(a as i64 ^ b as i64)) as f64)),
+            BinOp::Imp => Ok(Value::Numeric((!(a as i64) | b as i64) as f64)),
         }
     }
 
@@ -2180,56 +2130,36 @@ impl Interpreter {
         match op {
             UnaryOp::Neg => {
                 let n = val.to_f64()?;
-                match val {
-                    Value::Integer(_) => Ok(Value::Integer(-n as i64)),
-                    Value::Long(_) => Ok(Value::Long(-n as i64)),
-                    Value::Single(_) => Ok(Value::Single(-n)),
-                    _ => Ok(Value::Double(-n)),
-                }
+                Ok(Value::Numeric(-n))
             }
             UnaryOp::Not => {
                 let n = val.to_i64()?;
-                Ok(Value::Integer(!n))
+                Ok(Value::Numeric(!n as f64))
             }
             UnaryOp::Pos => Ok(val.clone()),
         }
     }
 
-    fn make_numeric(n: f64, ty: BasicType) -> Result<Value, RuntimeError> {
-        Ok(match ty {
-            BasicType::Integer => Value::Integer(n as i64),
-            BasicType::Long => Value::Long(n as i64),
-            BasicType::Single => Value::Single(n),
-            BasicType::Double => Value::Double(n),
-            _ => unreachable!("make_numeric called with non-numeric type"),
-        })
+    #[allow(dead_code)]
+    fn make_numeric(n: f64, _ty: BasicType) -> Result<Value, RuntimeError> {
+        Ok(Value::Numeric(n))
     }
 
     fn resolve_decl_type(decl: &DimDecl) -> BasicType {
         if let Some(ref t) = decl.as_type {
             t.clone()
-        } else if let Some(s) = decl.suffix {
-            s.to_basic_type()
         } else {
-            BasicType::Single
+            BasicType::Numeric
         }
     }
 
-    /// Return the default value for a variable considering DEFtype map
-    fn default_for_var(&self, name: &str, suffix: Option<TypeSuffix>) -> Value {
-        if suffix.is_some() {
-            return Value::default_for_suffix(suffix);
+    /// Return the default value for a variable
+    fn default_for_var(&self, name: &str) -> Value {
+        if name.ends_with('$') {
+            Value::Str(String::new())
+        } else {
+            Value::Numeric(0.0)
         }
-        // Check DEFtype map based on first letter
-        if let Some(first_char) = name.chars().next() {
-            if first_char.is_ascii_alphabetic() {
-                let idx = (first_char.to_ascii_uppercase() as u8 - b'A') as usize;
-                if let Some(ref basic_type) = self.deftype_map[idx] {
-                    return Value::default_for(basic_type.clone());
-                }
-            }
-        }
-        Value::default_for_suffix(None)
     }
 
     fn resolve_chain_path(&self, path_str: &str) -> String {
@@ -2367,33 +2297,29 @@ impl Interpreter {
 
     /// Build a flattened key for array element access (temporary hack until
     /// proper array storage is implemented).
-    fn array_key(name: &str, suffix: Option<TypeSuffix>, indices: &[i64]) -> String {
+    fn array_key(name: &str, indices: &[i64]) -> String {
         let idx_part: String = indices
             .iter()
             .map(|i| i.to_string())
             .collect::<Vec<_>>()
             .join("_");
-        match suffix {
-            Some(s) => format!("{}{}_{}", name, s.to_char(), idx_part),
-            None => format!("{}_{}", name, idx_part),
-        }
+        format!("{}_{}", name, idx_part)
     }
 
     fn get_or_init_array_element(
         &mut self,
         name: &str,
-        suffix: Option<TypeSuffix>,
         key: &str,
     ) -> Result<Value, RuntimeError> {
-        if let Some(v) = self.env.borrow().get(key, None) {
+        if let Some(v) = self.env.borrow().get(key) {
             return Ok(v);
         }
         if let Some(type_name) = self.array_type_map.get(name).cloned() {
             let record = self.create_default_record(&type_name)?;
-            self.env.borrow_mut().set(key, None, record.clone());
+            self.env.borrow_mut().set(key, record.clone());
             Ok(record)
         } else {
-            Ok(Value::default_for_suffix(suffix))
+            Ok(self.default_for_var(name))
         }
     }
 
@@ -2436,13 +2362,13 @@ impl Interpreter {
 
         // Read the root value
         let root_key = match current {
-            Expr::Variable(var) => Environment::var_key(&var.name, var.suffix),
-            Expr::ArrayIndex { name, suffix, indices } => {
+            Expr::Variable(var) => var.name.clone(),
+            Expr::ArrayIndex { name, indices } => {
                 let idx_vals: Vec<i64> = indices
                     .iter()
                     .map(|e| self.eval_expr(e).and_then(|v| v.to_i64()))
                     .collect::<Result<Vec<_>, _>>()?;
-                Self::array_key(name, *suffix, &idx_vals)
+                Self::array_key(name, &idx_vals)
             }
             _ => {
                 return Err(RuntimeError::General {
@@ -2452,10 +2378,10 @@ impl Interpreter {
         };
 
         // Get or auto-init the root value
-        let mut root_val = if let Some(v) = self.env.borrow().get(&root_key, None) {
+        let mut root_val = if let Some(v) = self.env.borrow().get(&root_key) {
             v
-        } else if let Expr::ArrayIndex { name, suffix, .. } = current {
-            self.get_or_init_array_element(name, *suffix, &root_key)?
+        } else if let Expr::ArrayIndex { name, .. } = current {
+            self.get_or_init_array_element(name, &root_key)?
         } else {
             return Err(RuntimeError::General {
                 msg: "variable not initialized".into(),
@@ -2467,9 +2393,9 @@ impl Interpreter {
 
         // Write back
         if let Expr::Variable(var) = current {
-            self.env.borrow_mut().set(&var.name, var.suffix, root_val);
+            self.env.borrow_mut().set(&var.name, root_val);
         } else {
-            self.env.borrow_mut().set(&root_key, None, root_val);
+            self.env.borrow_mut().set(&root_key, root_val);
         }
         Ok(())
     }
@@ -2521,26 +2447,8 @@ impl Interpreter {
         field_name: &str,
         val: Value,
     ) -> Result<Value, RuntimeError> {
-        if let Some(fields_def) = type_defs.get(type_name) {
-            for f in fields_def {
-                if f.name == field_name {
-                    if let BasicType::FixedString(n) = f.field_type {
-                        let s = val.to_string_val()?;
-                        let char_count = s.chars().count();
-                        if char_count > n {
-                            let byte_end = s.char_indices().nth(n).map(|(i, _)| i).unwrap_or(s.len());
-                            return Ok(Value::Str(s[..byte_end].to_string()));
-                        } else if char_count < n {
-                            let mut padded = s;
-                            padded.push_str(&" ".repeat(n - char_count));
-                            return Ok(Value::Str(padded));
-                        }
-                        return Ok(Value::Str(s));
-                    }
-                    break;
-                }
-            }
-        }
+        // In ANSI BASIC, no fixed-string coercion needed — just pass through
+        let _ = (type_defs, type_name, field_name);
         Ok(val)
     }
 
@@ -2557,9 +2465,9 @@ impl Interpreter {
 
     fn get_error_value(&self, name: &str) -> Value {
         match name {
-            "ERR" => Value::Integer(self.current_error.as_ref().map_or(0, |e| e.err_code) as i64),
-            "ERL" => Value::Integer(self.current_error.as_ref().map_or(0, |e| e.err_line) as i64),
-            _ => Value::Integer(0),
+            "ERR" => Value::Numeric(self.current_error.as_ref().map_or(0, |e| e.err_code) as f64),
+            "ERL" => Value::Numeric(self.current_error.as_ref().map_or(0, |e| e.err_line) as f64),
+            _ => Value::Numeric(0.0),
         }
     }
 
@@ -2902,16 +2810,14 @@ impl Interpreter {
 
         for (i, var) in fi.vars.iter().enumerate() {
             let field = fields.get(i).cloned().unwrap_or_default();
-            let val = if matches!(var.suffix, Some(TypeSuffix::String)) {
+            let val = if var.name.ends_with('$') {
                 Value::Str(field)
-            } else if let Ok(n) = field.parse::<i64>() {
-                Value::Integer(n)
             } else if let Ok(n) = field.parse::<f64>() {
-                Value::Double(n)
+                Value::Numeric(n)
             } else {
                 Value::Str(field)
             };
-            self.env.borrow_mut().set(&var.name, var.suffix, val);
+            self.env.borrow_mut().set(&var.name, val);
         }
 
         Ok(())
@@ -3036,7 +2942,7 @@ impl Interpreter {
 
         self.env
             .borrow_mut()
-            .set(&var.name, var.suffix, Value::Str(line));
+            .set(&var.name, Value::Str(line));
         Ok(())
     }
 
@@ -3047,7 +2953,7 @@ impl Interpreter {
         let mut field_specs = Vec::new();
         for field in fields {
             let width = self.eval_expr(&field.width)?.to_i64()? as usize;
-            field_specs.push((width, field.var.name.clone(), field.var.suffix));
+            field_specs.push((width, field.var.name.clone()));
         }
 
         let fh = self.file_handles.get_mut(&file_num).ok_or_else(|| RuntimeError::General {
@@ -3062,7 +2968,7 @@ impl Interpreter {
 
         let mut total_width: usize = 0;
         let mut mappings = Vec::with_capacity(field_specs.len());
-        for &(width, _, _) in &field_specs {
+        for &(width, _) in &field_specs {
             total_width += width;
             if total_width > fh.rec_len as usize {
                 return Err(RuntimeError::General {
@@ -3070,13 +2976,12 @@ impl Interpreter {
                 });
             }
         }
-        for (width, var_name, var_suffix) in field_specs.into_iter() {
+        for (width, var_name) in field_specs.into_iter() {
             self.env.borrow_mut().set(
                 &var_name,
-                var_suffix,
                 Value::Str(" ".repeat(width)),
             );
-            mappings.push(FieldMapping { width, var_name, var_suffix });
+            mappings.push(FieldMapping { width, var_name });
         }
         fh.field_mappings = mappings;
         Ok(())
@@ -3129,7 +3034,7 @@ impl Interpreter {
         let has_fields = !fh.field_mappings.is_empty();
         let field_mappings: Vec<_> = if has_fields {
             fh.field_mappings.iter()
-                .map(|m| (m.width, m.var_name.clone(), m.var_suffix))
+                .map(|m| (m.width, m.var_name.clone()))
                 .collect()
         } else {
             Vec::new()
@@ -3166,11 +3071,11 @@ impl Interpreter {
             if has_fields && gp.var.is_none() {
                 // Populate FIELD-mapped variables from the buffer
                 let mut offset = 0;
-                for &(width, ref var_name, var_suffix) in &field_mappings {
+                for &(width, ref var_name) in &field_mappings {
                     let end = (offset + width).min(buf.len());
                     let slice = if offset < buf.len() { &buf[offset..end] } else { &[] as &[u8] };
                     let s = String::from_utf8_lossy(slice).to_string();
-                    self.env.borrow_mut().set(var_name, var_suffix, Value::Str(s));
+                    self.env.borrow_mut().set(var_name, Value::Str(s));
                     offset += width;
                 }
             } else {
@@ -3178,7 +3083,7 @@ impl Interpreter {
                 buf.truncate(bytes_read);
                 let s = String::from_utf8_lossy(&buf).trim_end_matches('\0').to_string();
                 if let Some(var) = &gp.var {
-                    self.env.borrow_mut().set(&var.name, var.suffix, Value::Str(s));
+                    self.env.borrow_mut().set(&var.name, Value::Str(s));
                 }
             }
         } else {
@@ -3201,8 +3106,8 @@ impl Interpreter {
                 // Build record buffer from FIELD-mapped variables
                 let mut padded = vec![b' '; rec_len as usize];
                 let mut offset = 0;
-                for &(width, ref var_name, var_suffix) in &field_mappings {
-                    let val = self.env.borrow().get(var_name, var_suffix)
+                for &(width, ref var_name) in &field_mappings {
+                    let val = self.env.borrow().get(var_name)
                         .unwrap_or(Value::Str(String::new()));
                     let s = val.to_string_val().unwrap_or_default();
                     let bytes = s.as_bytes();
@@ -3214,7 +3119,7 @@ impl Interpreter {
                 }
                 let _ = writer.write_all(&padded);
             } else if let Some(var) = &gp.var {
-                let val = self.env.borrow().get(&var.name, var.suffix)
+                let val = self.env.borrow().get(&var.name)
                     .unwrap_or(Value::Str(String::new()));
                 let s = match val {
                     Value::Str(s) => s,
