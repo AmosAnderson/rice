@@ -363,15 +363,13 @@ pub struct Repl {
 enum ReplAction {
     /// Store a numbered line in the program buffer.
     StoreLine(u32, String),
-    /// Bare line number — delete that line.
-    DeleteLine(u32),
     /// RUN the stored program.
     Run,
     /// LIST lines, with optional start and end bounds.
     List(Option<u32>, Option<u32>),
     /// NEW — clear the stored program.
     New,
-    /// DELETE a line or range.
+    /// DELETE a line or range (bare line number or explicit DELETE command).
     Delete(u32, Option<u32>),
     /// A command was recognized but had invalid arguments.
     InvalidCommand(String),
@@ -448,7 +446,7 @@ fn classify_input(line: &str) -> ReplAction {
     // Check for numbered line
     if let Some((num, rest)) = parse_line_number(trimmed) {
         if rest.is_empty() {
-            return ReplAction::DeleteLine(num);
+            return ReplAction::Delete(num, None);
         }
         return ReplAction::StoreLine(num, rest.to_string());
     }
@@ -512,10 +510,6 @@ impl Repl {
                         match action {
                             ReplAction::StoreLine(num, text) => {
                                 self.program.insert(num, text);
-                                continue;
-                            }
-                            ReplAction::DeleteLine(num) => {
-                                self.program.remove(&num);
                                 continue;
                             }
                             ReplAction::Run => {
@@ -938,7 +932,7 @@ mod tests {
 
     #[test]
     fn test_classify_delete_line() {
-        assert!(matches!(classify_input("10"), ReplAction::DeleteLine(10)));
+        assert!(matches!(classify_input("10"), ReplAction::Delete(10, None)));
     }
 
     #[test]
