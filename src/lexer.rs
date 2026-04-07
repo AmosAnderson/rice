@@ -376,7 +376,15 @@ impl Lexer {
                 "RETRY" => Token::KwRetry,
                 "CONTINUE" => Token::KwContinue,
                 "MAT" => Token::KwMat,
-            _ => Token::Identifier(word),
+            _ => {
+                // Include trailing $ as part of identifier (string names in ANSI BASIC)
+                if self.peek_char() == Some('$') {
+                    self.advance_char();
+                    Token::Identifier(format!("{}$", word))
+                } else {
+                    Token::Identifier(word)
+                }
+            }
         };
 
         self.at_line_start = false;

@@ -2051,6 +2051,10 @@ impl Parser {
                     Ok(BasicType::String)
                 }
             }
+            Token::Identifier(ref name) if name == "NUMERIC" => {
+                self.advance();
+                Ok(BasicType::Numeric)
+            }
             Token::Identifier(ref name) => {
                 let name = name.clone();
                 self.advance();
