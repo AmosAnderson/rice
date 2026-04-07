@@ -409,6 +409,10 @@ impl Lexer {
                             self.consume_word();
                             return Some(Token::KwEndDef);
                         }
+                        "WHILE" => {
+                            self.consume_word();
+                            return Some(Token::KwEndWhile);
+                        }
                         _ => {}
                     }
                 }

@@ -90,9 +90,7 @@ impl Parser {
                 Ok(Stmt::Goto(label))
             }
             Token::KwGosub => {
-                self.advance();
-                let label = self.parse_label()?;
-                Ok(Stmt::Gosub(label))
+                return Err(ParseError::General { line: self.current_line(), msg: "GOSUB is not supported; use SUB/FUNCTION instead".into() });
             }
             Token::KwReturn => {
                 self.advance();
@@ -127,8 +125,24 @@ impl Parser {
             Token::KwWrite => self.parse_write(),
             Token::KwGet => self.parse_get_put(true),
             Token::KwPut => self.parse_get_put(false),
-            Token::KwOn => self.parse_on(),
-            Token::KwResume => self.parse_resume(),
+            Token::KwOn => {
+                // Peek ahead to determine which ON form for a specific error message
+                let next = self.peek_at(1).cloned();
+                let msg = match next.as_ref() {
+                    Some(Token::KwError) => "ON ERROR GOTO is not supported; use WHEN EXCEPTION instead",
+                    Some(Token::KwTimer) => "ON TIMER is not supported in ANSI BASIC",
+                    Some(Token::KwKey) => "ON KEY is not supported in ANSI BASIC",
+                    _ => {
+                        // ON n GOTO or ON n GOSUB
+                        // Try to determine which, but default to a generic message
+                        "ON GOTO/ON GOSUB is not supported in ANSI BASIC"
+                    }
+                };
+                return Err(ParseError::General { line: self.current_line(), msg: msg.into() });
+            }
+            Token::KwResume => {
+                return Err(ParseError::General { line: self.current_line(), msg: "RESUME is not supported; use WHEN EXCEPTION instead".into() });
+            }
             Token::KwRandomize => {
                 self.advance();
                 if self.at_stmt_end() {
@@ -188,21 +202,35 @@ impl Parser {
                 }
             }
             // Phase 2
-            Token::KwLset => self.parse_lset_rset(true),
-            Token::KwRset => self.parse_lset_rset(false),
+            Token::KwLset => {
+                return Err(ParseError::General { line: self.current_line(), msg: "LSET is not supported in ANSI BASIC".into() });
+            }
+            Token::KwRset => {
+                return Err(ParseError::General { line: self.current_line(), msg: "RSET is not supported in ANSI BASIC".into() });
+            }
             // Phase 3
             Token::KwShared => self.parse_shared(),
             Token::KwStatic => self.parse_static(),
             // Phase 4
             Token::KwDefInt | Token::KwDefLng | Token::KwDefSng |
-            Token::KwDefDbl | Token::KwDefStr => self.parse_deftype(),
-            Token::KwDef => self.parse_def_fn(),
+            Token::KwDefDbl | Token::KwDefStr => {
+                return Err(ParseError::General { line: self.current_line(), msg: "DEFtype is not supported in ANSI BASIC".into() });
+            }
+            Token::KwDef => {
+                return Err(ParseError::General { line: self.current_line(), msg: "DEF FN is not supported; use FUNCTION instead".into() });
+            }
             Token::KwType => self.parse_type_def(),
             // CHAIN/COMMON
-            Token::KwChain => self.parse_chain(),
-            Token::KwCommon => self.parse_common(),
+            Token::KwChain => {
+                return Err(ParseError::General { line: self.current_line(), msg: "CHAIN is not supported in ANSI BASIC".into() });
+            }
+            Token::KwCommon => {
+                return Err(ParseError::General { line: self.current_line(), msg: "COMMON is not supported in ANSI BASIC".into() });
+            }
             // FIELD/SEEK
-            Token::KwField => self.parse_field(),
+            Token::KwField => {
+                return Err(ParseError::General { line: self.current_line(), msg: "FIELD is not supported in ANSI BASIC".into() });
+            }
             Token::KwSeek => self.parse_seek(),
             // Console
             Token::KwCls => {
@@ -218,27 +246,13 @@ impl Parser {
             Token::KwWidth => self.parse_width(),
             Token::KwView => self.parse_view_print(),
             Token::KwTimer => {
-                self.advance();
-                let state = match self.peek() {
-                    Token::KwOn => { self.advance(); EventState::On }
-                    Token::KwOff => { self.advance(); EventState::Off }
-                    Token::KwStop => { self.advance(); EventState::Stop }
-                    _ => return Err(ParseError::General { line: self.current_line(), msg: "expected ON, OFF, or STOP after TIMER".into() })
-                };
-                Ok(Stmt::TimerOp(state))
+                return Err(ParseError::General { line: self.current_line(), msg: "TIMER ON/OFF/STOP is not supported in ANSI BASIC".into() });
             }
             Token::KwKey => {
-                self.advance();
-                self.expect(Token::LeftParen)?;
-                let n = self.parse_expr()?;
-                self.expect(Token::RightParen)?;
-                let state = match self.peek() {
-                    Token::KwOn => { self.advance(); EventState::On }
-                    Token::KwOff => { self.advance(); EventState::Off }
-                    Token::KwStop => { self.advance(); EventState::Stop }
-                    _ => return Err(ParseError::General { line: self.current_line(), msg: "expected ON, OFF, or STOP after KEY(n)".into() })
-                };
-                Ok(Stmt::KeyOp { n, state })
+                return Err(ParseError::General { line: self.current_line(), msg: "KEY ON/OFF/STOP is not supported in ANSI BASIC".into() });
+            }
+            Token::KwWend => {
+                return Err(ParseError::General { line: self.current_line(), msg: "WEND is not supported; use END WHILE instead".into() });
             }
             Token::Identifier(_) => self.parse_assignment_or_call(),
             _ => {
@@ -390,9 +404,9 @@ impl Parser {
             return Ok(Stmt::ExprStmt(expr));
         };
 
-        // MID$ statement: MID$(var$, start[, len]) = replacement$
+        // MID$ assignment is not supported in ANSI BASIC
         if name == "MID$" && self.peek_at(1) == Some(&Token::LeftParen) {
-            return self.parse_mid_assign();
+            return Err(ParseError::General { line: self.current_line(), msg: "MID$ assignment is not supported in ANSI BASIC; use string slicing instead".into() });
         }
 
         self.advance();
@@ -745,8 +759,8 @@ impl Parser {
         self.advance(); // consume WHILE
         let condition = self.parse_expr()?;
         self.skip_newlines();
-        let body = self.parse_body_until(&[Token::KwWend])?;
-        self.expect(Token::KwWend)?;
+        let body = self.parse_body_until(&[Token::KwEndWhile])?;
+        self.expect(Token::KwEndWhile)?;
         Ok(Stmt::WhileWend { condition, body })
     }
 
@@ -1355,78 +1369,6 @@ impl Parser {
         }))
     }
 
-    fn parse_on(&mut self) -> Result<Stmt, ParseError> {
-        self.advance(); // consume ON
-        if matches!(self.peek(), Token::KwError) {
-            self.advance();
-            self.expect(Token::KwGoto)?;
-            // ON ERROR GOTO 0 disables error handling
-            if let Token::NumericLiteral(n) = self.peek() {
-                if *n == 0.0 {
-                    self.advance();
-                    return Ok(Stmt::OnErrorGoto(None));
-                }
-            }
-            let label = self.parse_label()?;
-            return Ok(Stmt::OnErrorGoto(Some(label)));
-        }
-        if matches!(self.peek(), Token::KwTimer) {
-            self.advance();
-            self.expect(Token::LeftParen)?;
-            let n = self.parse_expr()?;
-            self.expect(Token::RightParen)?;
-            self.expect(Token::KwGosub)?;
-            let label = self.parse_label()?;
-            return Ok(Stmt::OnTimer { n, label });
-        }
-        if matches!(self.peek(), Token::KwKey) {
-            self.advance();
-            self.expect(Token::LeftParen)?;
-            let n = self.parse_expr()?;
-            self.expect(Token::RightParen)?;
-            self.expect(Token::KwGosub)?;
-            let label = self.parse_label()?;
-            return Ok(Stmt::OnKey { n, label });
-        }
-        // ON n GOTO/GOSUB
-        let expr = self.parse_expr()?;
-        if matches!(self.peek(), Token::KwGoto) {
-            self.advance();
-            let mut labels = vec![self.parse_label()?];
-            while matches!(self.peek(), Token::Comma) {
-                self.advance();
-                labels.push(self.parse_label()?);
-            }
-            Ok(Stmt::OnGoto { expr, labels })
-        } else if matches!(self.peek(), Token::KwGosub) {
-            self.advance();
-            let mut labels = vec![self.parse_label()?];
-            while matches!(self.peek(), Token::Comma) {
-                self.advance();
-                labels.push(self.parse_label()?);
-            }
-            Ok(Stmt::OnGosub { expr, labels })
-        } else {
-            Err(ParseError::General {
-                line: self.current_line(),
-                msg: "expected GOTO or GOSUB after ON expression".into(),
-            })
-        }
-    }
-
-    fn parse_resume(&mut self) -> Result<Stmt, ParseError> {
-        self.advance(); // consume RESUME
-        if self.at_stmt_end() {
-            return Ok(Stmt::Resume(ResumeTarget::Default));
-        }
-        if matches!(self.peek(), Token::KwNext) {
-            self.advance();
-            return Ok(Stmt::Resume(ResumeTarget::Next));
-        }
-        let label = self.parse_label()?;
-        Ok(Stmt::Resume(ResumeTarget::Label(label)))
-    }
-
     // ==================== Phase 1-4 new statement parsers ====================
 
     fn parse_name(&mut self) -> Result<Stmt, ParseError> {
@@ -1435,36 +1377,6 @@ impl Parser {
         self.expect(Token::KwAs)?;
         let new = self.parse_expr()?;
         Ok(Stmt::Name { old, new })
-    }
-
-    fn parse_lset_rset(&mut self, is_lset: bool) -> Result<Stmt, ParseError> {
-        self.advance(); // consume LSET/RSET
-        let var = self.parse_variable()?;
-        self.expect(Token::Equal)?;
-        let expr = self.parse_expr()?;
-        if is_lset {
-            Ok(Stmt::Lset { var, expr })
-        } else {
-            Ok(Stmt::Rset { var, expr })
-        }
-    }
-
-    fn parse_mid_assign(&mut self) -> Result<Stmt, ParseError> {
-        self.advance(); // consume MID$
-        self.expect(Token::LeftParen)?;
-        let var = self.parse_variable()?;
-        self.expect(Token::Comma)?;
-        let start = self.parse_expr()?;
-        let length = if matches!(self.peek(), Token::Comma) {
-            self.advance();
-            Some(self.parse_expr()?)
-        } else {
-            None
-        };
-        self.expect(Token::RightParen)?;
-        self.expect(Token::Equal)?;
-        let replacement = self.parse_expr()?;
-        Ok(Stmt::MidAssign { var, start, length, replacement })
     }
 
     fn parse_shared(&mut self) -> Result<Stmt, ParseError> {
@@ -1485,37 +1397,6 @@ impl Parser {
             decls.push(self.parse_dim_decl()?);
         }
         Ok(Stmt::Static(decls))
-    }
-
-    fn parse_deftype(&mut self) -> Result<Stmt, ParseError> {
-        let typ = match self.peek().clone() {
-            Token::KwDefInt => BasicType::Numeric,
-            Token::KwDefLng => BasicType::Numeric,
-            Token::KwDefSng => BasicType::Numeric,
-            Token::KwDefDbl => BasicType::Numeric,
-            Token::KwDefStr => BasicType::String,
-            _ => unreachable!(),
-        };
-        self.advance();
-
-        let mut ranges = Vec::new();
-        loop {
-            let (start_name, _) = self.expect_identifier()?;
-            let start_ch = start_name.chars().next().unwrap();
-            let end_ch = if matches!(self.peek(), Token::Minus) {
-                self.advance();
-                let (end_name, _) = self.expect_identifier()?;
-                end_name.chars().next().unwrap()
-            } else {
-                start_ch
-            };
-            ranges.push((start_ch, end_ch));
-            if !matches!(self.peek(), Token::Comma) {
-                break;
-            }
-            self.advance();
-        }
-        Ok(Stmt::DefType { typ, ranges })
     }
 
     fn parse_type_def(&mut self) -> Result<Stmt, ParseError> {
@@ -1583,30 +1464,6 @@ impl Parser {
         Some(name.to_string())
     }
 
-    fn parse_field(&mut self) -> Result<Stmt, ParseError> {
-        self.advance(); // consume FIELD
-        // Optional #
-        if matches!(self.peek(), Token::Hash) {
-            self.advance();
-        }
-        let file_num = self.parse_expr()?;
-        self.expect(Token::Comma)?;
-
-        let mut fields = Vec::new();
-        loop {
-            let width = self.parse_expr()?;
-            self.expect(Token::KwAs)?;
-            let var = self.parse_variable()?;
-            fields.push(FieldDef { width, var });
-            if !matches!(self.peek(), Token::Comma) {
-                break;
-            }
-            self.advance(); // consume comma
-        }
-
-        Ok(Stmt::Field { file_num, fields })
-    }
-
     fn parse_seek(&mut self) -> Result<Stmt, ParseError> {
         self.advance(); // consume SEEK
         // Optional #
@@ -1617,110 +1474,6 @@ impl Parser {
         self.expect(Token::Comma)?;
         let position = self.parse_expr()?;
         Ok(Stmt::Seek { file_num, position })
-    }
-
-    fn parse_chain(&mut self) -> Result<Stmt, ParseError> {
-        self.advance(); // consume CHAIN
-        let filespec = self.parse_expr()?;
-        Ok(Stmt::Chain { filespec })
-    }
-
-    fn parse_common(&mut self) -> Result<Stmt, ParseError> {
-        self.advance(); // consume COMMON
-
-        // Check for SHARED
-        let shared = if matches!(self.peek(), Token::KwShared) {
-            self.advance();
-            true
-        } else {
-            false
-        };
-
-        // Check for optional block name: /blockname/
-        let block_name = if matches!(self.peek(), Token::Slash) {
-            self.advance(); // consume /
-            let (name, _) = self.expect_identifier()?;
-            self.expect(Token::Slash)?; // consume closing /
-            Some(name)
-        } else {
-            None
-        };
-
-        // Parse variable list
-        let mut vars = vec![self.parse_common_var()?];
-        while matches!(self.peek(), Token::Comma) {
-            self.advance();
-            vars.push(self.parse_common_var()?);
-        }
-
-        Ok(Stmt::Common(CommonStmt { shared, block_name, vars }))
-    }
-
-    fn parse_common_var(&mut self) -> Result<CommonVar, ParseError> {
-        let (name, _) = self.expect_identifier()?;
-
-        // Check for array marker ()
-        let is_array = if matches!(self.peek(), Token::LeftParen) {
-            self.advance(); // (
-            self.expect(Token::RightParen)?; // )
-            true
-        } else {
-            false
-        };
-
-        // Check for AS type
-        let as_type = if matches!(self.peek(), Token::KwAs) {
-            self.advance();
-            Some(self.parse_type_keyword()?)
-        } else {
-            None
-        };
-
-        Ok(CommonVar { name, as_type, is_array })
-    }
-
-    fn parse_def_fn(&mut self) -> Result<Stmt, ParseError> {
-        self.advance(); // consume DEF
-
-        // Expect identifier starting with FN
-        let (name, _) = self.expect_identifier()?;
-        if !name.starts_with("FN") || name.len() < 3 {
-            return Err(ParseError::Expected {
-                line: self.current_line(),
-                expected: "FN function name (e.g. FNSquare)".into(),
-                found: name,
-            });
-        }
-
-        let params = if matches!(self.peek(), Token::LeftParen) {
-            self.advance();
-            let p = self.parse_param_list()?;
-            self.expect(Token::RightParen)?;
-            p
-        } else {
-            Vec::new()
-        };
-
-        if matches!(self.peek(), Token::Equal) {
-            // Single-line: DEF FNname(args) = expr
-            self.advance();
-            let expr = self.parse_expr()?;
-            Ok(Stmt::DefFn {
-                name,
-                params,
-                body: DefFnBody::SingleLine(expr),
-            })
-        } else {
-            // Multi-line: DEF FNname(args) ... END DEF
-            self.skip_newlines();
-            let body = self.parse_body_until(&[Token::KwEndDef])?;
-            self.expect(Token::KwEndDef)?;
-            Ok(Stmt::DefFn {
-                name,
-                params,
-                body: DefFnBody::MultiLine(body),
-            })
-        }
     }
 
     // ==================== Expression parsing ====================

@@ -94,6 +94,7 @@ pub enum Token {
     KwEndFunction,
     KwEndSelect,
     KwEndType,
+    KwEndWhile,
     KwType,
     KwData,
     KwRead,

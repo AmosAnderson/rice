@@ -47,34 +47,7 @@ enum ControlFlow {
     ExitSub,
     ExitFunction(Value),
     Goto(Label),
-    Gosub(Label),
-    Return,
     End,
-    Resume,
-    ResumeNext,
-    Chain {
-        filespec: String,
-        common_values: Vec<(CommonVarSpec, CommonTransferValue)>,
-    },
-}
-
-#[derive(Clone, Debug)]
-struct CommonVarSpec {
-    as_type: Option<BasicType>,
-    is_array: bool,
-    is_shared: bool,
-}
-
-#[derive(Clone, Debug)]
-enum CommonTransferValue {
-    Scalar(Value),
-    Array(Vec<(String, Value)>),
-}
-
-#[derive(Clone, Debug)]
-struct ErrorInfo {
-    err_code: i32,
-    err_line: usize,
 }
 
 #[derive(Clone)]
@@ -90,13 +63,6 @@ struct UserFunction {
     params: Vec<Param>,
     body: Vec<LabeledStmt>,
     is_static: bool,
-}
-
-#[derive(Clone)]
-struct DefFnDef {
-    name: String,
-    params: Vec<Param>,
-    body: DefFnBody,
 }
 
 struct FieldMapping {
@@ -118,7 +84,6 @@ pub struct Interpreter {
     builtins: BuiltinRegistry,
     subs: HashMap<String, UserSub>,
     functions: HashMap<String, UserFunction>,
-    def_fns: HashMap<String, DefFnDef>,
     print_col: usize,
     print_row: usize,
     screen_width: usize,
@@ -130,36 +95,17 @@ pub struct Interpreter {
     output: Box<dyn Write>,
     input: Box<dyn BufRead>,
     file_handles: HashMap<i64, FileHandle>,
-    // Error handling state
-    error_handler: Option<Label>,
-    current_error: Option<ErrorInfo>,
-    error_resume_pc: Option<usize>,
-    in_error_handler: bool,
     // Random number generator state
     rng_state: u64,
     last_rnd: f64,
     // Phase 3: STATIC variable persistence
     static_vars: HashMap<String, HashMap<String, Value>>,
     current_static_vars: HashSet<String>,
-    // Phase 4: DEFtype map (A=0 .. Z=25)
-    #[allow(dead_code)]
-    deftype_map: [Option<BasicType>; 26],
     type_defs: HashMap<String, Vec<crate::ast::TypeField>>,
     array_type_map: HashMap<String, String>,
-    // CHAIN/COMMON support
-    common_declarations: Vec<(CommonVarSpec, String)>,
     source_dir: Option<std::path::PathBuf>,
     interactive: bool,
     screen_buffer: Vec<Vec<u8>>,
-    // Event Trapping
-    timer_interval: Option<f64>,
-    timer_handler: Option<Label>,
-    timer_state: EventState,
-    last_timer_trigger: std::time::Instant,
-    key_handlers: HashMap<i64, Option<Label>>,
-    key_states: HashMap<i64, EventState>,
-    // Root-level statements for GOSUB from nested blocks
-    root_stmts: Option<Rc<Vec<LabeledStmt>>>,
 }
 
 impl Drop for Interpreter {
@@ -170,23 +116,6 @@ impl Drop for Interpreter {
             }
         }
     }
-}
-
-/// Extract the array name prefix from a flattened array key.
-/// E.g., "MYARR_0_1" → "MYARR_", "MYARR%_0" → "MYARR%_"
-fn find_array_prefix(key: &str) -> &str {
-    // Array keys are NAME_idx or NAME%_idx — find first '_' followed by a digit
-    for (i, c) in key.char_indices() {
-        if c == '_' {
-            if let Some(next) = key[i + 1..].chars().next() {
-                if next.is_ascii_digit() {
-                    return &key[..=i];
-                }
-            }
-        }
-    }
-    // Fallback: entire key (shouldn't happen with well-formed array keys)
-    key
 }
 
 impl Default for Interpreter {
@@ -211,7 +140,6 @@ impl Interpreter {
             builtins: BuiltinRegistry::new(),
             subs: HashMap::new(),
             functions: HashMap::new(),
-            def_fns: HashMap::new(),
             print_col: 0,
             print_row: 1,
             screen_width: 80,
@@ -223,10 +151,6 @@ impl Interpreter {
             output,
             input,
             file_handles: HashMap::new(),
-            error_handler: None,
-            current_error: None,
-            error_resume_pc: None,
-            in_error_handler: false,
             rng_state: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -234,20 +158,11 @@ impl Interpreter {
             last_rnd: 0.0,
             static_vars: HashMap::new(),
             current_static_vars: HashSet::new(),
-            deftype_map: std::array::from_fn(|_| None),
             type_defs: HashMap::new(),
             array_type_map: HashMap::new(),
-            common_declarations: Vec::new(),
             source_dir: None,
             interactive: false,
             screen_buffer: vec![vec![b' '; 80]; 25],
-            timer_interval: None,
-            timer_handler: None,
-            timer_state: EventState::Off,
-            last_timer_trigger: std::time::Instant::now(),
-            key_handlers: HashMap::new(),
-            key_states: HashMap::new(),
-            root_stmts: None,
         }
     }
 
@@ -278,17 +193,9 @@ impl Interpreter {
         // Pre-scan: collect labels, DATA statements, SUB/FUNCTION definitions
         self.prescan(&program.statements);
 
-        // Store root statements for GOSUB from nested blocks
-        self.root_stmts = Some(Rc::new(program.statements.clone()));
-
         // Execute top-level statements
-        let cf = self.exec_top_level(&program.statements)?;
-        match cf {
-            ControlFlow::Chain { filespec, common_values } => {
-                self.chain_loop(filespec, common_values)
-            }
-            _ => Ok(()),
-        }
+        self.exec_top_level(&program.statements)?;
+        Ok(())
     }
 
     fn prescan(&mut self, stmts: &[LabeledStmt]) {
@@ -321,31 +228,8 @@ impl Interpreter {
                         },
                     );
                 }
-                Stmt::DefFn { name, params, body } => {
-                    self.def_fns.insert(
-                        name.clone(),
-                        DefFnDef {
-                            name: name.clone(),
-                            params: params.clone(),
-                            body: body.clone(),
-                        },
-                    );
-                }
                 Stmt::TypeDef { name, fields } => {
                     self.type_defs.insert(name.clone(), fields.clone());
-                }
-                Stmt::Common(common_stmt) => {
-                    // Only unnamed blocks participate in CHAIN variable transfer
-                    if common_stmt.block_name.is_none() {
-                        for var in &common_stmt.vars {
-                            let spec = CommonVarSpec {
-                                as_type: var.as_type.clone(),
-                                is_array: var.is_array,
-                                is_shared: common_stmt.shared,
-                            };
-                            self.common_declarations.push((spec, var.name.clone()));
-                        }
-                    }
                 }
                 // Recurse into nested blocks to find labels and DATA
                 Stmt::If(if_stmt) => {
@@ -373,85 +257,7 @@ impl Interpreter {
         }
     }
 
-    fn poll_events(&mut self) -> Option<Label> {
-        // Check timer
-        if self.timer_state == EventState::On {
-            if let (Some(interval), Some(handler)) = (self.timer_interval, &self.timer_handler) {
-                let now = std::time::Instant::now();
-                if now.duration_since(self.last_timer_trigger).as_secs_f64() >= interval {
-                    self.last_timer_trigger = now;
-                    return Some(handler.clone());
-                }
-            }
-        }
-        None
-    }
-
-    /// Execute a subroutine at the root level (for GOSUB from nested blocks and event handlers).
-    /// Runs statements from the resolved label until RETURN is encountered.
-    fn exec_gosub_at_root(&mut self, label: &Label) -> Result<ControlFlow, RuntimeError> {
-        let root_stmts = self.root_stmts.as_ref()
-            .ok_or_else(|| RuntimeError::General { msg: "No root statements available".into() })?
-            .clone();
-        let resolved = self.env.borrow().resolve_label(label)
-            .ok_or_else(|| RuntimeError::UndefinedLabel { label: label.to_string() })?;
-        let mut pc = resolved;
-        while pc < root_stmts.len() {
-            // Check for timer events within subroutine execution
-            if let Some(event_handler) = self.poll_events() {
-                self.exec_gosub_at_root(&event_handler)?;
-                continue;
-            }
-            let ls = &root_stmts[pc];
-            let result = self.exec_stmt(&ls.stmt);
-            let cf = match result {
-                Ok(cf) => cf,
-                Err(err) => {
-                    if let (Some(handler), false) =
-                        (&self.error_handler, self.in_error_handler)
-                    {
-                        let handler = handler.clone();
-                        self.current_error = Some(ErrorInfo {
-                            err_code: err.qbasic_error_code(),
-                            err_line: ls.line,
-                        });
-                        self.error_resume_pc = Some(pc);
-                        self.in_error_handler = true;
-                        let resolved = self.env.borrow().resolve_label(&handler);
-                        if let Some(idx) = resolved {
-                            pc = idx;
-                            continue;
-                        } else {
-                            return Err(RuntimeError::UndefinedLabel {
-                                label: handler.to_string(),
-                            });
-                        }
-                    } else {
-                        return Err(err);
-                    }
-                }
-            };
-            match cf {
-                ControlFlow::Normal => pc += 1,
-                ControlFlow::Return => return Ok(ControlFlow::Normal),
-                ControlFlow::Goto(l) => {
-                    let idx = self.env.borrow().resolve_label(&l)
-                        .ok_or_else(|| RuntimeError::UndefinedLabel { label: l.to_string() })?;
-                    pc = idx;
-                }
-                ControlFlow::Gosub(l) => {
-                    self.exec_gosub_at_root(&l)?;
-                    pc += 1;
-                }
-                ControlFlow::End => return Ok(ControlFlow::End),
-                other => return Ok(other),
-            }
-        }
-        Ok(ControlFlow::Normal)
-    }
-
     /// Execute a nested block of statements (inside IF, FOR, DO, WHILE, SELECT CASE, SUB, FUNCTION).
-    /// GOSUB is executed inline via root statements. GOTO and RETURN propagate upward.
     fn exec_block(&mut self, stmts: &[LabeledStmt]) -> Result<ControlFlow, RuntimeError> {
         let mut pc = 0;
         while pc < stmts.len() {
@@ -459,59 +265,18 @@ impl Interpreter {
             let cf = self.exec_stmt(&ls.stmt)?;
             match cf {
                 ControlFlow::Normal => pc += 1,
-                ControlFlow::Gosub(label) => {
-                    // Execute subroutine inline using root statements
-                    let inner_cf = self.exec_gosub_at_root(&label)?;
-                    match inner_cf {
-                        ControlFlow::Normal => pc += 1,
-                        other => return Ok(other),
-                    }
-                }
                 other => return Ok(other),
             }
         }
         Ok(ControlFlow::Normal)
     }
 
-    /// Execute the top-level statement block with full GOTO/GOSUB/RETURN/event handling.
+    /// Execute the top-level statement block with GOTO handling.
     fn exec_top_level(&mut self, stmts: &[LabeledStmt]) -> Result<ControlFlow, RuntimeError> {
         let mut pc = 0;
         while pc < stmts.len() {
-            if let Some(event_handler) = self.poll_events() {
-                self.exec_gosub_at_root(&event_handler)?;
-                continue;
-            }
             let ls = &stmts[pc];
-            let result = self.exec_stmt(&ls.stmt);
-            let cf = match result {
-                Ok(cf) => cf,
-                Err(err) => {
-                    if let (Some(handler), false) =
-                        (&self.error_handler, self.in_error_handler)
-                    {
-                        // Trap the error
-                        let handler = handler.clone();
-                        self.current_error = Some(ErrorInfo {
-                            err_code: err.qbasic_error_code(),
-                            err_line: ls.line,
-                        });
-                        self.error_resume_pc = Some(pc);
-                        self.in_error_handler = true;
-                        // Resolve handler label and jump
-                        let resolved = self.env.borrow().resolve_label(&handler);
-                        if let Some(idx) = resolved {
-                            pc = idx;
-                            continue;
-                        } else {
-                            return Err(RuntimeError::UndefinedLabel {
-                                label: handler.to_string(),
-                            });
-                        }
-                    } else {
-                        return Err(err);
-                    }
-                }
-            };
+            let cf = self.exec_stmt(&ls.stmt)?;
             match cf {
                 ControlFlow::Normal => {
                     pc += 1;
@@ -522,35 +287,6 @@ impl Interpreter {
                         pc = idx;
                     } else {
                         return Ok(ControlFlow::Goto(label));
-                    }
-                }
-                ControlFlow::Gosub(label) => {
-                    let resolved = self.env.borrow().resolve_label(&label);
-                    if let Some(idx) = resolved {
-                        self.env.borrow_mut().gosub_stack.push(pc + 1);
-                        pc = idx;
-                    } else {
-                        return Ok(ControlFlow::Gosub(label));
-                    }
-                }
-                ControlFlow::Return => {
-                    let return_pc = self.env.borrow_mut().gosub_stack.pop();
-                    pc = return_pc.ok_or(RuntimeError::ReturnWithoutGosub)?;
-                }
-                ControlFlow::Resume => {
-                    if let Some(resume_pc) = self.error_resume_pc {
-                        self.in_error_handler = false;
-                        pc = resume_pc;
-                    } else {
-                        return Err(RuntimeError::ResumeWithoutError);
-                    }
-                }
-                ControlFlow::ResumeNext => {
-                    if let Some(resume_pc) = self.error_resume_pc {
-                        self.in_error_handler = false;
-                        pc = resume_pc + 1;
-                    } else {
-                        return Err(RuntimeError::ResumeWithoutError);
                     }
                 }
                 other => return Ok(other),
@@ -595,8 +331,6 @@ impl Interpreter {
             Stmt::DoLoop(do_stmt) => self.exec_do(do_stmt),
             Stmt::SelectCase(select) => self.exec_select(select),
             Stmt::Goto(label) => Ok(ControlFlow::Goto(label.clone())),
-            Stmt::Gosub(label) => Ok(ControlFlow::Gosub(label.clone())),
-            Stmt::Return => Ok(ControlFlow::Return),
             Stmt::ExitFor => Ok(ControlFlow::ExitFor),
             Stmt::ExitDo => Ok(ControlFlow::ExitDo),
             Stmt::ExitSub => Ok(ControlFlow::ExitSub),
@@ -667,75 +401,6 @@ impl Interpreter {
             Stmt::GetPut(gp) => {
                 self.exec_get_put(gp)?;
                 Ok(ControlFlow::Normal)
-            }
-            Stmt::OnErrorGoto(target) => {
-                match target {
-                    Some(label) => {
-                        self.error_handler = Some(label.clone());
-                    }
-                    None => {
-                        // ON ERROR GOTO 0 — disable error handling
-                        self.error_handler = None;
-                        self.current_error = None;
-                        self.error_resume_pc = None;
-                        self.in_error_handler = false;
-                    }
-                }
-                Ok(ControlFlow::Normal)
-            }
-            Stmt::Resume(target) => {
-                match target {
-                    ResumeTarget::Default => {
-                        Ok(ControlFlow::Resume)
-                    }
-                    ResumeTarget::Next => {
-                        Ok(ControlFlow::ResumeNext)
-                    }
-                    ResumeTarget::Label(label) => {
-                        // Clear error state and jump to the label
-                        self.in_error_handler = false;
-                        self.current_error = None;
-                        self.error_resume_pc = None;
-                        Ok(ControlFlow::Goto(label.clone()))
-                    }
-                }
-            }
-            Stmt::OnTimer { n, label } => {
-                let secs = self.eval_expr(n)?.to_f64()?;
-                self.timer_interval = Some(secs);
-                self.timer_handler = Some(label.clone());
-                Ok(ControlFlow::Normal)
-            }
-            Stmt::TimerOp(state) => {
-                self.timer_state = *state;
-                self.last_timer_trigger = std::time::Instant::now();
-                Ok(ControlFlow::Normal)
-            }
-            Stmt::OnKey { n, label } => {
-                let code = self.eval_expr(n)?.to_i64()?;
-                self.key_handlers.insert(code, Some(label.clone()));
-                Ok(ControlFlow::Normal)
-            }
-            Stmt::KeyOp { n, state } => {
-                let code = self.eval_expr(n)?.to_i64()?;
-                self.key_states.insert(code, *state);
-                Ok(ControlFlow::Normal)
-            }
-            Stmt::OnGoto { expr, labels } => {
-                let n = self.eval_expr(expr)?.to_i64()? as usize;
-                if n >= 1 && n <= labels.len() {
-                    Ok(ControlFlow::Goto(labels[n - 1].clone()))
-                } else {
-                    Ok(ControlFlow::Normal)
-                }
-            }
-            Stmt::OnGosub { expr, labels } => {
-                let n = self.eval_expr(expr)?.to_i64()? as usize;
-                if n >= 1 && n <= labels.len() {
-                    Ok(ControlFlow::Gosub(labels[n - 1].clone()))
-                } else {
-                    Ok(ControlFlow::Normal)
-                }
             }
             Stmt::Randomize(expr) => {
                 if let Some(e) = expr {
@@ -826,12 +491,6 @@ impl Interpreter {
                 Ok(ControlFlow::Normal)
             }
 
-            Stmt::MidAssign { var, start, length, replacement } => {
-                self.exec_mid_assign(var, start, length.as_ref(), replacement)
-            }
-            Stmt::Lset { var, expr } => self.exec_lset(var, expr),
-            Stmt::Rset { var, expr } => self.exec_rset(var, expr),
-
             // Phase 3: SHARED
             Stmt::Shared(vars) => {
                 for var in vars {
@@ -853,50 +512,12 @@ impl Interpreter {
                 Ok(ControlFlow::Normal)
             }
 
-            // Phase 4: DEFtype
-            Stmt::DefType { typ, ranges } => {
-                for &(start, end) in ranges {
-                    let s = (start as u8 - b'A') as usize;
-                    let e = (end as u8 - b'A') as usize;
-                    for i in s..=e.min(25) {
-                        self.deftype_map[i] = Some(typ.clone());
-                    }
-                }
-                Ok(ControlFlow::Normal)
-            }
-
-            // Phase 4: DEF FN (collected during prescan)
-            Stmt::DefFn { .. } => Ok(ControlFlow::Normal),
-
             // User-defined types (collected during prescan)
             Stmt::TypeDef { .. } => Ok(ControlFlow::Normal),
 
             Stmt::MemberAssign { target, value } => {
                 let new_val = self.eval_expr(value)?;
                 self.set_member_value(target, new_val)?;
-                Ok(ControlFlow::Normal)
-            }
-
-            // CHAIN/COMMON
-            Stmt::Common(common_stmt) => {
-                // COMMON SHARED: register vars as shared in the current environment
-                if common_stmt.shared && common_stmt.block_name.is_none() {
-                    for var in &common_stmt.vars {
-                        self.env.borrow_mut().shared_vars.insert(var.name.clone());
-                    }
-                }
-                Ok(ControlFlow::Normal)
-            }
-
-            Stmt::Chain { filespec } => self.exec_chain(filespec),
-
-            // FIELD/SEEK
-            Stmt::Field { file_num, fields } => {
-                self.exec_field(file_num, fields)?;
-                Ok(ControlFlow::Normal)
-            }
-            Stmt::Seek { file_num, position } => {
-                self.exec_seek(file_num, position)?;
                 Ok(ControlFlow::Normal)
             }
 
@@ -1000,6 +621,18 @@ impl Interpreter {
                     write!(self.output, "\x1b[r").ok();
                 }
                 Ok(ControlFlow::Normal)
+            }
+
+            // Removed QBasic-only statements (parser should reject these)
+            Stmt::Gosub(_) | Stmt::Return | Stmt::OnErrorGoto(_) | Stmt::Resume(_) |
+            Stmt::OnGoto { .. } | Stmt::OnGosub { .. } | Stmt::OnTimer { .. } |
+            Stmt::TimerOp(_) | Stmt::OnKey { .. } | Stmt::KeyOp { .. } |
+            Stmt::DefFn { .. } | Stmt::DefType { .. } | Stmt::MidAssign { .. } |
+            Stmt::Lset { .. } | Stmt::Rset { .. } | Stmt::Chain { .. } |
+            Stmt::Common(_) | Stmt::Field { .. } | Stmt::Seek { .. } => {
+                Err(RuntimeError::General {
+                    msg: "unsupported statement (removed QBasic feature)".to_string(),
+                })
             }
         }
     }
@@ -1121,115 +754,6 @@ impl Interpreter {
         }
         self.write_text("\n");
         Ok(ControlFlow::Normal)
-    }
-
-    fn exec_mid_assign(
-        &mut self,
-        var: &Variable,
-        start: &Expr,
-        length: Option<&Expr>,
-        replacement: &Expr,
-    ) -> Result<ControlFlow, RuntimeError> {
-        let current = self.env.borrow().get(&var.name)
-            .unwrap_or(Value::Str(String::new()))
-            .to_string_val()?;
-        let start_pos = (self.eval_expr(start)?.to_i64()? - 1).max(0) as usize;
-        let repl = self.eval_expr(replacement)?.to_string_val()?;
-        let mut chars: Vec<char> = current.chars().collect();
-        let repl_chars: Vec<char> = repl.chars().collect();
-        let char_count = chars.len();
-        let max_len = if let Some(len_expr) = length {
-            self.eval_expr(len_expr)?.to_i64()? as usize
-        } else {
-            char_count.saturating_sub(start_pos)
-        };
-        let avail = char_count.saturating_sub(start_pos);
-        let replace_len = max_len.min(avail).min(repl_chars.len());
-        for i in 0..replace_len {
-            if start_pos + i < chars.len() {
-                chars[start_pos + i] = repl_chars[i];
-            }
-        }
-        let result: String = chars.into_iter().collect();
-        self.env.borrow_mut().set(&var.name, Value::Str(result));
-        Ok(ControlFlow::Normal)
-    }
-
-    fn exec_lset(&mut self, var: &Variable, expr: &Expr) -> Result<ControlFlow, RuntimeError> {
-        let current = self.env.borrow().get(&var.name)
-            .unwrap_or(Value::Str(String::new()))
-            .to_string_val()?;
-        let target_len = current.chars().count();
-        let new_val = self.eval_expr(expr)?.to_string_val()?;
-        let new_chars: Vec<char> = new_val.chars().collect();
-        let result: String = if new_chars.len() >= target_len {
-            new_chars[..target_len].iter().collect()
-        } else {
-            let mut s: String = new_chars.into_iter().collect();
-            for _ in 0..(target_len - s.chars().count()) {
-                s.push(' ');
-            }
-            s
-        };
-        self.env.borrow_mut().set(&var.name, Value::Str(result));
-        Ok(ControlFlow::Normal)
-    }
-
-    fn exec_rset(&mut self, var: &Variable, expr: &Expr) -> Result<ControlFlow, RuntimeError> {
-        let current = self.env.borrow().get(&var.name)
-            .unwrap_or(Value::Str(String::new()))
-            .to_string_val()?;
-        let target_len = current.chars().count();
-        let new_val = self.eval_expr(expr)?.to_string_val()?;
-        let new_chars: Vec<char> = new_val.chars().collect();
-        let result: String = if new_chars.len() >= target_len {
-            new_chars[..target_len].iter().collect()
-        } else {
-            let pad = target_len - new_chars.len();
-            let mut s = String::new();
-            for _ in 0..pad {
-                s.push(' ');
-            }
-            s.extend(new_chars);
-            s
-        };
-        self.env.borrow_mut().set(&var.name, Value::Str(result));
-        Ok(ControlFlow::Normal)
-    }
-
-    fn exec_chain(&mut self, filespec: &Expr) -> Result<ControlFlow, RuntimeError> {
-        let path_str = self.eval_expr(filespec)?.to_string_val()?;
-        let resolved_path = self.resolve_chain_path(&path_str);
-
-        let env = &self.env;
-        let common_values: Vec<(CommonVarSpec, CommonTransferValue)> = self
-            .common_declarations
-            .iter()
-            .map(|(spec, key)| {
-                let transfer = if spec.is_array {
-                    let prefix = format!("{}_", key);
-                    let env_borrow = env.borrow();
-                    let elements: Vec<(String, Value)> = env_borrow
-                        .vars_ref()
-                        .iter()
-                        .filter(|(k, _)| k.starts_with(&prefix))
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect();
-                    CommonTransferValue::Array(elements)
-                } else {
-                    let value = env.borrow().get_by_key(key).unwrap_or_else(|| {
-                        Value::default_for_type(spec.as_type.as_ref())
-                    });
-                    CommonTransferValue::Scalar(value)
-                };
-                (spec.clone(), transfer)
-            })
-            .collect();
-
-        Ok(ControlFlow::Chain {
-            filespec: resolved_path,
-            common_values,
-        })
     }
 
     fn exec_print(&mut self, ps: &PrintStmt) -> Result<(), RuntimeError> {
@@ -1396,7 +920,6 @@ impl Interpreter {
                 ControlFlow::ExitFor => break,
                 ControlFlow::End => return Ok(ControlFlow::End),
                 ControlFlow::Goto(l) => return Ok(ControlFlow::Goto(l)),
-                ControlFlow::Gosub(l) => return Ok(ControlFlow::Gosub(l)),
                 ControlFlow::ExitSub => return Ok(ControlFlow::ExitSub),
                 ControlFlow::ExitFunction(v) => return Ok(ControlFlow::ExitFunction(v)),
                 _ => {}
@@ -1431,7 +954,6 @@ impl Interpreter {
             match cf {
                 ControlFlow::End => return Ok(ControlFlow::End),
                 ControlFlow::Goto(l) => return Ok(ControlFlow::Goto(l)),
-                ControlFlow::Gosub(l) => return Ok(ControlFlow::Gosub(l)),
                 ControlFlow::ExitSub => return Ok(ControlFlow::ExitSub),
                 ControlFlow::ExitFunction(v) => return Ok(ControlFlow::ExitFunction(v)),
                 ControlFlow::ExitDo => return Ok(ControlFlow::ExitDo),
@@ -1458,7 +980,6 @@ impl Interpreter {
                 ControlFlow::ExitDo => break,
                 ControlFlow::End => return Ok(ControlFlow::End),
                 ControlFlow::Goto(l) => return Ok(ControlFlow::Goto(l)),
-                ControlFlow::Gosub(l) => return Ok(ControlFlow::Gosub(l)),
                 ControlFlow::ExitSub => return Ok(ControlFlow::ExitSub),
                 ControlFlow::ExitFunction(v) => return Ok(ControlFlow::ExitFunction(v)),
                 _ => {}
@@ -1640,10 +1161,6 @@ impl Interpreter {
                     // Some 0-arg builtins are commonly used like variables in BASIC (e.g. DATE$, TIME$).
                     // Resolve those before default variable auto-initialization.
                     let builtin_name = &var.name;
-                    // ERR and ERL are special interpreter-state functions used without parens
-                    if builtin_name == "ERR" || builtin_name == "ERL" {
-                        return Ok(self.get_error_value(builtin_name));
-                    }
                     if builtin_name == "CSRLIN" {
                         return Ok(Value::Numeric(self.print_row as f64));
                     }
@@ -1717,12 +1234,6 @@ impl Interpreter {
                         let r = ((self.rng_state >> 33) as f64) / ((1u64 << 31) as f64);
                         self.last_rnd = r;
                         return Ok(Value::Numeric(r));
-                    }
-                    "ERR" | "ERL" => {
-                        if !arg_vals.is_empty() {
-                            return Err(RuntimeError::ArityMismatch { expected: 0, got: arg_vals.len() });
-                        }
-                        return Ok(self.get_error_value(name));
                     }
                     "CSRLIN" => {
                         if !arg_vals.is_empty() {
@@ -1875,12 +1386,6 @@ impl Interpreter {
                     return Ok(result);
                 }
 
-                // Try DEF FN function
-                let def_fn = self.def_fns.get(&func_name).or_else(|| self.def_fns.get(name)).cloned();
-                if let Some(def_fn) = def_fn {
-                    return self.call_def_fn(&def_fn, &arg_vals);
-                }
-
                 // Try user-defined function
                 let func = self.functions.get(&func_name).or_else(|| self.functions.get(name)).cloned();
                 if let Some(func) = func {
@@ -1995,61 +1500,6 @@ impl Interpreter {
         }
     }
 
-    fn call_def_fn(
-        &mut self,
-        def_fn: &DefFnDef,
-        args: &[Value],
-    ) -> Result<Value, RuntimeError> {
-        if args.len() != def_fn.params.len() {
-            return Err(RuntimeError::ArityMismatch {
-                expected: def_fn.params.len(),
-                got: args.len(),
-            });
-        }
-
-        match &def_fn.body {
-            DefFnBody::SingleLine(expr) => {
-                // DEF FN shares the current scope — bind params temporarily
-                let mut old_vals: Vec<(String, Option<Value>)> = Vec::new();
-                for (param, val) in def_fn.params.iter().zip(args.iter()) {
-                    let old = self.env.borrow().get(&param.name);
-                    old_vals.push((param.name.clone(), old));
-                    self.env.borrow_mut().set(&param.name, val.clone());
-                }
-                let result = self.eval_expr(expr);
-                // Restore old values
-                for (name, old) in old_vals {
-                    match old {
-                        Some(v) => self.env.borrow_mut().set(&name, v),
-                        None => {
-                            self.env.borrow_mut().vars_mut().remove(&name);
-                        }
-                    }
-                }
-                result
-            }
-            DefFnBody::MultiLine(body) => {
-                // Multi-line DEF FN: execute body, return value from function name variable
-                let child_env = Environment::new_child(self.env.clone());
-                for (param, val) in def_fn.params.iter().zip(args.iter()) {
-                    child_env.borrow_mut().set(&param.name, val.clone());
-                }
-                // Initialize return variable
-                child_env.borrow_mut().set(&def_fn.name, Value::Numeric(0.0));
-
-                let prev_env = self.env.clone();
-                self.env = child_env.clone();
-                let result = self.exec_block(body);
-                self.env = prev_env;
-
-                match result? {
-                    ControlFlow::ExitFunction(v) => Ok(v),
-                    _ => Ok(child_env.borrow().get(&def_fn.name).unwrap_or(Value::Numeric(0.0))),
-                }
-            }
-        }
-    }
-
     fn eval_binary_op(
         &self,
         left: &Value,
@@ -2160,139 +1610,6 @@ impl Interpreter {
         } else {
             Value::Numeric(0.0)
         }
-    }
-
-    fn resolve_chain_path(&self, path_str: &str) -> String {
-        let path = std::path::Path::new(path_str);
-        if path.is_absolute() {
-            path_str.to_string()
-        } else if let Some(ref dir) = self.source_dir {
-            dir.join(path).to_string_lossy().into_owned()
-        } else {
-            path_str.to_string()
-        }
-    }
-
-    fn chain_loop(
-        &mut self,
-        mut filespec: String,
-        mut common_values: Vec<(CommonVarSpec, CommonTransferValue)>,
-    ) -> Result<(), RuntimeError> {
-        loop {
-            // Canonicalize first to resolve the path once, then read using the resolved path
-            let read_path = if let Ok(canonical) = std::fs::canonicalize(&filespec) {
-                self.source_dir = canonical.parent().map(|p| p.to_path_buf());
-                canonical
-            } else {
-                std::path::PathBuf::from(&filespec)
-            };
-
-            let source = std::fs::read_to_string(&read_path).map_err(|e| {
-                RuntimeError::General {
-                    msg: format!("CHAIN error: cannot open '{}': {}", filespec, e),
-                }
-            })?;
-
-            // Lex and parse
-            let tokens = crate::lexer::Lexer::new(&source).tokenize().map_err(|e| {
-                RuntimeError::General {
-                    msg: format!("CHAIN error in '{}': {}", filespec, e),
-                }
-            })?;
-            let program =
-                crate::parser::Parser::new(tokens)
-                    .parse_program()
-                    .map_err(|e| RuntimeError::General {
-                        msg: format!("CHAIN error in '{}': {}", filespec, e),
-                    })?;
-
-            self.reset_program_state();
-
-            // Prescan the new program
-            self.prescan(&program.statements);
-
-            // Map incoming common values to the new program's COMMON declarations by position
-            for i in 0..self.common_declarations.len() {
-                let (spec, key) = &self.common_declarations[i];
-                let as_type = &spec.as_type;
-                let is_shared = spec.is_shared;
-                let key = key.clone();
-
-                let mut env = self.env.borrow_mut();
-                if let Some((_, transfer)) = common_values.get(i) {
-                    match transfer {
-                        CommonTransferValue::Scalar(value) => {
-                            let final_value = if let Some(target_type) = as_type {
-                                value.coerce_to_type(target_type)
-                            } else {
-                                value.clone()
-                            };
-                            env.set_by_key(&key, final_value);
-                        }
-                        CommonTransferValue::Array(elements) => {
-                            // Remap array element keys from old name to new name
-                            if let Some(first) = elements.first() {
-                                let old_prefix = find_array_prefix(&first.0);
-                                let new_prefix = format!("{}_", key);
-                                for (old_key, val) in elements {
-                                    if old_key.starts_with(old_prefix) {
-                                        let index_part = &old_key[old_prefix.len()..];
-                                        let new_key =
-                                            format!("{}{}", new_prefix, index_part);
-                                        env.set_by_key(&new_key, val.clone());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else if let Some(target_type) = as_type {
-                    // No incoming value — initialize to the declared type's default
-                    env.set_by_key(&key, Value::default_for_type(Some(target_type)));
-                }
-
-                if is_shared {
-                    env.shared_vars.insert(key);
-                }
-            }
-
-            // Store root statements for GOSUB from nested blocks
-            self.root_stmts = Some(Rc::new(program.statements.clone()));
-
-            // Execute the new program
-            let cf = self.exec_top_level(&program.statements)?;
-
-            match cf {
-                ControlFlow::Chain {
-                    filespec: next_file,
-                    common_values: next_vals,
-                } => {
-                    filespec = next_file;
-                    common_values = next_vals;
-                    // Loop continues
-                }
-                _ => return Ok(()),
-            }
-        }
-    }
-
-    /// Reset interpreter state for CHAIN. Preserves file handles, I/O, and RNG.
-    fn reset_program_state(&mut self) {
-        self.env = Environment::new_global();
-        self.subs.clear();
-        self.functions.clear();
-        self.def_fns.clear();
-        self.data_values.clear();
-        self.data_pos = 0;
-        self.error_handler = None;
-        self.current_error = None;
-        self.error_resume_pc = None;
-        self.in_error_handler = false;
-        self.static_vars.clear();
-        self.current_static_vars.clear();
-        self.deftype_map = std::array::from_fn(|_| None);
-        self.type_defs.clear();
-        self.array_type_map.clear();
-        self.common_declarations.clear();
     }
 
     /// Build a flattened key for array element access (temporary hack until
@@ -2461,14 +1778,6 @@ impl Interpreter {
             }
         }
         crate::format_using::format_using(&fmt_str, &vals)
-    }
-
-    fn get_error_value(&self, name: &str) -> Value {
-        match name {
-            "ERR" => Value::Numeric(self.current_error.as_ref().map_or(0, |e| e.err_code) as f64),
-            "ERL" => Value::Numeric(self.current_error.as_ref().map_or(0, |e| e.err_line) as f64),
-            _ => Value::Numeric(0.0),
-        }
     }
 
     /// Write visible text to output and update screen buffer.
@@ -2943,78 +2252,6 @@ impl Interpreter {
         self.env
             .borrow_mut()
             .set(&var.name, Value::Str(line));
-        Ok(())
-    }
-
-    fn exec_field(&mut self, file_num_expr: &Expr, fields: &[FieldDef]) -> Result<(), RuntimeError> {
-        let file_num = self.eval_expr(file_num_expr)?.to_i64()?;
-
-        // Evaluate all field widths before borrowing file_handles
-        let mut field_specs = Vec::new();
-        for field in fields {
-            let width = self.eval_expr(&field.width)?.to_i64()? as usize;
-            field_specs.push((width, field.var.name.clone()));
-        }
-
-        let fh = self.file_handles.get_mut(&file_num).ok_or_else(|| RuntimeError::General {
-            msg: format!("file #{file_num} is not open"),
-        })?;
-
-        if fh.mode != FileMode::Random {
-            return Err(RuntimeError::General {
-                msg: "FIELD requires a file opened FOR RANDOM".into(),
-            });
-        }
-
-        let mut total_width: usize = 0;
-        let mut mappings = Vec::with_capacity(field_specs.len());
-        for &(width, _) in &field_specs {
-            total_width += width;
-            if total_width > fh.rec_len as usize {
-                return Err(RuntimeError::General {
-                    msg: "FIELD width exceeds record length".into(),
-                });
-            }
-        }
-        for (width, var_name) in field_specs.into_iter() {
-            self.env.borrow_mut().set(
-                &var_name,
-                Value::Str(" ".repeat(width)),
-            );
-            mappings.push(FieldMapping { width, var_name });
-        }
-        fh.field_mappings = mappings;
-        Ok(())
-    }
-
-    fn exec_seek(&mut self, file_num_expr: &Expr, position_expr: &Expr) -> Result<(), RuntimeError> {
-        let file_num = self.eval_expr(file_num_expr)?.to_i64()?;
-        let position = self.eval_expr(position_expr)?.to_i64()?;
-        let fh = self.file_handles.get_mut(&file_num).ok_or_else(|| RuntimeError::General {
-            msg: format!("file #{file_num} is not open"),
-        })?;
-
-        // SEEK uses 1-based byte position for BINARY, record number for RANDOM
-        let byte_pos = if fh.mode == FileMode::Random {
-            ((position - 1) * fh.rec_len) as u64
-        } else {
-            (position - 1) as u64
-        };
-
-        // Flush writer before seeking to ensure data is on disk
-        if let Some(writer) = &mut fh.writer {
-            writer.flush().map_err(|e| RuntimeError::General {
-                msg: format!("flush error: {e}"),
-            })?;
-            writer.seek(SeekFrom::Start(byte_pos)).map_err(|e| RuntimeError::General {
-                msg: format!("SEEK error: {e}"),
-            })?;
-        }
-        if let Some(reader) = &mut fh.reader {
-            reader.seek(SeekFrom::Start(byte_pos)).map_err(|e| RuntimeError::General {
-                msg: format!("SEEK error: {e}"),
-            })?;
-        }
         Ok(())
     }
 
