@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
@@ -355,6 +356,104 @@ fn token_color(token: &Token) -> &'static str {
 
 pub struct Repl {
     interpreter: Interpreter,
+    program: BTreeMap<u32, String>,
+}
+
+/// Classifies what the REPL should do with a line of input.
+enum ReplAction {
+    /// Store a numbered line in the program buffer.
+    StoreLine(u32, String),
+    /// Bare line number — delete that line.
+    DeleteLine(u32),
+    /// RUN the stored program.
+    Run,
+    /// LIST lines, with optional start and end bounds.
+    List(Option<u32>, Option<u32>),
+    /// NEW — clear the stored program.
+    New,
+    /// DELETE a line or range.
+    Delete(u32, Option<u32>),
+    /// A command was recognized but had invalid arguments.
+    InvalidCommand(String),
+    /// Execute immediately (unnumbered line — existing behavior).
+    Execute,
+}
+
+/// If `line` starts with an integer, return (line_number, rest_of_line).
+fn parse_line_number(line: &str) -> Option<(u32, &str)> {
+    let trimmed = line.trim();
+    if !trimmed.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    let end = trimmed
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(trimmed.len());
+    let num: u32 = trimmed[..end].parse().ok()?;
+    let rest = trimmed[end..].trim_start();
+    Some((num, rest))
+}
+
+/// Parse a range argument like "10", "10-50", or "" (empty).
+/// Returns (Option<start>, Option<end>).
+fn parse_range(arg: &str) -> (Option<u32>, Option<u32>) {
+    let arg = arg.trim();
+    if arg.is_empty() {
+        return (None, None);
+    }
+    if let Some(dash) = arg.find('-') {
+        let start = arg[..dash].trim().parse::<u32>().ok();
+        let end = arg[dash + 1..].trim().parse::<u32>().ok();
+        (start, end)
+    } else {
+        let n = arg.parse::<u32>().ok();
+        (n, n)
+    }
+}
+
+/// Classify a trimmed input line into a REPL action.
+fn classify_input(line: &str) -> ReplAction {
+    let trimmed = line.trim();
+    let upper = trimmed.to_ascii_uppercase();
+
+    // Check for commands first
+    if upper == "RUN" {
+        return ReplAction::Run;
+    }
+    if upper == "NEW" {
+        return ReplAction::New;
+    }
+    if upper == "LIST" {
+        return ReplAction::List(None, None);
+    }
+    if let Some(arg) = upper.strip_prefix("LIST ") {
+        let arg = arg.trim();
+        if arg.is_empty() {
+            return ReplAction::List(None, None);
+        }
+        let (start, end) = parse_range(arg);
+        return ReplAction::List(start, end);
+    }
+    if upper == "DELETE" {
+        return ReplAction::InvalidCommand("Usage: DELETE <line> or DELETE <start>-<end>".into());
+    }
+    if let Some(arg) = upper.strip_prefix("DELETE ") {
+        let arg = arg.trim();
+        let (start, end) = parse_range(arg);
+        if let Some(s) = start {
+            return ReplAction::Delete(s, end);
+        }
+        return ReplAction::InvalidCommand(format!("Invalid DELETE argument: {}", arg));
+    }
+
+    // Check for numbered line
+    if let Some((num, rest)) = parse_line_number(trimmed) {
+        if rest.is_empty() {
+            return ReplAction::DeleteLine(num);
+        }
+        return ReplAction::StoreLine(num, rest.to_string());
+    }
+
+    ReplAction::Execute
 }
 
 impl Default for Repl {
@@ -367,12 +466,14 @@ impl Repl {
     pub fn new() -> Self {
         Self {
             interpreter: Interpreter::new(),
+            program: BTreeMap::new(),
         }
     }
 
     pub fn run(&mut self) {
         println!("RICE BASIC v{}", env!("CARGO_PKG_VERSION"));
         println!("Type SYSTEM or press Ctrl+D to exit.");
+        println!("Commands: RUN, LIST, NEW, DELETE");
         println!();
 
         let mut editor = Editor::new().expect("failed to create editor");
@@ -399,6 +500,48 @@ impl Repl {
                             buffer.push('\n');
                         }
                         continue;
+                    }
+
+                    // Classify input before block accumulation.
+                    // Numbered lines and commands bypass multi-line block logic.
+                    if depth == 0 {
+                        let action = classify_input(trimmed);
+                        if !matches!(action, ReplAction::Execute) {
+                            let _ = editor.add_history_entry(trimmed);
+                        }
+                        match action {
+                            ReplAction::StoreLine(num, text) => {
+                                self.program.insert(num, text);
+                                continue;
+                            }
+                            ReplAction::DeleteLine(num) => {
+                                self.program.remove(&num);
+                                continue;
+                            }
+                            ReplAction::Run => {
+                                self.run_stored_program();
+                                continue;
+                            }
+                            ReplAction::List(start, end) => {
+                                self.list_program(start, end);
+                                continue;
+                            }
+                            ReplAction::New => {
+                                self.program.clear();
+                                continue;
+                            }
+                            ReplAction::Delete(start, end) => {
+                                self.delete_lines(start, end);
+                                continue;
+                            }
+                            ReplAction::InvalidCommand(msg) => {
+                                eprintln!("{msg}");
+                                continue;
+                            }
+                            ReplAction::Execute => {
+                                // Fall through to existing depth/buffer logic
+                            }
+                        }
                     }
 
                     let delta = compute_depth_delta(trimmed);
@@ -459,6 +602,49 @@ impl Repl {
             .any(|s| matches!(s.stmt, crate::ast::Stmt::End | crate::ast::Stmt::System));
         self.interpreter.run_program(&program)?;
         Ok(has_end)
+    }
+
+    /// Reconstruct the stored program and execute it with a fresh interpreter.
+    fn run_stored_program(&mut self) {
+        if self.program.is_empty() {
+            return;
+        }
+        let source: String = self
+            .program
+            .iter()
+            .map(|(num, text)| format!("{} {}", num, text))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Fresh interpreter for each RUN (classic behavior: RUN clears variables)
+        self.interpreter = Interpreter::new();
+
+        match self.interpreter.run_source(&source) {
+            Ok(()) => {}
+            Err(e) => eprintln!("{e}"),
+        }
+    }
+
+    /// Display stored program lines, optionally filtered by range.
+    fn list_program(&self, start: Option<u32>, end: Option<u32>) {
+        let start = start.unwrap_or(0);
+        let end = end.unwrap_or(u32::MAX);
+        for (num, text) in self.program.range(start..=end) {
+            println!("{} {}", num, text);
+        }
+    }
+
+    /// Delete a line or range of lines from the stored program.
+    fn delete_lines(&mut self, start: u32, end: Option<u32>) {
+        let end = end.unwrap_or(start);
+        let to_remove: Vec<u32> = self
+            .program
+            .range(start..=end)
+            .map(|(&k, _)| k)
+            .collect();
+        for k in to_remove {
+            self.program.remove(&k);
+        }
     }
 }
 
@@ -654,5 +840,110 @@ mod tests {
         assert_eq!(find_comment_start("x = 1: REM comment"), Some(7));
         // REMEMBER should NOT trigger REM detection
         assert_eq!(find_comment_start("REMEMBER = 1"), None);
+    }
+
+    // --- Line number REPL tests ---
+
+    #[test]
+    fn test_parse_line_number_with_statement() {
+        let (num, rest) = parse_line_number("10 PRINT \"HELLO\"").unwrap();
+        assert_eq!(num, 10);
+        assert_eq!(rest, "PRINT \"HELLO\"");
+    }
+
+    #[test]
+    fn test_parse_line_number_bare() {
+        let (num, rest) = parse_line_number("10").unwrap();
+        assert_eq!(num, 10);
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn test_parse_line_number_none() {
+        assert!(parse_line_number("PRINT 42").is_none());
+        assert!(parse_line_number("").is_none());
+        assert!(parse_line_number("  HELLO").is_none());
+    }
+
+    #[test]
+    fn test_parse_line_number_large() {
+        let (num, rest) = parse_line_number("65000 REM end").unwrap();
+        assert_eq!(num, 65000);
+        assert_eq!(rest, "REM end");
+    }
+
+    #[test]
+    fn test_parse_range_empty() {
+        assert_eq!(parse_range(""), (None, None));
+    }
+
+    #[test]
+    fn test_parse_range_single() {
+        assert_eq!(parse_range("10"), (Some(10), Some(10)));
+    }
+
+    #[test]
+    fn test_parse_range_full() {
+        assert_eq!(parse_range("10-50"), (Some(10), Some(50)));
+    }
+
+    #[test]
+    fn test_parse_range_with_spaces() {
+        assert_eq!(parse_range(" 10 - 50 "), (Some(10), Some(50)));
+    }
+
+    #[test]
+    fn test_classify_run() {
+        assert!(matches!(classify_input("RUN"), ReplAction::Run));
+        assert!(matches!(classify_input("run"), ReplAction::Run));
+        assert!(matches!(classify_input("Run"), ReplAction::Run));
+    }
+
+    #[test]
+    fn test_classify_new() {
+        assert!(matches!(classify_input("NEW"), ReplAction::New));
+        assert!(matches!(classify_input("new"), ReplAction::New));
+    }
+
+    #[test]
+    fn test_classify_list() {
+        assert!(matches!(classify_input("LIST"), ReplAction::List(None, None)));
+        assert!(matches!(classify_input("LIST 10"), ReplAction::List(Some(10), Some(10))));
+        assert!(matches!(classify_input("LIST 10-50"), ReplAction::List(Some(10), Some(50))));
+        assert!(matches!(classify_input("list"), ReplAction::List(None, None)));
+    }
+
+    #[test]
+    fn test_classify_delete() {
+        assert!(matches!(classify_input("DELETE 10"), ReplAction::Delete(10, Some(10))));
+        assert!(matches!(classify_input("DELETE 10-50"), ReplAction::Delete(10, Some(50))));
+    }
+
+    #[test]
+    fn test_classify_delete_invalid() {
+        assert!(matches!(classify_input("DELETE"), ReplAction::InvalidCommand(_)));
+        assert!(matches!(classify_input("DELETE abc"), ReplAction::InvalidCommand(_)));
+    }
+
+    #[test]
+    fn test_classify_store_line() {
+        match classify_input("10 PRINT \"HELLO\"") {
+            ReplAction::StoreLine(num, text) => {
+                assert_eq!(num, 10);
+                assert_eq!(text, "PRINT \"HELLO\"");
+            }
+            _ => panic!("expected StoreLine"),
+        }
+    }
+
+    #[test]
+    fn test_classify_delete_line() {
+        assert!(matches!(classify_input("10"), ReplAction::DeleteLine(10)));
+    }
+
+    #[test]
+    fn test_classify_execute() {
+        assert!(matches!(classify_input("PRINT 42"), ReplAction::Execute));
+        assert!(matches!(classify_input("LET X = 5"), ReplAction::Execute));
     }
 }

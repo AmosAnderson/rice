@@ -25,7 +25,7 @@ cargo build --bin rice-lsp     # Build the language server (stdio-based)
 
 Rust edition 2024 (`Cargo.toml`). Uses `thiserror` for error types, `rustyline` for REPL, `crossterm` for terminal manipulation, `pretty_assertions` and `tempfile` for tests, `tower-lsp`/`tokio`/`serde_json` for the LSP server.
 
-REPL and file execution share interpreter code paths; keep behavior parity between them. The REPL features 24-bit ANSI syntax highlighting and automatic multi-line block detection (FOR/NEXT, IF/END IF, SUB/END SUB, etc.).
+REPL and file execution share interpreter code paths; keep behavior parity between them. The REPL features 24-bit ANSI syntax highlighting, automatic multi-line block detection (FOR/NEXT, IF/END IF, SUB/END SUB, etc.), and old-school line number program editing (type numbered lines to build a program, then RUN/LIST/NEW/DELETE).
 
 ## Architecture
 
@@ -45,7 +45,7 @@ All hand-written (no parser generators). Interpreter only -- no compiler backend
 - **`value.rs`** — `Value` enum (Numeric, Str, Record). Only two primitive types: NUMERIC (f64) and STRING. No leading space on positive numbers in PRINT output. 16-char zone width for comma-separated PRINT.
 - **`mat.rs`** — MAT (matrix) operations. Element-wise arithmetic (add, subtract), matrix multiply, scalar multiply, INV (inverse), TRN (transpose), DET (determinant), ZER (zero matrix), CON (ones matrix), IDN (identity matrix).
 - **`builtins.rs`** — Built-in function registry. Math (ABS, INT, FIX, SGN, SQR, SIN, COS, TAN, ATN, EXP, LOG, ROUND, ASIN, ACOS, COT, CSC, SEC, ANGLE, CEIL, TRUNCATE, REMAINDER, MAXNUM, PI), string (LEN, INSTR, LTRIM$, RTRIM$, SPACE$, STRING$, CHR$, ASC, STR$, VAL), system (ENVIRON$, TIMER, DATE$, TIME$, FREEFILE, EOF, LOF, LOC).
-- **`repl.rs`** — Interactive REPL using rustyline. Environment persists across lines.
+- **`repl.rs`** — Interactive REPL using rustyline. Environment persists across immediate-mode lines. Supports old-school line-number program editing: numbered lines are stored in a `BTreeMap<u32, String>`, RUN reconstructs source and executes with a fresh interpreter, LIST/NEW/DELETE manage the stored program. Input classification (`classify_input`) runs before multi-line block accumulation so numbered lines bypass depth tracking.
 - **`error.rs`** — `LexError`, `ParseError`, `RuntimeError` enums via `thiserror`. `RuntimeError::IoError` carries error codes for file/directory operations.
 - **`bin/rice_lsp.rs`** — LSP server binary (stdio transport, `tower-lsp`).
 - **`main.rs`** — CLI: no args → REPL, one arg → execute file.
@@ -117,6 +117,6 @@ The interpreter's `SharedOutput` captures PRINT output for assertion.
 
 ## Status of BASIC Features
 
-**Working**: PRINT, PRINT USING, LET, DIM, CONST, INPUT, LINE INPUT, IF/ELSEIF/ELSE/END IF, FOR/NEXT, WHILE/END WHILE, DO/LOOP, SELECT CASE, GOTO, EXIT FOR/DO/SUB/FUNCTION, SUB/END SUB, FUNCTION/END FUNCTION, CALL, DECLARE, DATA/READ/RESTORE, SWAP, OPTION BASE (default 1), REDIM, ERASE, SHARED, STATIC, TYPE/END TYPE (user-defined types with dot notation, arrays of TYPE), RANDOMIZE/RND, WRITE (console), SLEEP, CLEAR, WHEN EXCEPTION IN/USE/END WHEN (with RETRY, CONTINUE, EXTYPE, EXTEXT$), string slicing with colon syntax (A$(3:7)), & string concatenation, MAT operations (MAT PRINT, MAT READ, MAT INPUT, MAT +/-/*, scalar multiply, INV, TRN, DET, ZER, CON, IDN), File I/O (ANSI OPEN with NAME/ACCESS/ORGANIZATION, CLOSE, PRINT#, INPUT#, LINE INPUT#, SET POINTER, ASK POINTER), file functions (FREEFILE, EOF, LOF, LOC), file system operations (NAME...AS, KILL, MKDIR, RMDIR, CHDIR), console features (CLS, LOCATE, COLOR, BEEP, WIDTH, VIEW PRINT, CSRLIN, POS, INKEY$, INPUT$, SCREEN()), SHELL, ENVIRON$, BYVAL parameter semantics, logical AND/OR/NOT/XOR.
+**Working**: PRINT, PRINT USING, LET, DIM, CONST, INPUT, LINE INPUT, IF/ELSEIF/ELSE/END IF, FOR/NEXT, WHILE/END WHILE, DO/LOOP, SELECT CASE, GOTO, EXIT FOR/DO/SUB/FUNCTION, SUB/END SUB, FUNCTION/END FUNCTION, CALL, DECLARE, DATA/READ/RESTORE, SWAP, OPTION BASE (default 1), REDIM, ERASE, SHARED, STATIC, TYPE/END TYPE (user-defined types with dot notation, arrays of TYPE), RANDOMIZE/RND, WRITE (console), SLEEP, CLEAR, WHEN EXCEPTION IN/USE/END WHEN (with RETRY, CONTINUE, EXTYPE, EXTEXT$), string slicing with colon syntax (A$(3:7)), & string concatenation, MAT operations (MAT PRINT, MAT READ, MAT INPUT, MAT +/-/*, scalar multiply, INV, TRN, DET, ZER, CON, IDN), File I/O (ANSI OPEN with NAME/ACCESS/ORGANIZATION, CLOSE, PRINT#, INPUT#, LINE INPUT#, SET POINTER, ASK POINTER), file functions (FREEFILE, EOF, LOF, LOC), file system operations (NAME...AS, KILL, MKDIR, RMDIR, CHDIR), console features (CLS, LOCATE, COLOR, BEEP, WIDTH, VIEW PRINT, CSRLIN, POS, INKEY$, INPUT$, SCREEN()), SHELL, ENVIRON$, BYVAL parameter semantics, logical AND/OR/NOT/XOR, REPL line-number mode (RUN, LIST, NEW, DELETE).
 
 **Not implemented**: proper array storage (currently uses flattened key hack), LBOUND/UBOUND (stubs only).
