@@ -142,13 +142,12 @@ From highest to lowest:
 | 2          | Unary `-`, `+`                   | Prefix        |
 | 3          | `*`, `/`                         | Left          |
 | 4          | `MOD`                            | Left          |
-| 5          | `+`, `-`                         | Left          |
-| 6          | `&`                              | Left          |
-| 7          | `=`, `<>`, `<`, `>`, `<=`, `>=`  | Left          |
-| 8          | `NOT`                            | Prefix        |
-| 9          | `AND`                            | Left          |
-| 10         | `OR`                             | Left          |
-| 11 (lowest)| `XOR`                            | Left          |
+| 5          | `+`, `-`, `&`                    | Left          |
+| 6          | `=`, `<>`, `<`, `>`, `<=`, `>=`  | Left          |
+| 7          | `NOT`                            | Prefix        |
+| 8          | `AND`                            | Left          |
+| 9          | `OR`                             | Left          |
+| 10 (lowest)| `XOR`                            | Left          |
 
 Use parentheses to override precedence:
 
@@ -363,19 +362,31 @@ LINE INPUT "Enter text: "; text
 
 ### Math Functions
 
-| Function  | Description                          | Example              |
-|-----------|--------------------------------------|----------------------|
-| `ABS(n)`  | Absolute value                       | `ABS(-5)` = 5       |
-| `INT(n)`  | Floor (greatest integer <= n)        | `INT(3.7)` = 3      |
-| `FIX(n)`  | Truncate toward zero                 | `FIX(-3.7)` = -3    |
-| `SGN(n)`  | Sign: -1, 0, or 1                   | `SGN(-5)` = -1      |
-| `SQR(n)`  | Square root                          | `SQR(9)` = 3        |
-| `EXP(n)`  | e raised to the power n             | `EXP(1)` = 2.718... |
-| `LOG(n)`  | Natural logarithm                    | `LOG(2.718)` = ~1   |
-| `SIN(n)`  | Sine (radians)                       | `SIN(0)` = 0        |
-| `COS(n)`  | Cosine (radians)                     | `COS(0)` = 1        |
-| `TAN(n)`  | Tangent (radians)                    | `TAN(0)` = 0        |
-| `ATN(n)`  | Arctangent (returns radians)         | `ATN(1)` = 0.785... |
+| Function            | Description                          | Example              |
+|---------------------|--------------------------------------|----------------------|
+| `ABS(n)`            | Absolute value                       | `ABS(-5)` = 5       |
+| `INT(n)`            | Floor (greatest integer <= n)        | `INT(3.7)` = 3      |
+| `FIX(n)`            | Truncate toward zero                 | `FIX(-3.7)` = -3    |
+| `SGN(n)`            | Sign: -1, 0, or 1                   | `SGN(-5)` = -1      |
+| `SQR(n)`            | Square root                          | `SQR(9)` = 3        |
+| `EXP(n)`            | e raised to the power n             | `EXP(1)` = 2.718... |
+| `LOG(n)`            | Natural logarithm                    | `LOG(2.718)` = ~1   |
+| `SIN(n)`            | Sine (radians)                       | `SIN(0)` = 0        |
+| `COS(n)`            | Cosine (radians)                     | `COS(0)` = 1        |
+| `TAN(n)`            | Tangent (radians)                    | `TAN(0)` = 0        |
+| `ATN(n)`            | Arctangent (returns radians)         | `ATN(1)` = 0.785... |
+| `ASIN(n)`           | Arc sine (returns radians)           | `ASIN(1)` = 1.570...|
+| `ACOS(n)`           | Arc cosine (returns radians)         | `ACOS(1)` = 0       |
+| `COT(n)`            | Cotangent                            | `COT(1)` = 0.642... |
+| `CSC(n)`            | Cosecant                             | `CSC(1)` = 1.188... |
+| `SEC(n)`            | Secant                               | `SEC(0)` = 1        |
+| `ANGLE(x, y)`       | Two-argument arctangent              | `ANGLE(1, 1)` = 0.785... |
+| `ROUND(n[, places])` | Round to nearest                    | `ROUND(3.7)` = 4    |
+| `CEIL(n)`           | Ceiling (smallest integer >= n)      | `CEIL(3.2)` = 4     |
+| `TRUNCATE(n, places)` | Truncate to decimal places         | `TRUNCATE(3.789, 2)` = 3.78 |
+| `REMAINDER(a, b)`   | IEEE remainder                       | `REMAINDER(7, 3)` = 1 |
+| `MAXNUM`            | Largest representable number         | 1.7976...e+308      |
+| `PI`                | Value of pi                          | 3.14159...           |
 
 ### Random Numbers
 
@@ -400,8 +411,15 @@ x = RND            ' Next random number (0 to 1, exclusive)
 | `ASC(s)`               | ASCII code of first character            | `ASC("A")` = 65              |
 | `STR$(n)`              | Number to string                         | `STR$(42)` = "42"            |
 | `VAL(s)`               | Parse number from string                 | `VAL("42")` = 42             |
+| `LEFT$(s, n)`          | Leftmost n characters                    | `LEFT$("Hello", 3)` = "Hel" |
+| `RIGHT$(s, n)`         | Rightmost n characters                   | `RIGHT$("Hello", 3)` = "llo"|
+| `MID$(s, start[, len])`| Substring from position                  | `MID$("Hello", 2, 3)` = "ell"|
+| `UCASE$(s)`            | Convert to uppercase                     | `UCASE$("hi")` = "HI"       |
+| `LCASE$(s)`            | Convert to lowercase                     | `LCASE$("HI")` = "hi"       |
+| `HEX$(n)`              | Hexadecimal representation               | `HEX$(255)` = "FF"          |
+| `OCT$(n)`              | Octal representation                     | `OCT$(8)` = "10"            |
 
-String slicing with colon notation replaces LEFT$, MID$, and RIGHT$. See [String Slicing](string-slicing.md).
+ANSI Full BASIC also supports colon slicing as an alternative to LEFT$/MID$/RIGHT$. See [String Slicing](string-slicing.md).
 
 ### System Functions
 
@@ -512,6 +530,7 @@ SLEEP      ' Sleep indefinitely (until interrupted)
 ```basic
 CLS                           ' Clear screen
 LOCATE row, col               ' Move cursor (1-based)
+COLOR fg[, bg]                ' Set text colors (0-255)
 BEEP                          ' Sound terminal bell
 WIDTH columns                 ' Set terminal width
 VIEW PRINT top TO bottom      ' Set scrolling region

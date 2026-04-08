@@ -51,7 +51,7 @@
 
 ### Adding a new error
 1. Add variant to `LexError`, `ParseError`, or `RuntimeError` in `src/error.rs` with `#[error(...)]` attribute.
-2. For `RuntimeError`: add error code mapping in `basic_error_code()` if applicable.
+2. For `RuntimeError`: add error code mapping in `io_error_to_basic_code()` if applicable.
 
 ## Project Conventions
 - BASIC truth values are numeric: true = `1`, false = `0` (ANSI BASIC convention); do not change casually.

@@ -36,18 +36,18 @@ All hand-written (no parser generators). Interpreter only -- no compiler backend
 ### Module Map
 
 - **`token.rs`** — Token enum, Span. All identifiers stored UPPERCASE. No type suffixes -- ANSI Full BASIC uses only NUMERIC and STRING types.
-- **`lexer.rs`** — Hand-written tokenizer. Case-insensitive. Detects line numbers at line start. Recognizes compound keywords (`END IF`, `END SUB`, `END WHILE`, `LINE INPUT`).
+- **`lexer.rs`** — Hand-written tokenizer. Case-insensitive. Detects line numbers at line start. Recognizes compound keywords (`END IF`, `END SUB`, `END FUNCTION`, `END SELECT`, `END TYPE`, `END WHILE`, `END WHEN`, `LINE INPUT`, `SELECT CASE`, `OPTION BASE`).
 - **`ast.rs`** — `Stmt` and `Expr` enums. `LabeledStmt` wraps statements with optional line labels. Key types: `PrintStmt`, `IfStmt`, `ForStmt`, `DoLoopStmt`, `SelectCaseStmt`, `SubDef`, `FunctionDef`, `WhenExceptionStmt`.
-- **`parser.rs`** — Recursive descent. Expression parsing uses precedence climbing (XOR → OR → AND → NOT → comparison → &(concat) → +/- → MOD → */÷ → unary → ^). `at_stmt_end()` also treats `ELSE` as a terminator for single-line IF support.
+- **`parser.rs`** — Recursive descent. Expression parsing uses precedence climbing (XOR → OR → AND → NOT → comparison → +/-/&(additive+concat) → MOD → */÷ → unary → ^). `at_stmt_end()` also treats `ELSE` as a terminator for single-line IF support.
 - **`interpreter.rs`** — Tree-walking evaluator. Uses `ControlFlow` enum (Normal, ExitFor, ExitDo, ExitSub, ExitFunction, Goto, End, Retry, Continue) for control flow. `SharedOutput` wrapper enables testable output capture. `FileHandle` struct manages open files with `BufReader`/`BufWriter` for text and binary I/O. `ExceptionInfo` struct tracks EXTYPE and EXTEXT$ for WHEN EXCEPTION error handling.
 - **`format_using.rs`** — PRINT USING format engine. Supports numeric specifiers (`#`, `.`, `+`, `-`, `$$`, `**`, `**$`, `,`, `^^^^`) and string specifiers (`!`, `\ \`, `&`). Escape with `_`. Overflow prefix `%`.
 - **`environment.rs`** — `Rc<RefCell<Environment>>` scope chain. Variable key = name (no suffixes). Label map stored here. Supports `shared_vars` set for SHARED keyword (reads/writes go to root scope). Constants are checked through the parent chain to prevent reassignment. Default OPTION BASE is 1.
 - **`value.rs`** — `Value` enum (Numeric, Str, Record). Only two primitive types: NUMERIC (f64) and STRING. No leading space on positive numbers in PRINT output. 16-char zone width for comma-separated PRINT.
 - **`mat.rs`** — MAT (matrix) operations. Element-wise arithmetic (add, subtract), matrix multiply, scalar multiply, INV (inverse), TRN (transpose), DET (determinant), ZER (zero matrix), CON (ones matrix), IDN (identity matrix).
-- **`builtins.rs`** — Built-in function registry. Math (ABS, INT, FIX, SGN, SQR, SIN, COS, TAN, ATN, EXP, LOG, ROUND, ASIN, ACOS, COT, CSC, SEC, ANGLE, CEIL, TRUNCATE, REMAINDER, MAXNUM, PI), string (LEN, INSTR, LTRIM$, RTRIM$, SPACE$, STRING$, CHR$, ASC, STR$, VAL), system (ENVIRON$, TIMER, DATE$, TIME$, FREEFILE, EOF, LOF, LOC).
+- **`builtins.rs`** — Built-in function registry. Math (ABS, INT, FIX, SGN, SQR, SIN, COS, TAN, ATN, EXP, LOG, ROUND, ASIN, ACOS, COT, CSC, SEC, ANGLE, CEIL, TRUNCATE, REMAINDER, MAXNUM, PI), string (LEN, INSTR, LTRIM$, RTRIM$, SPACE$, STRING$, CHR$, ASC, STR$, VAL, LEFT$, RIGHT$, MID$, UCASE$, LCASE$, HEX$, OCT$), system (ENVIRON$, TIMER, DATE$, TIME$). Note: FREEFILE, EOF, LOF, LOC are implemented directly in `interpreter.rs` (not in the builtin registry).
 - **`repl.rs`** — Interactive REPL using rustyline. Environment persists across immediate-mode lines. Supports old-school line-number program editing: numbered lines are stored in a `BTreeMap<u32, String>`, RUN reconstructs source and executes with a fresh interpreter, LIST/NEW/DELETE manage the stored program. Input classification (`classify_input`) runs before multi-line block accumulation so numbered lines bypass depth tracking.
 - **`error.rs`** — `LexError`, `ParseError`, `RuntimeError` enums via `thiserror`. `RuntimeError::IoError` carries error codes for file/directory operations.
-- **`bin/rice_lsp.rs`** — LSP server binary (stdio transport, `tower-lsp`).
+- **`bin/rice_lsp.rs`** — LSP server binary (stdio transport, `tower-lsp`). Provides diagnostics, completions, hover documentation, and go-to-definition.
 - **`main.rs`** — CLI: no args → REPL, one arg → execute file.
 - **`lib.rs`** — Module declarations. Also provides shared utility functions: `poll_inkey()` for non-blocking key reading via crossterm, `update_screen_buffer()` for tracking printed characters in an 80x25 buffer (used for `SCREEN()` support).
 
@@ -59,6 +59,7 @@ All hand-written (no parser generators). Interpreter only -- no compiler backend
 - **Auto-initialization**: undefined variables auto-initialize to 0 or "" (BASIC behavior)
 - **`name(args)` ambiguity**: resolved at runtime -- check builtin registry, then user functions, then arrays
 - **GOTO**: label map built during prescan; ControlFlow::Goto bubbles up to exec_block which resolves it
+- **No GOSUB/RETURN**: not supported; use SUB/FUNCTION instead
 - **Truth values**: true = `1`, false = `0` (ANSI BASIC convention); do not change
 - **Logical operators**: AND, OR, NOT, XOR are logical (not bitwise). No IMP or EQV operators. No `\` integer division.
 - **MOD**: works on real numbers (not integer-only)
@@ -90,8 +91,6 @@ To add a new integration test: create a `.bas` file in `tests/programs/`, then a
 - `run_bas("PRINT 42\n")` — parse/execute inline BASIC source
 - `run_bas_with_tmpdir(src)` — execute with a temp directory; use `{DIR}` placeholder in source for paths
 - `run_bas_may_fail(src)` — returns both output and `Result` for testing error conditions
-- `run_chain_test(main_source, files)` — multi-file CHAIN test helper
-- `run_chain_test_may_fail(main_source, files)` — CHAIN test with error handling
 
 The interpreter's `SharedOutput` captures PRINT output for assertion.
 
@@ -114,9 +113,10 @@ The interpreter's `SharedOutput` captures PRINT output for assertion.
 
 **Adding a new error:**
 1. Add variant to `LexError`, `ParseError`, or `RuntimeError` in `error.rs` with `#[error(...)]` attribute
+2. For `RuntimeError`: add error code mapping in `io_error_to_basic_code()` if applicable
 
 ## Status of BASIC Features
 
-**Working**: PRINT, PRINT USING, LET, DIM, CONST, INPUT, LINE INPUT, IF/ELSEIF/ELSE/END IF, FOR/NEXT, WHILE/END WHILE, DO/LOOP, SELECT CASE, GOTO, EXIT FOR/DO/SUB/FUNCTION, SUB/END SUB, FUNCTION/END FUNCTION, CALL, DECLARE, DATA/READ/RESTORE, SWAP, OPTION BASE (default 1), REDIM, ERASE, SHARED, STATIC, TYPE/END TYPE (user-defined types with dot notation, arrays of TYPE), RANDOMIZE/RND, WRITE (console), SLEEP, CLEAR, WHEN EXCEPTION IN/USE/END WHEN (with RETRY, CONTINUE, EXTYPE, EXTEXT$), string slicing with colon syntax (A$(3:7)), & string concatenation, MAT operations (MAT PRINT, MAT READ, MAT INPUT, MAT +/-/*, scalar multiply, INV, TRN, DET, ZER, CON, IDN), File I/O (ANSI OPEN with NAME/ACCESS/ORGANIZATION, CLOSE, PRINT#, INPUT#, LINE INPUT#, SET POINTER, ASK POINTER), file functions (FREEFILE, EOF, LOF, LOC), file system operations (NAME...AS, KILL, MKDIR, RMDIR, CHDIR), console features (CLS, LOCATE, COLOR, BEEP, WIDTH, VIEW PRINT, CSRLIN, POS, INKEY$, INPUT$, SCREEN()), SHELL, ENVIRON$, BYVAL parameter semantics, logical AND/OR/NOT/XOR, REPL line-number mode (RUN, LIST, NEW, DELETE).
+**Working**: PRINT, PRINT USING, LET, DIM, CONST, INPUT, LINE INPUT, IF/ELSEIF/ELSE/END IF, FOR/NEXT, WHILE/END WHILE, DO/LOOP, SELECT CASE, GOTO, EXIT FOR/DO/SUB/FUNCTION, SUB/END SUB, FUNCTION/END FUNCTION, CALL, DECLARE, DATA/READ/RESTORE, SWAP, OPTION BASE (default 1), REDIM, ERASE, SHARED, STATIC, TYPE/END TYPE (user-defined types with dot notation, arrays of TYPE), RANDOMIZE/RND, WRITE (console), SLEEP, CLEAR, WHEN EXCEPTION IN/USE/END WHEN (with RETRY, CONTINUE, EXTYPE, EXTEXT$), string slicing with colon syntax (A$(3:7)), & string concatenation, MAT operations (MAT PRINT, MAT READ, MAT INPUT, MAT +/-/*, scalar multiply, INV, TRN, DET, ZER, CON, IDN), File I/O (ANSI OPEN with NAME/ACCESS/ORGANIZATION, CLOSE, PRINT#, INPUT#, LINE INPUT#, SET POINTER, ASK POINTER), file functions (FREEFILE, EOF, LOF, LOC), file system operations (NAME...AS, KILL, MKDIR, RMDIR, CHDIR), console features (CLS, LOCATE, COLOR, BEEP, WIDTH, VIEW PRINT, CSRLIN, POS, INKEY$, INPUT$, SCREEN()), SHELL, ENVIRON$, BYVAL parameter semantics, logical AND/OR/NOT/XOR, STOP, SYSTEM, END, QBasic string functions (LEFT$, RIGHT$, MID$, UCASE$, LCASE$, HEX$, OCT$), REPL line-number mode (RUN, LIST, NEW, DELETE).
 
 **Not implemented**: proper array storage (currently uses flattened key hack), LBOUND/UBOUND (stubs only).

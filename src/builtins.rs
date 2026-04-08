@@ -59,6 +59,13 @@ impl BuiltinRegistry {
         reg.register("ASC", builtin_asc, 1);
         reg.register("STR$", builtin_str, 1);
         reg.register("VAL", builtin_val, 1);
+        reg.register("LEFT$", builtin_left, 2);
+        reg.register("RIGHT$", builtin_right, 2);
+        reg.register("MID$", builtin_mid, 0); // 2 or 3 args
+        reg.register("UCASE$", builtin_ucase, 1);
+        reg.register("LCASE$", builtin_lcase, 1);
+        reg.register("HEX$", builtin_hex, 1);
+        reg.register("OCT$", builtin_oct, 1);
 
         // Misc
         reg.register("LBOUND", builtin_stub, 0);
@@ -358,6 +365,98 @@ fn builtin_val(args: &[Value]) -> Result<Value, RuntimeError> {
         Ok(Value::Numeric(0.0))
     } else {
         Ok(Value::Numeric(num_str.parse::<f64>().unwrap_or(0.0)))
+    }
+}
+
+fn builtin_left(args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = args[0].to_string_val()?;
+    let n = args[1].to_i64()?;
+    if n < 0 {
+        return Err(RuntimeError::IllegalFunctionCall {
+            msg: "LEFT$ argument must be non-negative".into(),
+        });
+    }
+    let result: String = s.chars().take(n as usize).collect();
+    Ok(Value::Str(result))
+}
+
+fn builtin_right(args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = args[0].to_string_val()?;
+    let n = args[1].to_i64()?;
+    if n < 0 {
+        return Err(RuntimeError::IllegalFunctionCall {
+            msg: "RIGHT$ argument must be non-negative".into(),
+        });
+    }
+    let char_count = s.chars().count();
+    let skip = char_count.saturating_sub(n as usize);
+    let result: String = s.chars().skip(skip).collect();
+    Ok(Value::Str(result))
+}
+
+fn builtin_mid(args: &[Value]) -> Result<Value, RuntimeError> {
+    match args.len() {
+        2 => {
+            let s = args[0].to_string_val()?;
+            let start = args[1].to_i64()?;
+            if start < 1 {
+                return Err(RuntimeError::IllegalFunctionCall {
+                    msg: "MID$ start must be >= 1".into(),
+                });
+            }
+            let result: String = s.chars().skip((start - 1) as usize).collect();
+            Ok(Value::Str(result))
+        }
+        3 => {
+            let s = args[0].to_string_val()?;
+            let start = args[1].to_i64()?;
+            let length = args[2].to_i64()?;
+            if start < 1 {
+                return Err(RuntimeError::IllegalFunctionCall {
+                    msg: "MID$ start must be >= 1".into(),
+                });
+            }
+            if length < 0 {
+                return Err(RuntimeError::IllegalFunctionCall {
+                    msg: "MID$ length must be non-negative".into(),
+                });
+            }
+            let result: String = s.chars().skip((start - 1) as usize).take(length as usize).collect();
+            Ok(Value::Str(result))
+        }
+        _ => Err(RuntimeError::IllegalFunctionCall {
+            msg: format!("MID$ requires 2 or 3 arguments, got {}", args.len()),
+        }),
+    }
+}
+
+fn builtin_ucase(args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = args[0].to_string_val()?;
+    Ok(Value::Str(s.to_uppercase()))
+}
+
+fn builtin_lcase(args: &[Value]) -> Result<Value, RuntimeError> {
+    let s = args[0].to_string_val()?;
+    Ok(Value::Str(s.to_lowercase()))
+}
+
+fn builtin_hex(args: &[Value]) -> Result<Value, RuntimeError> {
+    let n = args[0].to_f64()?;
+    let i = n as i64;
+    if i < 0 {
+        Ok(Value::Str(format!("{:X}", i as u64)))
+    } else {
+        Ok(Value::Str(format!("{:X}", i)))
+    }
+}
+
+fn builtin_oct(args: &[Value]) -> Result<Value, RuntimeError> {
+    let n = args[0].to_f64()?;
+    let i = n as i64;
+    if i < 0 {
+        Ok(Value::Str(format!("{:o}", i as u64)))
+    } else {
+        Ok(Value::Str(format!("{:o}", i)))
     }
 }
 

@@ -1,6 +1,6 @@
 # String Slicing
 
-RICE BASIC uses ANSI X3.113-1991 string slicing with colon notation to extract and replace substrings. This replaces the LEFT$, MID$, and RIGHT$ functions found in other BASIC dialects.
+RICE BASIC supports ANSI X3.113-1991 string slicing with colon notation to extract and replace substrings. QBasic-compatible LEFT$, MID$, and RIGHT$ functions are also available as an alternative.
 
 ## Colon Slicing Syntax
 

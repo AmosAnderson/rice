@@ -119,6 +119,59 @@ fn test_string_functions() {
 }
 
 #[test]
+fn test_qbasic_string_functions() {
+    let output = run_file("tests/programs/qbasic_strings.bas");
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "Hello");
+    assert_eq!(lines[1], "World");
+    assert_eq!(lines[2], "World");
+    assert_eq!(lines[3], "Wor");
+    assert_eq!(lines[4], "HELLO");
+    assert_eq!(lines[5], "hello");
+    assert_eq!(lines[6], "FF");
+    assert_eq!(lines[7], "10");
+    assert_eq!(lines[8], "10");
+    assert_eq!(lines[9], "377");
+    assert_eq!(lines[10], "Hi");
+    assert_eq!(lines[11], "Hi");
+    assert_eq!(lines[12], "");
+    assert_eq!(lines[13], "0");
+    assert_eq!(lines[14], "");
+    assert_eq!(lines[15], "0");
+    assert_eq!(lines[16], "0");
+}
+
+#[test]
+fn test_left_negative_errors() {
+    let (_output, result) = run_bas_may_fail("PRINT LEFT$(\"test\", -1)\n");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_mid_zero_start_errors() {
+    let (_output, result) = run_bas_may_fail("PRINT MID$(\"test\", 0)\n");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_right_negative_errors() {
+    let (_output, result) = run_bas_may_fail("PRINT RIGHT$(\"test\", -1)\n");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_mid_negative_length_errors() {
+    let (_output, result) = run_bas_may_fail("PRINT MID$(\"test\", 1, -1)\n");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_mid_wrong_arg_count_errors() {
+    let (_output, result) = run_bas_may_fail("PRINT MID$(\"test\")\n");
+    assert!(result.is_err());
+}
+
+#[test]
 fn test_data_read() {
     let output = run_file("tests/programs/data_read.bas");
     assert!(output.contains("10"));

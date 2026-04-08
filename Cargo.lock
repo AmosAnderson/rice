@@ -673,7 +673,7 @@ dependencies = [
 
 [[package]]
 name = "rice"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "crossterm",
  "pretty_assertions",

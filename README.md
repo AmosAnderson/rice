@@ -17,7 +17,7 @@ cargo run
 ```
 
 ```
-RICE BASIC v0.10.0
+RICE BASIC v0.11.0
 Type SYSTEM or press Ctrl+D to exit.
 Commands: RUN, LIST, NEW, DELETE
 
@@ -103,12 +103,22 @@ There are no type suffixes for numeric subtypes. All numeric values are double-p
 
 ### Strings
 
-ANSI Full BASIC uses colon slicing instead of LEFT$/RIGHT$/MID$:
+ANSI Full BASIC colon slicing for substrings:
 
 ```basic
 LET A$ = "Hello, World!"
 PRINT A$(1:5)          ! "Hello"
 PRINT A$(8:12)         ! "World"
+```
+
+QBasic-compatible string functions are also available:
+
+```basic
+PRINT LEFT$("Hello, World!", 5)    ! "Hello"
+PRINT RIGHT$("Hello, World!", 6)   ! "orld!"
+PRINT MID$("Hello, World!", 8, 5)  ! "World"
+PRINT UCASE$("hello")              ! "HELLO"
+PRINT LCASE$("HELLO")              ! "hello"
 ```
 
 String concatenation uses `&`:
@@ -121,7 +131,7 @@ PRINT A$               ! Hello, World!
 ### Built-in Functions
 
 - **Math**: ABS, INT, FIX, SGN, SQR, SIN, COS, TAN, ATN, EXP, LOG, ROUND, ASIN, ACOS, COT, CSC, SEC, ANGLE, CEIL, TRUNCATE, REMAINDER, MAXNUM, PI, RND
-- **String**: LEN, INSTR, LTRIM$, RTRIM$, SPACE$, STRING$, CHR$, ASC, STR$, VAL
+- **String**: LEN, INSTR, LEFT$, RIGHT$, MID$, UCASE$, LCASE$, LTRIM$, RTRIM$, SPACE$, STRING$, CHR$, ASC, STR$, VAL, HEX$, OCT$
 - **File**: FREEFILE, EOF, LOF, LOC
 - **Console**: CSRLIN, POS, INKEY$, INPUT$, SCREEN()
 - **System**: ENVIRON$, TIMER, DATE$, TIME$
