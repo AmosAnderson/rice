@@ -16,13 +16,10 @@ pub fn mat_add(a: &[Vec<f64>], b: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, RuntimeE
             });
         }
     }
-    let mut result = vec![vec![0.0; cols]; rows];
-    for i in 0..rows {
-        for j in 0..cols {
-            result[i][j] = a[i][j] + b[i][j];
-        }
-    }
-    Ok(result)
+    Ok(a.iter()
+        .zip(b)
+        .map(|(a_row, b_row)| a_row.iter().zip(b_row).map(|(a, b)| a + b).collect())
+        .collect())
 }
 
 /// Element-wise subtraction of two matrices. Both must have the same dimensions.
@@ -41,13 +38,10 @@ pub fn mat_sub(a: &[Vec<f64>], b: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, RuntimeE
             });
         }
     }
-    let mut result = vec![vec![0.0; cols]; rows];
-    for i in 0..rows {
-        for j in 0..cols {
-            result[i][j] = a[i][j] - b[i][j];
-        }
-    }
-    Ok(result)
+    Ok(a.iter()
+        .zip(b)
+        .map(|(a_row, b_row)| a_row.iter().zip(b_row).map(|(a, b)| a - b).collect())
+        .collect())
 }
 
 /// Matrix multiplication. A is m×n, B is n×p, result is m×p.
@@ -66,13 +60,9 @@ pub fn mat_mul(a: &[Vec<f64>], b: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, RuntimeE
     }
     let p = b[0].len();
     let mut result = vec![vec![0.0; p]; m];
-    for i in 0..m {
-        for j in 0..p {
-            let mut sum = 0.0;
-            for k in 0..n {
-                sum += a[i][k] * b[k][j];
-            }
-            result[i][j] = sum;
+    for (i, a_row) in a.iter().enumerate() {
+        for (j, cell) in result[i].iter_mut().enumerate() {
+            *cell = (0..n).map(|k| a_row[k] * b[k][j]).sum();
         }
     }
     Ok(result)
@@ -104,9 +94,9 @@ pub fn mat_inv(a: &[Vec<f64>]) -> Result<(Vec<Vec<f64>>, f64), RuntimeError> {
 
     // Augmented matrix [A | I]
     let mut aug: Vec<Vec<f64>> = Vec::with_capacity(n);
-    for i in 0..n {
+    for (i, a_row) in a.iter().enumerate() {
         let mut row = Vec::with_capacity(2 * n);
-        row.extend_from_slice(&a[i]);
+        row.extend_from_slice(a_row);
         for j in 0..n {
             row.push(if i == j { 1.0 } else { 0.0 });
         }
@@ -119,8 +109,8 @@ pub fn mat_inv(a: &[Vec<f64>]) -> Result<(Vec<Vec<f64>>, f64), RuntimeError> {
         // Partial pivoting: find the row with the largest absolute value in this column
         let mut max_row = col;
         let mut max_val = aug[col][col].abs();
-        for row in (col + 1)..n {
-            let val = aug[row][col].abs();
+        for (row, aug_row) in aug.iter().enumerate().take(n).skip(col + 1) {
+            let val = aug_row[col].abs();
             if val > max_val {
                 max_val = val;
                 max_row = row;
@@ -142,27 +132,25 @@ pub fn mat_inv(a: &[Vec<f64>]) -> Result<(Vec<Vec<f64>>, f64), RuntimeError> {
         det *= pivot;
 
         // Scale pivot row
-        for j in 0..(2 * n) {
-            aug[col][j] /= pivot;
+        for value in aug[col].iter_mut().take(2 * n) {
+            *value /= pivot;
         }
 
         // Eliminate column in all other rows
-        for row in 0..n {
+        let pivot_row = aug[col].clone();
+        for (row, aug_row) in aug.iter_mut().enumerate().take(n) {
             if row == col {
                 continue;
             }
-            let factor = aug[row][col];
-            for j in 0..(2 * n) {
-                aug[row][j] -= factor * aug[col][j];
+            let factor = aug_row[col];
+            for (value, pivot_value) in aug_row.iter_mut().zip(pivot_row.iter()).take(2 * n) {
+                *value -= factor * pivot_value;
             }
         }
     }
 
     // Extract inverse from the right half of the augmented matrix
-    let inverse: Vec<Vec<f64>> = aug
-        .into_iter()
-        .map(|row| row[n..].to_vec())
-        .collect();
+    let inverse: Vec<Vec<f64>> = aug.into_iter().map(|row| row[n..].to_vec()).collect();
 
     Ok((inverse, det))
 }
@@ -175,9 +163,9 @@ pub fn mat_trn(a: &[Vec<f64>]) -> Vec<Vec<f64>> {
     let rows = a.len();
     let cols = a[0].len();
     let mut result = vec![vec![0.0; rows]; cols];
-    for i in 0..rows {
-        for j in 0..cols {
-            result[j][i] = a[i][j];
+    for (i, row) in a.iter().enumerate() {
+        for (j, value) in row.iter().enumerate() {
+            result[j][i] = *value;
         }
     }
     result
@@ -196,8 +184,8 @@ pub fn mat_con(rows: usize, cols: usize) -> Vec<Vec<f64>> {
 /// Identity matrix (must be square).
 pub fn mat_idn(n: usize) -> Vec<Vec<f64>> {
     let mut result = vec![vec![0.0; n]; n];
-    for i in 0..n {
-        result[i][i] = 1.0;
+    for (i, row) in result.iter_mut().enumerate() {
+        row[i] = 1.0;
     }
     result
 }
@@ -244,15 +232,15 @@ mod tests {
         assert!((det - (-2.0)).abs() < 1e-10);
         // A * A^-1 should be identity
         let product = mat_mul(&a, &inv).unwrap();
-        for i in 0..2 {
-            for j in 0..2 {
+        for (i, row) in product.iter().enumerate().take(2) {
+            for (j, value) in row.iter().enumerate().take(2) {
                 let expected = if i == j { 1.0 } else { 0.0 };
                 assert!(
-                    (product[i][j] - expected).abs() < 1e-10,
+                    (*value - expected).abs() < 1e-10,
                     "product[{}][{}] = {}, expected {}",
                     i,
                     j,
-                    product[i][j],
+                    value,
                     expected
                 );
             }

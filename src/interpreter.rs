@@ -596,7 +596,7 @@ impl Interpreter {
             Stmt::Color { fg, bg } => {
                 let fg_val = if let Some(expr) = fg {
                     let v = self.eval_expr(expr)?.to_i64()?;
-                    if v < 0 || v > 15 {
+                    if !(0..=15).contains(&v) {
                         return Err(RuntimeError::IllegalFunctionCall {
                             msg: format!("COLOR foreground {} out of range", v),
                         });
@@ -607,7 +607,7 @@ impl Interpreter {
                 };
                 let bg_val = if let Some(expr) = bg {
                     let v = self.eval_expr(expr)?.to_i64()?;
-                    if v < 0 || v > 15 {
+                    if !(0..=15).contains(&v) {
                         return Err(RuntimeError::IllegalFunctionCall {
                             msg: format!("COLOR background {} out of range", v),
                         });
@@ -1610,15 +1610,12 @@ impl Interpreter {
 
         self.byref_writeback(&func.params, arg_exprs, &child_env);
 
-        match result? {
-            _ => {
-                // Return value is stored in the function name variable
-                Ok(child_env
-                    .borrow()
-                    .get(&func.name)
-                    .unwrap_or(Value::Numeric(0.0)))
-            }
-        }
+        result?;
+        // Return value is stored in the function name variable
+        Ok(child_env
+            .borrow()
+            .get(&func.name)
+            .unwrap_or(Value::Numeric(0.0)))
     }
 
     fn eval_binary_op(
@@ -1899,14 +1896,14 @@ impl Interpreter {
         for key in env.var_keys() {
             if let Some(suffix) = key.strip_prefix(&prefix) {
                 let parts: Vec<&str> = suffix.split('_').collect();
-                if parts.len() == 2 {
-                    if let (Ok(r), Ok(c)) = (parts[0].parse::<i64>(), parts[1].parse::<i64>()) {
-                        let val = env.get(&key).unwrap_or(Value::Numeric(0.0));
-                        let f = val.to_f64().unwrap_or(0.0);
-                        cells.push((r, c, f));
-                        if r > max_row { max_row = r; }
-                        if c > max_col { max_col = c; }
-                    }
+                if parts.len() == 2
+                    && let (Ok(r), Ok(c)) = (parts[0].parse::<i64>(), parts[1].parse::<i64>())
+                {
+                    let val = env.get(&key).unwrap_or(Value::Numeric(0.0));
+                    let f = val.to_f64().unwrap_or(0.0);
+                    cells.push((r, c, f));
+                    if r > max_row { max_row = r; }
+                    if c > max_col { max_col = c; }
                 }
             }
         }
@@ -1942,12 +1939,12 @@ impl Interpreter {
 
     fn matrix_dims(&self, name: &str) -> Option<(usize, usize)> {
         // First check DIM metadata
-        if let Some(bounds) = self.array_dim_info.get(name) {
-            if bounds.len() == 2 {
-                let rows = (bounds[0].1 - bounds[0].0 + 1) as usize;
-                let cols = (bounds[1].1 - bounds[1].0 + 1) as usize;
-                return Some((rows, cols));
-            }
+        if let Some(bounds) = self.array_dim_info.get(name)
+            && bounds.len() == 2
+        {
+            let rows = (bounds[0].1 - bounds[0].0 + 1) as usize;
+            let cols = (bounds[1].1 - bounds[1].0 + 1) as usize;
+            return Some((rows, cols));
         }
         // Fall back to scanning existing keys
         let prefix = format!("{}_", name);
@@ -1958,11 +1955,11 @@ impl Interpreter {
         for key in env.var_keys() {
             if let Some(suffix) = key.strip_prefix(&prefix) {
                 let parts: Vec<&str> = suffix.split('_').collect();
-                if parts.len() == 2 {
-                    if let (Ok(r), Ok(c)) = (parts[0].parse::<i64>(), parts[1].parse::<i64>()) {
-                        if r > max_row { max_row = r; }
-                        if c > max_col { max_col = c; }
-                    }
+                if parts.len() == 2
+                    && let (Ok(r), Ok(c)) = (parts[0].parse::<i64>(), parts[1].parse::<i64>())
+                {
+                    if r > max_row { max_row = r; }
+                    if c > max_col { max_col = c; }
                 }
             }
         }
@@ -1990,14 +1987,14 @@ impl Interpreter {
                     msg: format!("MAT READ: array '{}' must be DIMed first", name),
                 })?;
                 let mut m = vec![vec![0.0; cols]; rows];
-                for r in 0..rows {
-                    for c in 0..cols {
+                for row in m.iter_mut().take(rows) {
+                    for cell in row.iter_mut().take(cols) {
                         if self.data_pos >= self.data_values.len() {
                             return Err(RuntimeError::General { msg: "MAT READ: READ past end of DATA".into() });
                         }
                         let item = &self.data_values[self.data_pos];
                         self.data_pos += 1;
-                        m[r][c] = match item {
+                        *cell = match item {
                             DataItem::Number(n) => *n,
                             DataItem::Str(s) => s.parse::<f64>().unwrap_or(0.0),
                         };
@@ -2011,14 +2008,14 @@ impl Interpreter {
                     msg: format!("MAT INPUT: array '{}' must be DIMed first", name),
                 })?;
                 let mut m = vec![vec![0.0; cols]; rows];
-                for r in 0..rows {
+                for row in m.iter_mut().take(rows) {
                     write!(self.output, "? ").ok();
                     self.output.flush().ok();
                     let mut line = String::new();
                     self.input.read_line(&mut line).ok();
                     let parts: Vec<&str> = line.trim().split(',').map(|s| s.trim()).collect();
-                    for c in 0..cols {
-                        m[r][c] = parts.get(c).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+                    for (c, cell) in row.iter_mut().enumerate().take(cols) {
+                        *cell = parts.get(c).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
                     }
                 }
                 self.store_matrix(name, &m);
@@ -2097,8 +2094,6 @@ impl Interpreter {
             text,
         );
     }
-
-    /// Map foreground color index (0–15) to ANSI SGR code.
 
     /// Non-blocking read of a single keypress. Returns "" if no key available.
     /// In non-interactive mode (tests, piped input), always returns "".
@@ -2212,7 +2207,7 @@ impl Interpreter {
         let filename = self.eval_expr(&open.name)?.to_string_val()?;
         let file_num = self.eval_expr(&open.channel)?.to_i64()?;
 
-        if file_num < 1 || file_num > 255 {
+        if !(1..=255).contains(&file_num) {
             return Err(RuntimeError::General {
                 msg: format!("invalid file number: {file_num}"),
             });
@@ -2241,6 +2236,7 @@ impl Interpreter {
                     .read(true)
                     .write(true)
                     .create(true)
+                    .truncate(false)
                     .open(&filename)
                     .map_err(|e| RuntimeError::General {
                         msg: format!("cannot open '{filename}': {e}"),
@@ -2276,10 +2272,10 @@ impl Interpreter {
                 .map(|e| self.eval_expr(e).and_then(|v| v.to_i64()))
                 .collect::<Result<Vec<_>, _>>()?;
             for n in nums {
-                if let Some(fh) = self.file_handles.remove(&n) {
-                    if let Some(mut w) = fh.writer {
-                        let _ = w.flush();
-                    }
+                if let Some(fh) = self.file_handles.remove(&n)
+                    && let Some(mut w) = fh.writer
+                {
+                    let _ = w.flush();
                 }
             }
         }
@@ -2517,13 +2513,10 @@ impl Interpreter {
                 }
                 field.push(byte[0] as char);
             }
-            // Consume trailing comma or newline
+            // Consume trailing comma; newlines are consumed at the start of the next field read.
             let buf = reader.fill_buf().unwrap_or(&[]);
-            if !buf.is_empty() && (buf[0] == b',' || buf[0] == b'\r' || buf[0] == b'\n') {
-                if buf[0] == b',' {
-                    reader.consume(1);
-                }
-                // newlines consumed at start of next field read
+            if !buf.is_empty() && buf[0] == b',' {
+                reader.consume(1);
             }
             return Ok(Some(field));
         }

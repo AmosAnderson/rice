@@ -53,19 +53,16 @@ fn find_comment_start(line: &str) -> Option<usize> {
         match bytes[i] {
             b'"' => in_string = !in_string,
             b'\'' if !in_string => return Some(i),
-            _ if !in_string => {
+            _ if !in_string
+                && (i == 0 || bytes[i - 1] == b' ' || bytes[i - 1] == b':')
+                && line[i..].len() >= 3 =>
+            {
                 // Check for REM followed by space or at end of line
-                if (i == 0 || bytes[i - 1] == b' ' || bytes[i - 1] == b':')
-                    && line[i..].len() >= 3
+                let word = &line[i..i + 3];
+                if word.eq_ignore_ascii_case("REM")
+                    && (line[i..].len() == 3 || bytes[i + 3] == b' ' || bytes[i + 3] == b'\t')
                 {
-                    let word = &line[i..i + 3];
-                    if word.eq_ignore_ascii_case("REM")
-                        && (line[i..].len() == 3
-                            || bytes[i + 3] == b' '
-                            || bytes[i + 3] == b'\t')
-                    {
-                        return Some(i);
-                    }
+                    return Some(i);
                 }
             }
             _ => {}
@@ -142,8 +139,8 @@ fn token_source_len(token: &Token, source_from_token: &str) -> usize {
             // Original source includes quotes: "..."
             // The actual source length = content + 2 quotes
             // But content may have been unescaped, so scan for closing quote
-            if source_from_token.starts_with('"') {
-                if let Some(end) = source_from_token[1..].find('"') {
+            if let Some(stripped) = source_from_token.strip_prefix('"') {
+                if let Some(end) = stripped.find('"') {
                     end + 2
                 } else {
                     s.len() + 2
@@ -676,11 +673,9 @@ fn compute_depth_delta(line: &str) -> i32 {
                 prev_was_do = false;
                 continue;
             }
-            Token::KwIf => {
+            Token::KwIf if last_meaningful == Some(&Token::KwThen) => {
                 // Block IF: KwThen is the last meaningful token on the line
-                if last_meaningful == Some(&Token::KwThen) {
-                    delta += 1;
-                }
+                delta += 1;
             }
             Token::KwWhen => {
                 delta += 1;

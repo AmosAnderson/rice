@@ -90,10 +90,10 @@ impl Parser {
                 Ok(Stmt::Goto(label))
             }
             Token::KwGosub => {
-                return Err(ParseError::General { line: self.current_line(), msg: "GOSUB is not supported; use SUB/FUNCTION instead".into() });
+                Err(ParseError::General { line: self.current_line(), msg: "GOSUB is not supported; use SUB/FUNCTION instead".into() })
             }
             Token::KwReturn => {
-                return Err(ParseError::General { line: self.current_line(), msg: "RETURN is not supported; use EXIT SUB or EXIT FUNCTION instead".into() });
+                Err(ParseError::General { line: self.current_line(), msg: "RETURN is not supported; use EXIT SUB or EXIT FUNCTION instead".into() })
             }
             Token::KwExit => self.parse_exit(),
             Token::KwEnd => {
@@ -137,10 +137,10 @@ impl Parser {
                         "ON GOTO/ON GOSUB is not supported in ANSI BASIC"
                     }
                 };
-                return Err(ParseError::General { line: self.current_line(), msg: msg.into() });
+                Err(ParseError::General { line: self.current_line(), msg: msg.into() })
             }
             Token::KwResume => {
-                return Err(ParseError::General { line: self.current_line(), msg: "RESUME is not supported; use WHEN EXCEPTION instead".into() });
+                Err(ParseError::General { line: self.current_line(), msg: "RESUME is not supported; use WHEN EXCEPTION instead".into() })
             }
             Token::KwRandomize => {
                 self.advance();
@@ -200,31 +200,31 @@ impl Parser {
                 }
             }
             Token::KwLset => {
-                return Err(ParseError::General { line: self.current_line(), msg: "LSET is not supported in ANSI BASIC".into() });
+                Err(ParseError::General { line: self.current_line(), msg: "LSET is not supported in ANSI BASIC".into() })
             }
             Token::KwRset => {
-                return Err(ParseError::General { line: self.current_line(), msg: "RSET is not supported in ANSI BASIC".into() });
+                Err(ParseError::General { line: self.current_line(), msg: "RSET is not supported in ANSI BASIC".into() })
             }
             Token::KwShared => self.parse_shared(),
             Token::KwStatic => self.parse_static(),
             Token::KwDefInt | Token::KwDefLng | Token::KwDefSng |
             Token::KwDefDbl | Token::KwDefStr => {
-                return Err(ParseError::General { line: self.current_line(), msg: "DEFtype is not supported in ANSI BASIC".into() });
+                Err(ParseError::General { line: self.current_line(), msg: "DEFtype is not supported in ANSI BASIC".into() })
             }
             Token::KwDef => {
-                return Err(ParseError::General { line: self.current_line(), msg: "DEF FN is not supported; use FUNCTION instead".into() });
+                Err(ParseError::General { line: self.current_line(), msg: "DEF FN is not supported; use FUNCTION instead".into() })
             }
             Token::KwType => self.parse_type_def(),
             // CHAIN/COMMON
             Token::KwChain => {
-                return Err(ParseError::General { line: self.current_line(), msg: "CHAIN is not supported in ANSI BASIC".into() });
+                Err(ParseError::General { line: self.current_line(), msg: "CHAIN is not supported in ANSI BASIC".into() })
             }
             Token::KwCommon => {
-                return Err(ParseError::General { line: self.current_line(), msg: "COMMON is not supported in ANSI BASIC".into() });
+                Err(ParseError::General { line: self.current_line(), msg: "COMMON is not supported in ANSI BASIC".into() })
             }
             // FIELD (unsupported)
             Token::KwField => {
-                return Err(ParseError::General { line: self.current_line(), msg: "FIELD is not supported in ANSI BASIC".into() });
+                Err(ParseError::General { line: self.current_line(), msg: "FIELD is not supported in ANSI BASIC".into() })
             }
             // SET #n: POINTER expr
             Token::KwSet => self.parse_set_pointer(),
@@ -244,10 +244,10 @@ impl Parser {
             Token::KwWidth => self.parse_width(),
             Token::KwView => self.parse_view_print(),
             Token::KwTimer => {
-                return Err(ParseError::General { line: self.current_line(), msg: "TIMER ON/OFF/STOP is not supported in ANSI BASIC".into() });
+                Err(ParseError::General { line: self.current_line(), msg: "TIMER ON/OFF/STOP is not supported in ANSI BASIC".into() })
             }
             Token::KwKey => {
-                return Err(ParseError::General { line: self.current_line(), msg: "KEY ON/OFF/STOP is not supported in ANSI BASIC".into() });
+                Err(ParseError::General { line: self.current_line(), msg: "KEY ON/OFF/STOP is not supported in ANSI BASIC".into() })
             }
             Token::KwWhen => self.parse_when(),
             Token::KwRetry => {
@@ -259,7 +259,7 @@ impl Parser {
                 Ok(Stmt::Continue)
             }
             Token::KwWend => {
-                return Err(ParseError::General { line: self.current_line(), msg: "WEND is not supported; use END WHILE instead".into() });
+                Err(ParseError::General { line: self.current_line(), msg: "WEND is not supported; use END WHILE instead".into() })
             }
             Token::KwMat => self.parse_mat(),
             Token::Identifier(_) => self.parse_assignment_or_call(),

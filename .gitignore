@@ -1,2 +1,12 @@
-/target
+# Rust build artifacts
+/target/
+
+# Local agent/session files
 .claude/
+
+# OS/editor temporary files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
