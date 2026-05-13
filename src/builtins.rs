@@ -5,8 +5,14 @@ use crate::value::Value;
 
 pub type BuiltinFn = fn(&[Value]) -> Result<Value, RuntimeError>;
 
+#[derive(Clone, Copy)]
+enum BuiltinArity {
+    Exact(usize),
+    Variadic,
+}
+
 pub struct BuiltinRegistry {
-    functions: HashMap<String, (BuiltinFn, usize)>, // (function, expected_args) — 0 means variadic
+    functions: HashMap<String, (BuiltinFn, BuiltinArity)>,
 }
 
 impl Default for BuiltinRegistry {
@@ -33,7 +39,7 @@ impl BuiltinRegistry {
         reg.register("ATN", builtin_atn, 1);
         reg.register("EXP", builtin_exp, 1);
         reg.register("LOG", builtin_log, 1);
-        reg.register("ROUND", builtin_round, 1);
+        reg.register_variadic("ROUND", builtin_round);
         // ANSI math additions
         reg.register("ASIN", builtin_asin, 1);
         reg.register("ACOS", builtin_acos, 1);
@@ -42,7 +48,7 @@ impl BuiltinRegistry {
         reg.register("SEC", builtin_sec, 1);
         reg.register("ANGLE", builtin_angle, 2);
         reg.register("CEIL", builtin_ceil, 1);
-        reg.register("TRUNCATE", builtin_truncate, 1);
+        reg.register_variadic("TRUNCATE", builtin_truncate);
         reg.register("REMAINDER", builtin_remainder, 2);
         reg.register("MAXNUM", builtin_maxnum, 0);
         reg.register("PI", builtin_pi, 0);
@@ -50,7 +56,7 @@ impl BuiltinRegistry {
 
         // String
         reg.register("LEN", builtin_len, 1);
-        reg.register("INSTR", builtin_instr, 0); // 2 or 3 args
+        reg.register_variadic("INSTR", builtin_instr);
         reg.register("LTRIM$", builtin_ltrim, 1);
         reg.register("RTRIM$", builtin_rtrim, 1);
         reg.register("SPACE$", builtin_space, 1);
@@ -61,15 +67,15 @@ impl BuiltinRegistry {
         reg.register("VAL", builtin_val, 1);
         reg.register("LEFT$", builtin_left, 2);
         reg.register("RIGHT$", builtin_right, 2);
-        reg.register("MID$", builtin_mid, 0); // 2 or 3 args
+        reg.register_variadic("MID$", builtin_mid);
         reg.register("UCASE$", builtin_ucase, 1);
         reg.register("LCASE$", builtin_lcase, 1);
         reg.register("HEX$", builtin_hex, 1);
         reg.register("OCT$", builtin_oct, 1);
 
         // Misc
-        reg.register("LBOUND", builtin_stub, 0);
-        reg.register("UBOUND", builtin_stub, 0);
+        reg.register_variadic("LBOUND", builtin_stub);
+        reg.register_variadic("UBOUND", builtin_stub);
         reg.register("TIMER", builtin_timer, 0);
         reg.register("DATE$", builtin_date, 0);
         reg.register("TIME$", builtin_time, 0);
@@ -79,16 +85,26 @@ impl BuiltinRegistry {
     }
 
     fn register(&mut self, name: &str, func: BuiltinFn, args: usize) {
-        self.functions.insert(name.to_string(), (func, args));
+        self.functions
+            .insert(name.to_string(), (func, BuiltinArity::Exact(args)));
+    }
+
+    fn register_variadic(&mut self, name: &str, func: BuiltinFn) {
+        self.functions
+            .insert(name.to_string(), (func, BuiltinArity::Variadic));
     }
 
     pub fn call(&self, name: &str, args: &[Value]) -> Result<Option<Value>, RuntimeError> {
         let name_upper = name.to_uppercase();
         // Try name as-is, then with $
-        let func_info = self.functions.get(&name_upper)
+        let func_info = self
+            .functions
+            .get(&name_upper)
             .or_else(|| self.functions.get(&format!("{}$", name_upper)));
-        if let Some((func, expected)) = func_info {
-            if *expected > 0 && args.len() != *expected {
+        if let Some((func, arity)) = func_info {
+            if let BuiltinArity::Exact(expected) = arity
+                && args.len() != *expected
+            {
                 return Err(RuntimeError::ArityMismatch {
                     expected: *expected,
                     got: args.len(),
@@ -175,13 +191,33 @@ fn builtin_log(args: &[Value]) -> Result<Value, RuntimeError> {
 }
 
 fn builtin_round(args: &[Value]) -> Result<Value, RuntimeError> {
-    Ok(Value::Numeric(args[0].to_f64()?.round()))
+    let n = args
+        .first()
+        .ok_or(RuntimeError::ArityMismatch {
+            expected: 1,
+            got: 0,
+        })?
+        .to_f64()?;
+    match args.len() {
+        1 => Ok(Value::Numeric(n.round())),
+        2 => {
+            let places = args[1].to_i64()?;
+            let factor = decimal_factor(places)?;
+            Ok(Value::Numeric((n * factor).round() / factor))
+        }
+        _ => Err(RuntimeError::ArityMismatch {
+            expected: 2,
+            got: args.len(),
+        }),
+    }
 }
 
 fn builtin_asin(args: &[Value]) -> Result<Value, RuntimeError> {
     let n = args[0].to_f64()?;
     if !(-1.0..=1.0).contains(&n) {
-        return Err(RuntimeError::IllegalFunctionCall { msg: "ASIN argument out of range".into() });
+        return Err(RuntimeError::IllegalFunctionCall {
+            msg: "ASIN argument out of range".into(),
+        });
     }
     Ok(Value::Numeric(n.asin()))
 }
@@ -189,7 +225,9 @@ fn builtin_asin(args: &[Value]) -> Result<Value, RuntimeError> {
 fn builtin_acos(args: &[Value]) -> Result<Value, RuntimeError> {
     let n = args[0].to_f64()?;
     if !(-1.0..=1.0).contains(&n) {
-        return Err(RuntimeError::IllegalFunctionCall { msg: "ACOS argument out of range".into() });
+        return Err(RuntimeError::IllegalFunctionCall {
+            msg: "ACOS argument out of range".into(),
+        });
     }
     Ok(Value::Numeric(n.acos()))
 }
@@ -197,21 +235,27 @@ fn builtin_acos(args: &[Value]) -> Result<Value, RuntimeError> {
 fn builtin_cot(args: &[Value]) -> Result<Value, RuntimeError> {
     let n = args[0].to_f64()?;
     let t = n.tan();
-    if t == 0.0 { return Err(RuntimeError::DivisionByZero); }
+    if t == 0.0 {
+        return Err(RuntimeError::DivisionByZero);
+    }
     Ok(Value::Numeric(1.0 / t))
 }
 
 fn builtin_csc(args: &[Value]) -> Result<Value, RuntimeError> {
     let n = args[0].to_f64()?;
     let s = n.sin();
-    if s == 0.0 { return Err(RuntimeError::DivisionByZero); }
+    if s == 0.0 {
+        return Err(RuntimeError::DivisionByZero);
+    }
     Ok(Value::Numeric(1.0 / s))
 }
 
 fn builtin_sec(args: &[Value]) -> Result<Value, RuntimeError> {
     let n = args[0].to_f64()?;
     let c = n.cos();
-    if c == 0.0 { return Err(RuntimeError::DivisionByZero); }
+    if c == 0.0 {
+        return Err(RuntimeError::DivisionByZero);
+    }
     Ok(Value::Numeric(1.0 / c))
 }
 
@@ -226,14 +270,43 @@ fn builtin_ceil(args: &[Value]) -> Result<Value, RuntimeError> {
 }
 
 fn builtin_truncate(args: &[Value]) -> Result<Value, RuntimeError> {
-    Ok(Value::Numeric(args[0].to_f64()?.trunc()))
+    let n = args
+        .first()
+        .ok_or(RuntimeError::ArityMismatch {
+            expected: 1,
+            got: 0,
+        })?
+        .to_f64()?;
+    match args.len() {
+        1 => Ok(Value::Numeric(n.trunc())),
+        2 => {
+            let places = args[1].to_i64()?;
+            let factor = decimal_factor(places)?;
+            Ok(Value::Numeric((n * factor).trunc() / factor))
+        }
+        _ => Err(RuntimeError::ArityMismatch {
+            expected: 2,
+            got: args.len(),
+        }),
+    }
 }
 
 fn builtin_remainder(args: &[Value]) -> Result<Value, RuntimeError> {
     let a = args[0].to_f64()?;
     let b = args[1].to_f64()?;
-    if b == 0.0 { return Err(RuntimeError::DivisionByZero); }
+    if b == 0.0 {
+        return Err(RuntimeError::DivisionByZero);
+    }
     Ok(Value::Numeric(a % b))
+}
+
+fn decimal_factor(places: i64) -> Result<f64, RuntimeError> {
+    if !(0..=308).contains(&places) {
+        return Err(RuntimeError::IllegalFunctionCall {
+            msg: "decimal places out of range".into(),
+        });
+    }
+    Ok(10_f64.powi(places as i32))
 }
 
 fn builtin_maxnum(_args: &[Value]) -> Result<Value, RuntimeError> {
@@ -267,9 +340,10 @@ fn builtin_instr(args: &[Value]) -> Result<Value, RuntimeError> {
             let start = (args[0].to_i64()? - 1).max(0) as usize;
             let haystack = args[1].to_string_val()?;
             let needle = args[2].to_string_val()?;
-            let pos = haystack[start.min(haystack.len())..]
+            let suffix: String = haystack.chars().skip(start).collect();
+            let pos = suffix
                 .find(&needle)
-                .map(|p| p + start + 1)
+                .map(|byte_pos| start + suffix[..byte_pos].chars().count() + 1)
                 .unwrap_or(0);
             Ok(Value::Numeric(pos as f64))
         }
@@ -281,7 +355,9 @@ fn builtin_instr(args: &[Value]) -> Result<Value, RuntimeError> {
 }
 
 fn builtin_ltrim(args: &[Value]) -> Result<Value, RuntimeError> {
-    Ok(Value::Str(args[0].to_string_val()?.trim_start().to_string()))
+    Ok(Value::Str(
+        args[0].to_string_val()?.trim_start().to_string(),
+    ))
 }
 
 fn builtin_rtrim(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -291,7 +367,9 @@ fn builtin_rtrim(args: &[Value]) -> Result<Value, RuntimeError> {
 fn builtin_space(args: &[Value]) -> Result<Value, RuntimeError> {
     let n = args[0].to_i64()?;
     if n < 0 {
-        return Err(RuntimeError::IllegalFunctionCall { msg: "SPACE$ argument must be non-negative".into() });
+        return Err(RuntimeError::IllegalFunctionCall {
+            msg: "SPACE$ argument must be non-negative".into(),
+        });
     }
     Ok(Value::Str(" ".repeat(n as usize)))
 }
@@ -299,7 +377,9 @@ fn builtin_space(args: &[Value]) -> Result<Value, RuntimeError> {
 fn builtin_string_fn(args: &[Value]) -> Result<Value, RuntimeError> {
     let n = args[0].to_i64()?;
     if n < 0 {
-        return Err(RuntimeError::IllegalFunctionCall { msg: "STRING$ count must be non-negative".into() });
+        return Err(RuntimeError::IllegalFunctionCall {
+            msg: "STRING$ count must be non-negative".into(),
+        });
     }
     let n = n as usize;
     let ch = match &args[1] {
@@ -421,7 +501,11 @@ fn builtin_mid(args: &[Value]) -> Result<Value, RuntimeError> {
                     msg: "MID$ length must be non-negative".into(),
                 });
             }
-            let result: String = s.chars().skip((start - 1) as usize).take(length as usize).collect();
+            let result: String = s
+                .chars()
+                .skip((start - 1) as usize)
+                .take(length as usize)
+                .collect();
             Ok(Value::Str(result))
         }
         _ => Err(RuntimeError::IllegalFunctionCall {
@@ -467,30 +551,72 @@ fn local_time_parts() -> (u64, u64, u64, u32) {
     {
         #[repr(C)]
         struct SystemTime {
-            year: u16, month: u16, _dow: u16, day: u16,
-            hour: u16, minute: u16, second: u16, millis: u16,
+            year: u16,
+            month: u16,
+            _dow: u16,
+            day: u16,
+            hour: u16,
+            minute: u16,
+            second: u16,
+            millis: u16,
         }
         unsafe extern "system" {
             fn GetLocalTime(st: *mut SystemTime);
         }
-        let mut st = SystemTime { year: 0, month: 0, _dow: 0, day: 0, hour: 0, minute: 0, second: 0, millis: 0 };
-        unsafe { GetLocalTime(&mut st); }
-        (st.hour as u64, st.minute as u64, st.second as u64, st.millis as u32)
+        let mut st = SystemTime {
+            year: 0,
+            month: 0,
+            _dow: 0,
+            day: 0,
+            hour: 0,
+            minute: 0,
+            second: 0,
+            millis: 0,
+        };
+        unsafe {
+            GetLocalTime(&mut st);
+        }
+        (
+            st.hour as u64,
+            st.minute as u64,
+            st.second as u64,
+            st.millis as u32,
+        )
     }
     #[cfg(not(target_os = "windows"))]
     {
         #[repr(C)]
         struct Tm {
-            tm_sec: i32, tm_min: i32, tm_hour: i32, tm_mday: i32,
-            tm_mon: i32, tm_year: i32, tm_wday: i32, tm_yday: i32,
-            tm_isdst: i32, tm_gmtoff: i64, tm_zone: *const i8,
+            tm_sec: i32,
+            tm_min: i32,
+            tm_hour: i32,
+            tm_mday: i32,
+            tm_mon: i32,
+            tm_year: i32,
+            tm_wday: i32,
+            tm_yday: i32,
+            tm_isdst: i32,
+            tm_gmtoff: i64,
+            tm_zone: *const i8,
         }
         unsafe extern "C" {
             fn time(t: *mut i64) -> i64;
             fn localtime_r(t: *const i64, result: *mut Tm) -> *mut Tm;
         }
         let mut t: i64 = 0;
-        let mut tm = Tm { tm_sec: 0, tm_min: 0, tm_hour: 0, tm_mday: 0, tm_mon: 0, tm_year: 0, tm_wday: 0, tm_yday: 0, tm_isdst: 0, tm_gmtoff: 0, tm_zone: std::ptr::null() };
+        let mut tm = Tm {
+            tm_sec: 0,
+            tm_min: 0,
+            tm_hour: 0,
+            tm_mday: 0,
+            tm_mon: 0,
+            tm_year: 0,
+            tm_wday: 0,
+            tm_yday: 0,
+            tm_isdst: 0,
+            tm_gmtoff: 0,
+            tm_zone: std::ptr::null(),
+        };
         unsafe {
             time(&mut t);
             localtime_r(&t, &mut tm);
@@ -505,35 +631,76 @@ fn local_date_parts() -> (u16, u16, u16) {
     {
         #[repr(C)]
         struct SystemTime {
-            year: u16, month: u16, _dow: u16, day: u16,
-            hour: u16, minute: u16, second: u16, millis: u16,
+            year: u16,
+            month: u16,
+            _dow: u16,
+            day: u16,
+            hour: u16,
+            minute: u16,
+            second: u16,
+            millis: u16,
         }
         unsafe extern "system" {
             fn GetLocalTime(st: *mut SystemTime);
         }
-        let mut st = SystemTime { year: 0, month: 0, _dow: 0, day: 0, hour: 0, minute: 0, second: 0, millis: 0 };
-        unsafe { GetLocalTime(&mut st); }
+        let mut st = SystemTime {
+            year: 0,
+            month: 0,
+            _dow: 0,
+            day: 0,
+            hour: 0,
+            minute: 0,
+            second: 0,
+            millis: 0,
+        };
+        unsafe {
+            GetLocalTime(&mut st);
+        }
         (st.year, st.month, st.day)
     }
     #[cfg(not(target_os = "windows"))]
     {
         #[repr(C)]
         struct Tm {
-            tm_sec: i32, tm_min: i32, tm_hour: i32, tm_mday: i32,
-            tm_mon: i32, tm_year: i32, tm_wday: i32, tm_yday: i32,
-            tm_isdst: i32, tm_gmtoff: i64, tm_zone: *const i8,
+            tm_sec: i32,
+            tm_min: i32,
+            tm_hour: i32,
+            tm_mday: i32,
+            tm_mon: i32,
+            tm_year: i32,
+            tm_wday: i32,
+            tm_yday: i32,
+            tm_isdst: i32,
+            tm_gmtoff: i64,
+            tm_zone: *const i8,
         }
         unsafe extern "C" {
             fn time(t: *mut i64) -> i64;
             fn localtime_r(t: *const i64, result: *mut Tm) -> *mut Tm;
         }
         let mut t: i64 = 0;
-        let mut tm = Tm { tm_sec: 0, tm_min: 0, tm_hour: 0, tm_mday: 0, tm_mon: 0, tm_year: 0, tm_wday: 0, tm_yday: 0, tm_isdst: 0, tm_gmtoff: 0, tm_zone: std::ptr::null() };
+        let mut tm = Tm {
+            tm_sec: 0,
+            tm_min: 0,
+            tm_hour: 0,
+            tm_mday: 0,
+            tm_mon: 0,
+            tm_year: 0,
+            tm_wday: 0,
+            tm_yday: 0,
+            tm_isdst: 0,
+            tm_gmtoff: 0,
+            tm_zone: std::ptr::null(),
+        };
         unsafe {
             time(&mut t);
             localtime_r(&t, &mut tm);
         }
-        ((tm.tm_year + 1900) as u16, (tm.tm_mon + 1) as u16, tm.tm_mday as u16)
+        (
+            (tm.tm_year + 1900) as u16,
+            (tm.tm_mon + 1) as u16,
+            tm.tm_mday as u16,
+        )
     }
 }
 
@@ -562,4 +729,3 @@ fn builtin_environ(args: &[Value]) -> Result<Value, RuntimeError> {
     let val = std::env::var(&name).unwrap_or_default();
     Ok(Value::Str(val))
 }
-

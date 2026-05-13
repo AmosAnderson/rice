@@ -1,5 +1,5 @@
-use std::io::Cursor;
 use rice::interpreter::SharedOutput;
+use std::io::Cursor;
 
 fn run_bas_with_tmpdir(source_template: &str) -> (String, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
@@ -12,10 +12,8 @@ fn run_bas_with_tmpdir(source_template: &str) -> (String, tempfile::TempDir) {
 fn run_bas(source: &str) -> String {
     let output = SharedOutput::new();
     let input = Cursor::new(Vec::<u8>::new());
-    let mut interp = rice::interpreter::Interpreter::with_io(
-        Box::new(output.clone()),
-        Box::new(input),
-    );
+    let mut interp =
+        rice::interpreter::Interpreter::with_io(Box::new(output.clone()), Box::new(input));
     interp.run_source(source).unwrap();
     output.into_string()
 }
@@ -23,10 +21,8 @@ fn run_bas(source: &str) -> String {
 fn run_bas_may_fail(source: &str) -> (String, Result<(), Box<dyn std::error::Error>>) {
     let output = SharedOutput::new();
     let input = Cursor::new(Vec::<u8>::new());
-    let mut interp = rice::interpreter::Interpreter::with_io(
-        Box::new(output.clone()),
-        Box::new(input),
-    );
+    let mut interp =
+        rice::interpreter::Interpreter::with_io(Box::new(output.clone()), Box::new(input));
     let result = interp.run_source(source);
     (output.into_string(), result)
 }
@@ -119,6 +115,26 @@ fn test_string_functions() {
 }
 
 #[test]
+fn test_decimal_place_math_functions() {
+    let output = run_bas("PRINT ROUND(3.145, 2)\nPRINT TRUNCATE(3.789, 2)\n");
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "3.15");
+    assert_eq!(lines[1], "3.78");
+}
+
+#[test]
+fn test_zero_arg_builtins_reject_extra_args() {
+    let (_output, result) = run_bas_may_fail("PRINT PI(1)\n");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_instr_start_uses_character_positions() {
+    let output = run_bas("PRINT INSTR(2, \"éabcabc\", \"abc\")\n");
+    assert_eq!(output.trim(), "2");
+}
+
+#[test]
 fn test_qbasic_string_functions() {
     let output = run_file("tests/programs/qbasic_strings.bas");
     let lines: Vec<&str> = output.lines().collect();
@@ -199,36 +215,42 @@ fn test_operator_precedence() {
 
 #[test]
 fn test_string_comparison() {
-    let output = run_bas(r#"
+    let output = run_bas(
+        r#"
 IF "abc" < "def" THEN
     PRINT "yes"
 ELSE
     PRINT "no"
 END IF
-"#);
+"#,
+    );
     assert_eq!(output.trim(), "yes");
 }
 
 #[test]
 fn test_nested_loops() {
-    let output = run_bas("
+    let output = run_bas(
+        "
 FOR i = 1 TO 3
     FOR j = 1 TO 3
         PRINT i * 10 + j;
     NEXT j
     PRINT
 NEXT i
-");
+",
+    );
     assert!(output.contains("11"));
     assert!(output.contains("33"));
 }
 
 #[test]
 fn test_const() {
-    let output = run_bas("
+    let output = run_bas(
+        "
 CONST PI = 3.14159
 PRINT PI
-");
+",
+    );
     assert!(output.contains("3.14159"));
 }
 
@@ -240,13 +262,15 @@ fn test_single_line_if() {
 
 #[test]
 fn test_exit_for() {
-    let output = run_bas("
+    let output = run_bas(
+        "
 FOR i = 1 TO 100
     IF i = 5 THEN EXIT FOR
     PRINT i;
 NEXT i
 PRINT
-");
+",
+    );
     assert_eq!(output.trim(), "1234");
 }
 
@@ -269,7 +293,8 @@ fn test_date_time() {
 
 #[test]
 fn test_file_text_io() {
-    let (output, _dir) = run_bas_with_tmpdir(r#"
+    let (output, _dir) = run_bas_with_tmpdir(
+        r#"
 OPEN #1: NAME "{DIR}/test.txt", ACCESS OUTPUT
 PRINT #1, "Hello, File!"
 PRINT #1, "Second line"
@@ -282,7 +307,8 @@ LINE INPUT #1, b
 PRINT b
 PRINT EOF(1)
 CLOSE #1
-"#);
+"#,
+    );
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(lines[0], "Hello, File!");
     assert_eq!(lines[1], "Second line");
@@ -291,7 +317,8 @@ CLOSE #1
 
 #[test]
 fn test_file_write_read() {
-    let (output, _dir) = run_bas_with_tmpdir(r#"
+    let (output, _dir) = run_bas_with_tmpdir(
+        r#"
 OPEN #1: NAME "{DIR}/test.txt", ACCESS OUTPUT
 WRITE #1, "Alice", 30
 WRITE #1, "Bob", 25
@@ -303,7 +330,8 @@ PRINT name1; age1
 INPUT #1, name2, age2
 PRINT name2; age2
 CLOSE #1
-"#);
+"#,
+    );
     let lines: Vec<&str> = output.lines().collect();
     assert!(lines[0].contains("Alice"));
     assert!(lines[0].contains("30"));
@@ -313,7 +341,8 @@ CLOSE #1
 
 #[test]
 fn test_file_append() {
-    let (output, _dir) = run_bas_with_tmpdir(r#"
+    let (output, _dir) = run_bas_with_tmpdir(
+        r#"
 OPEN #1: NAME "{DIR}/test.txt", ACCESS OUTPUT
 PRINT #1, "Line 1"
 CLOSE #1
@@ -329,7 +358,8 @@ PRINT a
 LINE INPUT #1, b
 PRINT b
 CLOSE #1
-"#);
+"#,
+    );
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(lines[0], "Line 1");
     assert_eq!(lines[1], "Line 2");
@@ -337,7 +367,8 @@ CLOSE #1
 
 #[test]
 fn test_file_binary() {
-    let (output, _dir) = run_bas_with_tmpdir(r#"
+    let (output, _dir) = run_bas_with_tmpdir(
+        r#"
 msg = "HELLO"
 OPEN #1: NAME "{DIR}/test.bin", ORGANIZATION STREAM, ACCESS OUTIN
 PUT #1, 1, msg
@@ -347,13 +378,15 @@ OPEN #1: NAME "{DIR}/test.bin", ORGANIZATION STREAM, ACCESS OUTIN
 GET #1, 1, result
 PRINT result
 CLOSE #1
-"#);
+"#,
+    );
     assert_eq!(output.trim(), "HELLO");
 }
 
 #[test]
 fn test_file_freefile() {
-    let (output, _dir) = run_bas_with_tmpdir(r#"
+    let (output, _dir) = run_bas_with_tmpdir(
+        r#"
 PRINT FREEFILE
 OPEN #1: NAME "{DIR}/a.tmp", ACCESS OUTPUT
 PRINT FREEFILE
@@ -362,7 +395,8 @@ PRINT FREEFILE
 CLOSE #1
 PRINT FREEFILE
 CLOSE #2
-"#);
+"#,
+    );
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(lines[0].trim(), "1");
     assert_eq!(lines[1].trim(), "2");
@@ -372,7 +406,8 @@ CLOSE #2
 
 #[test]
 fn test_file_lof() {
-    let (output, _dir) = run_bas_with_tmpdir(r#"
+    let (output, _dir) = run_bas_with_tmpdir(
+        r#"
 OPEN #1: NAME "{DIR}/test.txt", ACCESS OUTPUT
 PRINT #1, "Hello"
 CLOSE #1
@@ -380,14 +415,16 @@ CLOSE #1
 OPEN #1: NAME "{DIR}/test.txt", ACCESS INPUT
 PRINT LOF(1)
 CLOSE #1
-"#);
+"#,
+    );
     let lof: i64 = output.trim().parse().unwrap();
     assert!(lof > 0);
 }
 
 #[test]
 fn test_file_eof_loop() {
-    let (output, _dir) = run_bas_with_tmpdir(r#"
+    let (output, _dir) = run_bas_with_tmpdir(
+        r#"
 OPEN #1: NAME "{DIR}/test.txt", ACCESS OUTPUT
 PRINT #1, "alpha"
 PRINT #1, "beta"
@@ -400,7 +437,8 @@ DO WHILE NOT EOF(1)
     PRINT x
 LOOP
 CLOSE #1
-"#);
+"#,
+    );
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(lines[0], "alpha");
     assert_eq!(lines[1], "beta");
@@ -413,11 +451,13 @@ CLOSE #1
 #[test]
 fn test_print_using_digits() {
     // Note: r####""## raw strings needed because Rust 2024 reserves ## in string literals
-    let output = run_bas(r####"
+    let output = run_bas(
+        r####"
 PRINT USING "###.##"; 1.5
 PRINT USING "###.##"; 123.456
 PRINT USING "###.##"; -1.5
-"####);
+"####,
+    );
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(lines[0], "  1.50");
     assert_eq!(lines[1], "123.46");
@@ -427,10 +467,12 @@ PRINT USING "###.##"; -1.5
 
 #[test]
 fn test_print_using_dollar() {
-    let output = run_bas(r####"
+    let output = run_bas(
+        r####"
 PRINT USING "$$###.##"; 1.5
 PRINT USING "$$###.##"; 123.45
-"####);
+"####,
+    );
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(lines[0], "  $1.50");
     assert_eq!(lines[1], "$123.45");
@@ -438,12 +480,14 @@ PRINT USING "$$###.##"; 123.45
 
 #[test]
 fn test_print_using_sign() {
-    let output = run_bas(r####"
+    let output = run_bas(
+        r####"
 PRINT USING "+###"; 5
 PRINT USING "+###"; -5
 PRINT USING "###-"; 5
 PRINT USING "###-"; -5
-"####);
+"####,
+    );
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(lines[0], "+  5");
     assert_eq!(lines[1], "-  5");
@@ -453,10 +497,12 @@ PRINT USING "###-"; -5
 
 #[test]
 fn test_print_using_asterisk() {
-    let output = run_bas(r####"
+    let output = run_bas(
+        r####"
 PRINT USING "**###.##"; 1.5
 PRINT USING "**$###.##"; 1.5
-"####);
+"####,
+    );
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(lines[0], "****1.50");
     assert_eq!(lines[1], "***$1.50");
@@ -464,18 +510,22 @@ PRINT USING "**$###.##"; 1.5
 
 #[test]
 fn test_print_using_comma() {
-    let output = run_bas(r####"
+    let output = run_bas(
+        r####"
 PRINT USING "#,###.##"; 1234.56
-"####);
+"####,
+    );
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(lines[0], "1,234.56");
 }
 
 #[test]
 fn test_print_using_scientific() {
-    let output = run_bas(r####"
+    let output = run_bas(
+        r####"
 PRINT USING "##.##^^^^"; 1234.5
-"####);
+"####,
+    );
     let lines: Vec<&str> = output.lines().collect();
     // digits_before=2, so: 12.35E+02
     assert_eq!(lines[0], "12.35E+02");
@@ -483,11 +533,13 @@ PRINT USING "##.##^^^^"; 1234.5
 
 #[test]
 fn test_print_using_string() {
-    let output = run_bas(r####"
+    let output = run_bas(
+        r####"
 PRINT USING "!"; "Hello"
 PRINT USING "\   \"; "Hello"
 PRINT USING "&"; "Hello"
-"####);
+"####,
+    );
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(lines[0], "H");
     assert_eq!(lines[1], "Hello");
@@ -496,9 +548,11 @@ PRINT USING "&"; "Hello"
 
 #[test]
 fn test_print_using_escape() {
-    let output = run_bas(r####"
+    let output = run_bas(
+        r####"
 PRINT USING "_###.##"; 1.5
-"####);
+"####,
+    );
     let lines: Vec<&str> = output.lines().collect();
     // _ escapes #, so first # is literal, then ##.## is a 2-digit format
     assert_eq!(lines[0], "# 1.50");
@@ -506,19 +560,27 @@ PRINT USING "_###.##"; 1.5
 
 #[test]
 fn test_print_using_overflow() {
-    let output = run_bas(r####"
+    let output = run_bas(
+        r####"
 PRINT USING "##.##"; 12345.67
-"####);
+"####,
+    );
     let lines: Vec<&str> = output.lines().collect();
     // Number too wide for field — % prefix
-    assert!(lines[0].starts_with('%'), "expected overflow prefix %, got: {}", lines[0]);
+    assert!(
+        lines[0].starts_with('%'),
+        "expected overflow prefix %, got: {}",
+        lines[0]
+    );
 }
 
 #[test]
 fn test_print_using_repeat() {
-    let output = run_bas(r####"
+    let output = run_bas(
+        r####"
 PRINT USING "###"; 1; 2; 3
-"####);
+"####,
+    );
     let lines: Vec<&str> = output.lines().collect();
     // Format repeats for each value
     assert_eq!(lines[0], "  1  2  3");
@@ -526,7 +588,8 @@ PRINT USING "###"; 1; 2; 3
 
 #[test]
 fn test_print_using_file() {
-    let (output, _dir) = run_bas_with_tmpdir(r####"
+    let (output, _dir) = run_bas_with_tmpdir(
+        r####"
 OPEN #1: NAME "{DIR}/test.txt", ACCESS OUTPUT
 PRINT #1, USING "###.##"; 3.14
 CLOSE #1
@@ -535,7 +598,8 @@ OPEN #1: NAME "{DIR}/test.txt", ACCESS INPUT
 LINE INPUT #1, x
 PRINT x
 CLOSE #1
-"####);
+"####,
+    );
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(lines[0], "  3.14");
 }
@@ -606,7 +670,8 @@ fn test_static_sub() {
 #[test]
 fn test_environ() {
     // Test ENVIRON function returns a non-empty value for a known env var
-    let output = run_bas(r#"
+    let output = run_bas(
+        r#"
         x = ENVIRON("PATH")
         IF LEN(x) > 0 THEN
             PRINT "has path"
@@ -615,7 +680,8 @@ fn test_environ() {
         END IF
         y = ENVIRON("NONEXISTENT_VAR_12345")
         PRINT LEN(y)
-    "#);
+    "#,
+    );
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(lines[0], "has path");
     assert_eq!(lines[1].trim(), "0");
@@ -623,7 +689,8 @@ fn test_environ() {
 
 #[test]
 fn test_file_ops() {
-    let (output, _dir) = run_bas_with_tmpdir(r#"
+    let (output, _dir) = run_bas_with_tmpdir(
+        r#"
         MKDIR "{DIR}/testsubdir"
         OPEN #1: NAME "{DIR}/testsubdir/test.txt", ACCESS OUTPUT
         PRINT #1, "hello"
@@ -636,7 +703,8 @@ fn test_file_ops() {
         KILL "{DIR}/testsubdir/renamed.txt"
         RMDIR "{DIR}/testsubdir"
         PRINT "done"
-    "#);
+    "#,
+    );
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(lines[0], "hello");
     assert_eq!(lines[1], "done");
@@ -678,7 +746,10 @@ fn test_type_sub() {
 #[test]
 fn test_cls() {
     let output = run_bas("CLS\n");
-    assert!(output.contains("\x1b[2J\x1b[H"), "CLS should emit ANSI clear + home");
+    assert!(
+        output.contains("\x1b[2J\x1b[H"),
+        "CLS should emit ANSI clear + home"
+    );
 }
 
 #[test]
@@ -690,21 +761,30 @@ fn test_beep() {
 #[test]
 fn test_locate() {
     let output = run_bas("LOCATE 5, 10\nPRINT \"X\"\n");
-    assert!(output.contains("\x1b[5;10H"), "LOCATE should emit ANSI cursor move");
+    assert!(
+        output.contains("\x1b[5;10H"),
+        "LOCATE should emit ANSI cursor move"
+    );
     assert!(output.contains("X"));
 }
 
 #[test]
 fn test_locate_row_only() {
     let output = run_bas("LOCATE 3\nPRINT \"Y\"\n");
-    assert!(output.contains("\x1b[3;1H"), "LOCATE with row only should keep col=1");
+    assert!(
+        output.contains("\x1b[3;1H"),
+        "LOCATE with row only should keep col=1"
+    );
 }
 
 #[test]
 fn test_color() {
     let output = run_bas("COLOR 4, 1\nPRINT \"red on blue\"\n");
     // Color 4 = red -> ANSI 31, color 1 = blue -> ANSI 44
-    assert!(output.contains("\x1b[31;44m"), "COLOR 4,1 should emit combined ANSI 31;44");
+    assert!(
+        output.contains("\x1b[31;44m"),
+        "COLOR 4,1 should emit combined ANSI 31;44"
+    );
 }
 
 #[test]
@@ -729,13 +809,19 @@ fn test_locate_error_row_zero() {
 #[test]
 fn test_csrlin() {
     let output = run_bas("LOCATE 7, 1\nPRINT CSRLIN\n");
-    assert!(output.contains("7"), "CSRLIN should return 7 after LOCATE 7");
+    assert!(
+        output.contains("7"),
+        "CSRLIN should return 7 after LOCATE 7"
+    );
 }
 
 #[test]
 fn test_pos() {
     let output = run_bas("LOCATE 1, 12\nPRINT POS(0)\n");
-    assert!(output.contains("12"), "POS(0) should return 12 after LOCATE ,12");
+    assert!(
+        output.contains("12"),
+        "POS(0) should return 12 after LOCATE ,12"
+    );
 }
 
 #[test]
@@ -747,14 +833,20 @@ fn test_width() {
 #[test]
 fn test_view_print() {
     let output = run_bas("VIEW PRINT 5 TO 20\n");
-    assert!(output.contains("\x1b[5;20r"), "VIEW PRINT should emit ANSI scroll region");
+    assert!(
+        output.contains("\x1b[5;20r"),
+        "VIEW PRINT should emit ANSI scroll region"
+    );
 }
 
 #[test]
 fn test_view_print_reset() {
     let output = run_bas("VIEW PRINT\n");
     // Reset emits ANSI scroll region reset (no args)
-    assert!(output.contains("\x1b[r"), "VIEW PRINT (no args) should reset scroll region");
+    assert!(
+        output.contains("\x1b[r"),
+        "VIEW PRINT (no args) should reset scroll region"
+    );
 }
 
 // ── Phase 3: INKEY$ and INPUT$ ───────────────────────────────────────
@@ -768,11 +860,13 @@ fn test_inkey_returns_empty_in_test_mode() {
 
 #[test]
 fn test_inkey_in_expression() {
-    let output = run_bas(r#"
+    let output = run_bas(
+        r#"
 DIM k AS STRING
 k = INKEY$()
 IF k = "" THEN PRINT "empty" ELSE PRINT "key"
-"#);
+"#,
+    );
     assert_eq!(output.trim(), "empty");
 }
 
@@ -783,43 +877,62 @@ IF k = "" THEN PRINT "empty" ELSE PRINT "key"
 
 #[test]
 fn test_screen_function() {
-    let output = run_bas(r#"
+    let output = run_bas(
+        r#"
 LOCATE 1, 1
 PRINT "A";
 PRINT SCREEN(1, 1)
-"#);
+"#,
+    );
     // SCREEN(1,1) should return ASCII code of 'A' = 65
-    assert!(output.contains("65"), "SCREEN(1,1) should return 65 for 'A'");
+    assert!(
+        output.contains("65"),
+        "SCREEN(1,1) should return 65 for 'A'"
+    );
 }
 
 #[test]
 fn test_screen_function_empty() {
-    let output = run_bas(r#"
+    let output = run_bas(
+        r#"
 CLS
 PRINT SCREEN(5, 5)
-"#);
+"#,
+    );
     // Empty screen position should return 32 (space)
-    assert!(output.contains("32"), "Empty position should return 32 (space)");
+    assert!(
+        output.contains("32"),
+        "Empty position should return 32 (space)"
+    );
 }
 
 #[test]
 fn test_screen_function_after_print() {
-    let output = run_bas(r#"
+    let output = run_bas(
+        r#"
 CLS
 LOCATE 2, 3
 PRINT "XY";
 PRINT SCREEN(2, 3); SCREEN(2, 4)
-"#);
+"#,
+    );
     // X=88, Y=89
-    assert!(output.contains("88"), "SCREEN(2,3) should return 88 for 'X'");
-    assert!(output.contains("89"), "SCREEN(2,4) should return 89 for 'Y'");
+    assert!(
+        output.contains("88"),
+        "SCREEN(2,3) should return 88 for 'X'"
+    );
+    assert!(
+        output.contains("89"),
+        "SCREEN(2,4) should return 89 for 'Y'"
+    );
 }
 
 // ==================== SET/ASK POINTER ====================
 
 #[test]
 fn test_set_ask_pointer() {
-    let (output, _dir) = run_bas_with_tmpdir(r#"
+    let (output, _dir) = run_bas_with_tmpdir(
+        r#"
 OPEN #1: NAME "{DIR}/seek.dat", ORGANIZATION STREAM, ACCESS OUTIN
 DIM s AS STRING
 s = "ABCDEFGHIJ"
@@ -830,7 +943,8 @@ SET #1: POINTER 1
 ASK #1: POINTER p
 PRINT p
 CLOSE #1
-"#);
+"#,
+    );
     // After PUT of 10 bytes, position should be 11 (1-based)
     // After SET POINTER to 1, position should be 1
     let lines: Vec<&str> = output.lines().collect();
@@ -843,7 +957,8 @@ CLOSE #1
 #[test]
 fn test_byref_sub() {
     // ANSI BASIC: parameters are BYVAL by default, so x is NOT modified
-    let output = run_bas(r#"
+    let output = run_bas(
+        r#"
 DIM x AS NUMERIC
 x = 10
 CALL AddFive(x)
@@ -852,13 +967,15 @@ PRINT x
 SUB AddFive(n AS NUMERIC)
     n = n + 5
 END SUB
-"#);
+"#,
+    );
     assert_eq!(output, "10\n");
 }
 
 #[test]
 fn test_byval_sub() {
-    let output = run_bas(r#"
+    let output = run_bas(
+        r#"
 DIM x AS NUMERIC
 x = 10
 CALL AddFive(x)
@@ -867,14 +984,16 @@ PRINT x
 SUB AddFive(BYVAL n AS NUMERIC)
     n = n + 5
 END SUB
-"#);
+"#,
+    );
     assert_eq!(output, "10\n");
 }
 
 #[test]
 fn test_byval_paren_forces_byval() {
     // ANSI BASIC: BYVAL by default, parenthesized arg also forces BYVAL
-    let output = run_bas(r#"
+    let output = run_bas(
+        r#"
 DIM x AS NUMERIC
 x = 10
 CALL AddFive((x))
@@ -883,13 +1002,15 @@ PRINT x
 SUB AddFive(n AS NUMERIC)
     n = n + 5
 END SUB
-"#);
+"#,
+    );
     assert_eq!(output, "10\n");
 }
 
 #[test]
 fn test_byval_expression_arg() {
-    let output = run_bas(r#"
+    let output = run_bas(
+        r#"
 DIM x AS NUMERIC
 x = 10
 CALL AddFive(x + 0)
@@ -898,14 +1019,16 @@ PRINT x
 SUB AddFive(n AS NUMERIC)
     n = n + 5
 END SUB
-"#);
+"#,
+    );
     assert_eq!(output, "10\n");
 }
 
 #[test]
 fn test_byref_function() {
     // ANSI BASIC: BYVAL by default, so x is NOT modified by the function
-    let output = run_bas(r#"
+    let output = run_bas(
+        r#"
 DIM x AS NUMERIC
 x = 10
 DIM r AS NUMERIC
@@ -917,13 +1040,15 @@ FUNCTION Dbl(n AS NUMERIC)
     n = n * 2
     Dbl = n
 END FUNCTION
-"#);
+"#,
+    );
     assert_eq!(output, "10\n20\n");
 }
 
 #[test]
 fn test_byval_function() {
-    let output = run_bas(r#"
+    let output = run_bas(
+        r#"
 DIM x AS NUMERIC
 x = 10
 DIM r AS NUMERIC
@@ -935,7 +1060,8 @@ FUNCTION Dbl(BYVAL n AS NUMERIC)
     n = n * 2
     Dbl = n
 END FUNCTION
-"#);
+"#,
+    );
     assert_eq!(output, "10\n20\n");
 }
 
@@ -943,37 +1069,49 @@ END FUNCTION
 
 #[test]
 fn test_mat_zer_con_idn() {
-    let output = run_bas("DIM A(1 TO 2, 1 TO 2)\nMAT A = ZER\nMAT PRINT A\nMAT A = CON\nMAT PRINT A\nMAT A = IDN\nMAT PRINT A\n");
+    let output = run_bas(
+        "DIM A(1 TO 2, 1 TO 2)\nMAT A = ZER\nMAT PRINT A\nMAT A = CON\nMAT PRINT A\nMAT A = IDN\nMAT PRINT A\n",
+    );
     assert_eq!(output, "0 0\n0 0\n1 1\n1 1\n1 0\n0 1\n");
 }
 
 #[test]
 fn test_mat_add_sub() {
-    let output = run_bas("DIM A(1 TO 2, 1 TO 2)\nDIM B(1 TO 2, 1 TO 2)\nDIM C(1 TO 2, 1 TO 2)\nA(1,1) = 1\nA(1,2) = 2\nA(2,1) = 3\nA(2,2) = 4\nB(1,1) = 5\nB(1,2) = 6\nB(2,1) = 7\nB(2,2) = 8\nMAT C = A + B\nMAT PRINT C\nMAT C = A - B\nMAT PRINT C\n");
+    let output = run_bas(
+        "DIM A(1 TO 2, 1 TO 2)\nDIM B(1 TO 2, 1 TO 2)\nDIM C(1 TO 2, 1 TO 2)\nA(1,1) = 1\nA(1,2) = 2\nA(2,1) = 3\nA(2,2) = 4\nB(1,1) = 5\nB(1,2) = 6\nB(2,1) = 7\nB(2,2) = 8\nMAT C = A + B\nMAT PRINT C\nMAT C = A - B\nMAT PRINT C\n",
+    );
     assert_eq!(output, "6 8\n10 12\n-4 -4\n-4 -4\n");
 }
 
 #[test]
 fn test_mat_mul() {
-    let output = run_bas("DIM A(1 TO 2, 1 TO 2)\nDIM B(1 TO 2, 1 TO 2)\nDIM C(1 TO 2, 1 TO 2)\nA(1,1) = 1\nA(1,2) = 2\nA(2,1) = 3\nA(2,2) = 4\nB(1,1) = 5\nB(1,2) = 6\nB(2,1) = 7\nB(2,2) = 8\nMAT C = A * B\nMAT PRINT C\n");
+    let output = run_bas(
+        "DIM A(1 TO 2, 1 TO 2)\nDIM B(1 TO 2, 1 TO 2)\nDIM C(1 TO 2, 1 TO 2)\nA(1,1) = 1\nA(1,2) = 2\nA(2,1) = 3\nA(2,2) = 4\nB(1,1) = 5\nB(1,2) = 6\nB(2,1) = 7\nB(2,2) = 8\nMAT C = A * B\nMAT PRINT C\n",
+    );
     assert_eq!(output, "19 22\n43 50\n");
 }
 
 #[test]
 fn test_mat_scalar_mul() {
-    let output = run_bas("DIM A(1 TO 2, 1 TO 2)\nDIM C(1 TO 2, 1 TO 2)\nA(1,1) = 1\nA(1,2) = 2\nA(2,1) = 3\nA(2,2) = 4\nMAT C = (3) * A\nMAT PRINT C\n");
+    let output = run_bas(
+        "DIM A(1 TO 2, 1 TO 2)\nDIM C(1 TO 2, 1 TO 2)\nA(1,1) = 1\nA(1,2) = 2\nA(2,1) = 3\nA(2,2) = 4\nMAT C = (3) * A\nMAT PRINT C\n",
+    );
     assert_eq!(output, "3 6\n9 12\n");
 }
 
 #[test]
 fn test_mat_trn() {
-    let output = run_bas("DIM A(1 TO 2, 1 TO 3)\nDIM B(1 TO 3, 1 TO 2)\nA(1,1) = 1\nA(1,2) = 2\nA(1,3) = 3\nA(2,1) = 4\nA(2,2) = 5\nA(2,3) = 6\nMAT B = TRN(A)\nMAT PRINT B\n");
+    let output = run_bas(
+        "DIM A(1 TO 2, 1 TO 3)\nDIM B(1 TO 3, 1 TO 2)\nA(1,1) = 1\nA(1,2) = 2\nA(1,3) = 3\nA(2,1) = 4\nA(2,2) = 5\nA(2,3) = 6\nMAT B = TRN(A)\nMAT PRINT B\n",
+    );
     assert_eq!(output, "1 4\n2 5\n3 6\n");
 }
 
 #[test]
 fn test_mat_inv_det() {
-    let output = run_bas("DIM A(1 TO 2, 1 TO 2)\nDIM B(1 TO 2, 1 TO 2)\nA(1,1) = 4\nA(1,2) = 7\nA(2,1) = 2\nA(2,2) = 6\nMAT B = INV(A)\nPRINT DET\n");
+    let output = run_bas(
+        "DIM A(1 TO 2, 1 TO 2)\nDIM B(1 TO 2, 1 TO 2)\nA(1,1) = 4\nA(1,2) = 7\nA(2,1) = 2\nA(2,2) = 6\nMAT B = INV(A)\nPRINT DET\n",
+    );
     // det(A) = 4*6 - 7*2 = 10
     assert_eq!(output.trim(), "10");
 }
@@ -986,6 +1124,8 @@ fn test_mat_read() {
 
 #[test]
 fn test_mat_copy() {
-    let output = run_bas("DIM A(1 TO 2, 1 TO 2)\nDIM B(1 TO 2, 1 TO 2)\nA(1,1) = 1\nA(1,2) = 2\nA(2,1) = 3\nA(2,2) = 4\nMAT B = A\nMAT PRINT B\n");
+    let output = run_bas(
+        "DIM A(1 TO 2, 1 TO 2)\nDIM B(1 TO 2, 1 TO 2)\nA(1,1) = 1\nA(1,2) = 2\nA(2,1) = 3\nA(2,2) = 4\nMAT B = A\nMAT PRINT B\n",
+    );
     assert_eq!(output, "1 2\n3 4\n");
 }
