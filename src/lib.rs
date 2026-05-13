@@ -21,7 +21,9 @@ pub fn poll_inkey() -> String {
     }
     let result = if event::poll(Duration::ZERO).unwrap_or(false) {
         match event::read() {
-            Ok(Event::Key(KeyEvent { code, modifiers, .. })) => match code {
+            Ok(Event::Key(KeyEvent {
+                code, modifiers, ..
+            })) => match code {
                 KeyCode::Char(c) => {
                     if modifiers.contains(KeyModifiers::CONTROL) {
                         let ctrl = (c as u8).wrapping_sub(b'a').wrapping_add(1);

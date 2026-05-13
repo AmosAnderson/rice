@@ -109,7 +109,10 @@ pub enum Stmt {
     Write(Vec<Expr>),
     Sleep(Option<Expr>),
     Clear,
-    Name { old: Expr, new: Expr },
+    Name {
+        old: Expr,
+        new: Expr,
+    },
     Kill(Expr),
     Mkdir(Expr),
     Rmdir(Expr),
@@ -121,20 +124,44 @@ pub enum Stmt {
     Static(Vec<DimDecl>),
 
     // User-defined types
-    TypeDef { name: String, fields: Vec<TypeField> },
-    MemberAssign { target: Expr, value: Expr },
+    TypeDef {
+        name: String,
+        fields: Vec<TypeField>,
+    },
+    MemberAssign {
+        target: Expr,
+        value: Expr,
+    },
 
     // SET/ASK POINTER (ANSI BASIC file positioning)
-    SetPointer { file_num: Expr, position: Expr },
-    AskPointer { file_num: Expr, var: Variable },
+    SetPointer {
+        file_num: Expr,
+        position: Expr,
+    },
+    AskPointer {
+        file_num: Expr,
+        var: Variable,
+    },
 
     // Console
     Cls,
     Beep,
-    Locate { row: Option<Expr>, col: Option<Expr> },
-    Color { fg: Option<Expr>, bg: Option<Expr> },
-    Width { columns: Option<Expr>, rows: Option<Expr> },
-    ViewPrint { top: Option<Expr>, bottom: Option<Expr> },
+    Locate {
+        row: Option<Expr>,
+        col: Option<Expr>,
+    },
+    Color {
+        fg: Option<Expr>,
+        bg: Option<Expr>,
+    },
+    Width {
+        columns: Option<Expr>,
+        rows: Option<Expr>,
+    },
+    ViewPrint {
+        top: Option<Expr>,
+        bottom: Option<Expr>,
+    },
 
     // WHEN EXCEPTION
     WhenException {
@@ -281,10 +308,10 @@ pub enum DataItem {
 
 #[derive(Debug, Clone)]
 pub struct OpenStmt {
-    pub channel: Expr,       // file number expression
-    pub name: Expr,          // filename expression
-    pub access: FileAccess,  // ACCESS mode
-    pub organization: Option<FileOrg>,  // ORGANIZATION (optional)
+    pub channel: Expr,                 // file number expression
+    pub name: Expr,                    // filename expression
+    pub access: FileAccess,            // ACCESS mode
+    pub organization: Option<FileOrg>, // ORGANIZATION (optional)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -26,7 +26,9 @@ impl Value {
             BasicType::Numeric => Value::Numeric(0.0),
             BasicType::String => Value::Str(String::new()),
             BasicType::UserDefined(_) => {
-                panic!("default_for(UserDefined) requires type definition context; use Interpreter::create_default_record")
+                panic!(
+                    "default_for(UserDefined) requires type definition context; use Interpreter::create_default_record"
+                )
             }
         }
     }
@@ -80,11 +82,9 @@ impl Value {
         match ty {
             BasicType::Numeric => Ok(Value::Numeric(self.to_f64()?)),
             BasicType::String => Ok(Value::Str(self.to_string_val()?)),
-            BasicType::UserDefined(_) => {
-                Err(RuntimeError::TypeMismatch {
-                    msg: "cannot coerce to user-defined type".into(),
-                })
-            }
+            BasicType::UserDefined(_) => Err(RuntimeError::TypeMismatch {
+                msg: "cannot coerce to user-defined type".into(),
+            }),
         }
     }
 
@@ -120,9 +120,8 @@ impl Value {
 
     /// Coerce to a target type, falling back to default on failure.
     pub fn coerce_to_type(&self, ty: &BasicType) -> Value {
-        self.coerce_to(ty.clone()).unwrap_or_else(|_| {
-            Value::default_for_type(Some(ty))
-        })
+        self.coerce_to(ty.clone())
+            .unwrap_or_else(|_| Value::default_for_type(Some(ty)))
     }
 
     pub fn is_truthy(&self) -> Result<bool, RuntimeError> {
@@ -161,8 +160,14 @@ impl PartialEq for Value {
         match (self, other) {
             (Value::Str(a), Value::Str(b)) => a == b,
             (
-                Value::Record { type_name: ta, fields: fa },
-                Value::Record { type_name: tb, fields: fb },
+                Value::Record {
+                    type_name: ta,
+                    fields: fa,
+                },
+                Value::Record {
+                    type_name: tb,
+                    fields: fb,
+                },
             ) => ta == tb && fa == fb,
             (Value::Numeric(a), Value::Numeric(b)) => a == b,
             _ => false,

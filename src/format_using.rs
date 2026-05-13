@@ -130,9 +130,9 @@ struct NumericField {
     asterisk_dollar: bool, // **$
     digits_before: usize,  // digit positions before decimal
     has_decimal: bool,
-    digits_after: usize,   // digit positions after decimal
+    digits_after: usize, // digit positions after decimal
     has_comma: bool,
-    scientific: bool,      // ^^^^
+    scientific: bool, // ^^^^
 }
 
 fn parse_numeric_field(chars: &[char], start: usize) -> (NumericField, usize) {

@@ -48,7 +48,9 @@ impl Environment {
             return Some(v.clone());
         }
         // If variable is shared, read from root
-        if self.shared_vars.contains(key) && let Some(parent) = &self.parent {
+        if self.shared_vars.contains(key)
+            && let Some(parent) = &self.parent
+        {
             return Self::get_from_root(parent, key);
         }
         if let Some(v) = self.vars.get(key) {
@@ -67,7 +69,9 @@ impl Environment {
             return; // Constant cannot be reassigned
         }
         // If variable is shared, write to root
-        if self.shared_vars.contains(key) && let Some(parent) = &self.parent {
+        if self.shared_vars.contains(key)
+            && let Some(parent) = &self.parent
+        {
             Self::set_in_root(parent, key, value);
             return;
         }

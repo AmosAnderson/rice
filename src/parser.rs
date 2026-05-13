@@ -46,9 +46,7 @@ impl Parser {
         }
 
         // If we hit a newline or EOF after a label, return a Rem as placeholder
-        if matches!(self.peek(), Token::Newline | Token::Eof)
-            && label.is_some()
-        {
+        if matches!(self.peek(), Token::Newline | Token::Eof) && label.is_some() {
             self.skip_newlines();
             return Ok(LabeledStmt {
                 label,
@@ -89,12 +87,14 @@ impl Parser {
                 let label = self.parse_label()?;
                 Ok(Stmt::Goto(label))
             }
-            Token::KwGosub => {
-                Err(ParseError::General { line: self.current_line(), msg: "GOSUB is not supported; use SUB/FUNCTION instead".into() })
-            }
-            Token::KwReturn => {
-                Err(ParseError::General { line: self.current_line(), msg: "RETURN is not supported; use EXIT SUB or EXIT FUNCTION instead".into() })
-            }
+            Token::KwGosub => Err(ParseError::General {
+                line: self.current_line(),
+                msg: "GOSUB is not supported; use SUB/FUNCTION instead".into(),
+            }),
+            Token::KwReturn => Err(ParseError::General {
+                line: self.current_line(),
+                msg: "RETURN is not supported; use EXIT SUB or EXIT FUNCTION instead".into(),
+            }),
             Token::KwExit => self.parse_exit(),
             Token::KwEnd => {
                 self.advance();
@@ -128,7 +128,9 @@ impl Parser {
                 // Peek ahead to determine which ON form for a specific error message
                 let next = self.peek_at(1).cloned();
                 let msg = match next.as_ref() {
-                    Some(Token::KwError) => "ON ERROR GOTO is not supported; use WHEN EXCEPTION instead",
+                    Some(Token::KwError) => {
+                        "ON ERROR GOTO is not supported; use WHEN EXCEPTION instead"
+                    }
                     Some(Token::KwTimer) => "ON TIMER is not supported in ANSI BASIC",
                     Some(Token::KwKey) => "ON KEY is not supported in ANSI BASIC",
                     _ => {
@@ -137,11 +139,15 @@ impl Parser {
                         "ON GOTO/ON GOSUB is not supported in ANSI BASIC"
                     }
                 };
-                Err(ParseError::General { line: self.current_line(), msg: msg.into() })
+                Err(ParseError::General {
+                    line: self.current_line(),
+                    msg: msg.into(),
+                })
             }
-            Token::KwResume => {
-                Err(ParseError::General { line: self.current_line(), msg: "RESUME is not supported; use WHEN EXCEPTION instead".into() })
-            }
+            Token::KwResume => Err(ParseError::General {
+                line: self.current_line(),
+                msg: "RESUME is not supported; use WHEN EXCEPTION instead".into(),
+            }),
             Token::KwRandomize => {
                 self.advance();
                 if self.at_stmt_end() {
@@ -199,33 +205,43 @@ impl Parser {
                     Ok(Stmt::Shell(Some(self.parse_expr()?)))
                 }
             }
-            Token::KwLset => {
-                Err(ParseError::General { line: self.current_line(), msg: "LSET is not supported in ANSI BASIC".into() })
-            }
-            Token::KwRset => {
-                Err(ParseError::General { line: self.current_line(), msg: "RSET is not supported in ANSI BASIC".into() })
-            }
+            Token::KwLset => Err(ParseError::General {
+                line: self.current_line(),
+                msg: "LSET is not supported in ANSI BASIC".into(),
+            }),
+            Token::KwRset => Err(ParseError::General {
+                line: self.current_line(),
+                msg: "RSET is not supported in ANSI BASIC".into(),
+            }),
             Token::KwShared => self.parse_shared(),
             Token::KwStatic => self.parse_static(),
-            Token::KwDefInt | Token::KwDefLng | Token::KwDefSng |
-            Token::KwDefDbl | Token::KwDefStr => {
-                Err(ParseError::General { line: self.current_line(), msg: "DEFtype is not supported in ANSI BASIC".into() })
-            }
-            Token::KwDef => {
-                Err(ParseError::General { line: self.current_line(), msg: "DEF FN is not supported; use FUNCTION instead".into() })
-            }
+            Token::KwDefInt
+            | Token::KwDefLng
+            | Token::KwDefSng
+            | Token::KwDefDbl
+            | Token::KwDefStr => Err(ParseError::General {
+                line: self.current_line(),
+                msg: "DEFtype is not supported in ANSI BASIC".into(),
+            }),
+            Token::KwDef => Err(ParseError::General {
+                line: self.current_line(),
+                msg: "DEF FN is not supported; use FUNCTION instead".into(),
+            }),
             Token::KwType => self.parse_type_def(),
             // CHAIN/COMMON
-            Token::KwChain => {
-                Err(ParseError::General { line: self.current_line(), msg: "CHAIN is not supported in ANSI BASIC".into() })
-            }
-            Token::KwCommon => {
-                Err(ParseError::General { line: self.current_line(), msg: "COMMON is not supported in ANSI BASIC".into() })
-            }
+            Token::KwChain => Err(ParseError::General {
+                line: self.current_line(),
+                msg: "CHAIN is not supported in ANSI BASIC".into(),
+            }),
+            Token::KwCommon => Err(ParseError::General {
+                line: self.current_line(),
+                msg: "COMMON is not supported in ANSI BASIC".into(),
+            }),
             // FIELD (unsupported)
-            Token::KwField => {
-                Err(ParseError::General { line: self.current_line(), msg: "FIELD is not supported in ANSI BASIC".into() })
-            }
+            Token::KwField => Err(ParseError::General {
+                line: self.current_line(),
+                msg: "FIELD is not supported in ANSI BASIC".into(),
+            }),
             // SET #n: POINTER expr
             Token::KwSet => self.parse_set_pointer(),
             // ASK #n: POINTER var
@@ -243,12 +259,14 @@ impl Parser {
             Token::KwColor => self.parse_color(),
             Token::KwWidth => self.parse_width(),
             Token::KwView => self.parse_view_print(),
-            Token::KwTimer => {
-                Err(ParseError::General { line: self.current_line(), msg: "TIMER ON/OFF/STOP is not supported in ANSI BASIC".into() })
-            }
-            Token::KwKey => {
-                Err(ParseError::General { line: self.current_line(), msg: "KEY ON/OFF/STOP is not supported in ANSI BASIC".into() })
-            }
+            Token::KwTimer => Err(ParseError::General {
+                line: self.current_line(),
+                msg: "TIMER ON/OFF/STOP is not supported in ANSI BASIC".into(),
+            }),
+            Token::KwKey => Err(ParseError::General {
+                line: self.current_line(),
+                msg: "KEY ON/OFF/STOP is not supported in ANSI BASIC".into(),
+            }),
             Token::KwWhen => self.parse_when(),
             Token::KwRetry => {
                 self.advance();
@@ -258,9 +276,10 @@ impl Parser {
                 self.advance();
                 Ok(Stmt::Continue)
             }
-            Token::KwWend => {
-                Err(ParseError::General { line: self.current_line(), msg: "WEND is not supported; use END WHILE instead".into() })
-            }
+            Token::KwWend => Err(ParseError::General {
+                line: self.current_line(),
+                msg: "WEND is not supported; use END WHILE instead".into(),
+            }),
             Token::KwMat => self.parse_mat(),
             Token::Identifier(_) => self.parse_assignment_or_call(),
             _ => {
@@ -286,7 +305,11 @@ impl Parser {
         let mut format = None;
 
         if self.at_stmt_end() {
-            return Ok(Stmt::Print(PrintStmt { format, items, trailing }));
+            return Ok(Stmt::Print(PrintStmt {
+                format,
+                items,
+                trailing,
+            }));
         }
 
         // Check for PRINT USING
@@ -343,7 +366,11 @@ impl Parser {
             }
         }
 
-        Ok(Stmt::Print(PrintStmt { format, items, trailing }))
+        Ok(Stmt::Print(PrintStmt {
+            format,
+            items,
+            trailing,
+        }))
     }
 
     fn parse_file_print(&mut self) -> Result<Stmt, ParseError> {
@@ -437,7 +464,11 @@ impl Parser {
 
         // MID$ assignment is not supported in ANSI BASIC
         if name == "MID$" && self.peek_at(1) == Some(&Token::LeftParen) {
-            return Err(ParseError::General { line: self.current_line(), msg: "MID$ assignment is not supported in ANSI BASIC; use string slicing instead".into() });
+            return Err(ParseError::General {
+                line: self.current_line(),
+                msg: "MID$ assignment is not supported in ANSI BASIC; use string slicing instead"
+                    .into(),
+            });
         }
 
         self.advance();
@@ -476,7 +507,10 @@ impl Parser {
 
             // Member access on array element: name(indices).field[.field...] = expr
             if matches!(self.peek(), Token::Dot) {
-                let base = Expr::ArrayIndex { name: name.clone(), indices };
+                let base = Expr::ArrayIndex {
+                    name: name.clone(),
+                    indices,
+                };
                 let target = self.parse_dot_chain(base)?;
                 self.expect(Token::Equal)?;
                 let value = self.parse_expr()?;
@@ -488,14 +522,9 @@ impl Parser {
                 self.advance(); // consume =
                 let expr = self.parse_expr()?;
                 return Ok(Stmt::Let {
-                    var: Variable {
-                        name: name.clone(),
-                    },
+                    var: Variable { name: name.clone() },
                     expr: Expr::BinaryOp {
-                        left: Box::new(Expr::ArrayIndex {
-                            name,
-                            indices,
-                        }),
+                        left: Box::new(Expr::ArrayIndex { name, indices }),
                         op: BinOp::Eq, // marker — interpreter handles this specially
                         right: Box::new(expr),
                     },
@@ -691,11 +720,8 @@ impl Parser {
         if matches!(self.peek(), Token::Newline | Token::Eof) {
             // Block IF
             self.skip_newlines();
-            let then_body = self.parse_body_until(&[
-                Token::KwElseIf,
-                Token::KwElse,
-                Token::KwEndIf,
-            ])?;
+            let then_body =
+                self.parse_body_until(&[Token::KwElseIf, Token::KwElse, Token::KwEndIf])?;
 
             let mut elseif_clauses = Vec::new();
             while matches!(self.peek(), Token::KwElseIf) {
@@ -703,11 +729,8 @@ impl Parser {
                 let cond = self.parse_expr()?;
                 self.expect(Token::KwThen)?;
                 self.skip_newlines();
-                let body = self.parse_body_until(&[
-                    Token::KwElseIf,
-                    Token::KwElse,
-                    Token::KwEndIf,
-                ])?;
+                let body =
+                    self.parse_body_until(&[Token::KwElseIf, Token::KwElse, Token::KwEndIf])?;
                 elseif_clauses.push((cond, body));
             }
 
@@ -1305,9 +1328,18 @@ impl Parser {
                 Token::KwAccess => {
                     self.advance();
                     match self.peek() {
-                        Token::KwInput => { self.advance(); access = FileAccess::Input; }
-                        Token::KwOutput => { self.advance(); access = FileAccess::Output; }
-                        Token::KwOutIn => { self.advance(); access = FileAccess::OutIn; }
+                        Token::KwInput => {
+                            self.advance();
+                            access = FileAccess::Input;
+                        }
+                        Token::KwOutput => {
+                            self.advance();
+                            access = FileAccess::Output;
+                        }
+                        Token::KwOutIn => {
+                            self.advance();
+                            access = FileAccess::OutIn;
+                        }
                         _ => {
                             return Err(ParseError::Expected {
                                 line: self.current_line(),
@@ -1320,8 +1352,14 @@ impl Parser {
                 Token::KwOrganization => {
                     self.advance();
                     match self.peek() {
-                        Token::KwSequential => { self.advance(); organization = Some(FileOrg::Sequential); }
-                        Token::KwStream => { self.advance(); organization = Some(FileOrg::Stream); }
+                        Token::KwSequential => {
+                            self.advance();
+                            organization = Some(FileOrg::Sequential);
+                        }
+                        Token::KwStream => {
+                            self.advance();
+                            organization = Some(FileOrg::Stream);
+                        }
                         _ => {
                             return Err(ParseError::Expected {
                                 line: self.current_line(),
@@ -1341,7 +1379,12 @@ impl Parser {
             }
         }
 
-        Ok(Stmt::Open(OpenStmt { channel, name, access, organization }))
+        Ok(Stmt::Open(OpenStmt {
+            channel,
+            name,
+            access,
+            organization,
+        }))
     }
 
     fn parse_close(&mut self) -> Result<Stmt, ParseError> {
@@ -1467,7 +1510,10 @@ impl Parser {
             let field_name = self.expect_field_name()?;
             self.expect(Token::KwAs)?;
             let field_type = self.parse_type_keyword()?;
-            fields.push(TypeField { name: field_name, field_type });
+            fields.push(TypeField {
+                name: field_name,
+                field_type,
+            });
             self.skip_newlines();
         }
         self.expect(Token::KwEndType)?;
@@ -1879,7 +1925,9 @@ impl Parser {
                     let mut args = Vec::new();
                     if !matches!(self.peek(), Token::RightParen) {
                         // Skip optional # before argument (e.g., INPUT$(n, #1))
-                        if matches!(self.peek(), Token::Hash) { self.advance(); }
+                        if matches!(self.peek(), Token::Hash) {
+                            self.advance();
+                        }
                         args.push(self.parse_expr()?);
 
                         // Check for colon — string slice syntax: name$(start:end)
@@ -1896,7 +1944,9 @@ impl Parser {
 
                         while matches!(self.peek(), Token::Comma) {
                             self.advance();
-                            if matches!(self.peek(), Token::Hash) { self.advance(); }
+                            if matches!(self.peek(), Token::Hash) {
+                                self.advance();
+                            }
                             args.push(self.parse_expr()?);
                         }
                     }
@@ -1939,16 +1989,10 @@ impl Parser {
                         }
                     }
                     self.expect(Token::RightParen)?;
-                    Expr::FunctionCall {
-                        name,
-                        args,
-                    }
+                    Expr::FunctionCall { name, args }
                 } else {
                     // No parens — treat as 0-arg function call
-                    Expr::FunctionCall {
-                        name,
-                        args: vec![],
-                    }
+                    Expr::FunctionCall { name, args: vec![] }
                 }
             }
             _ => {
@@ -1977,10 +2021,7 @@ impl Parser {
     }
 
     fn is_keyword_function(&self, tok: &Token) -> bool {
-        matches!(
-            tok,
-            Token::KwLen | Token::KwString
-        )
+        matches!(tok, Token::KwLen | Token::KwString)
     }
 
     fn keyword_function_name(&self, tok: &Token) -> String {
@@ -2023,10 +2064,22 @@ impl Parser {
 
     fn parse_type_keyword(&mut self) -> Result<BasicType, ParseError> {
         match self.peek().clone() {
-            Token::KwInteger => { self.advance(); Ok(BasicType::Numeric) }
-            Token::KwLong => { self.advance(); Ok(BasicType::Numeric) }
-            Token::KwSingle => { self.advance(); Ok(BasicType::Numeric) }
-            Token::KwDouble => { self.advance(); Ok(BasicType::Numeric) }
+            Token::KwInteger => {
+                self.advance();
+                Ok(BasicType::Numeric)
+            }
+            Token::KwLong => {
+                self.advance();
+                Ok(BasicType::Numeric)
+            }
+            Token::KwSingle => {
+                self.advance();
+                Ok(BasicType::Numeric)
+            }
+            Token::KwDouble => {
+                self.advance();
+                Ok(BasicType::Numeric)
+            }
             Token::KwString => {
                 self.advance();
                 // Check for STRING * n (treat as plain String in ANSI BASIC)
@@ -2055,13 +2108,11 @@ impl Parser {
                 self.advance();
                 Ok(BasicType::UserDefined(name))
             }
-            _ => {
-                Err(ParseError::Expected {
-                    line: self.current_line(),
-                    expected: "type name".into(),
-                    found: format!("{:?}", self.peek()),
-                })
-            }
+            _ => Err(ParseError::Expected {
+                line: self.current_line(),
+                expected: "type name".into(),
+                found: format!("{:?}", self.peek()),
+            }),
         }
     }
 
@@ -2130,7 +2181,15 @@ impl Parser {
     }
 
     fn at_stmt_end(&self) -> bool {
-        matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon | Token::KwElse | Token::KwUse | Token::KwEndWhen)
+        matches!(
+            self.peek(),
+            Token::Newline
+                | Token::Eof
+                | Token::Colon
+                | Token::KwElse
+                | Token::KwUse
+                | Token::KwEndWhen
+        )
     }
 
     fn skip_newlines(&mut self) {
@@ -2235,12 +2294,18 @@ impl Parser {
         self.advance(); // consume PRINT
         if self.at_stmt_end() {
             // VIEW PRINT with no args — reset scroll region
-            Ok(Stmt::ViewPrint { top: None, bottom: None })
+            Ok(Stmt::ViewPrint {
+                top: None,
+                bottom: None,
+            })
         } else {
             let top = self.parse_expr()?;
             self.expect(Token::KwTo)?;
             let bottom = self.parse_expr()?;
-            Ok(Stmt::ViewPrint { top: Some(top), bottom: Some(bottom) })
+            Ok(Stmt::ViewPrint {
+                top: Some(top),
+                bottom: Some(bottom),
+            })
         }
     }
 }

@@ -30,9 +30,9 @@ pub enum Token {
     Minus,
     Star,
     Slash,
-    Caret,     // ^
-    Equal,     // = (assignment AND comparison)
-    NotEqual,  // <>
+    Caret,    // ^
+    Equal,    // = (assignment AND comparison)
+    NotEqual, // <>
     Less,
     Greater,
     LessEqual,

@@ -74,7 +74,10 @@ fn analyze_source(source: String) -> DocumentState {
             let (line, col) = lex_error_pos(&e);
             diagnostics.push(Diagnostic {
                 range: Range {
-                    start: Position::new(line.saturating_sub(1) as u32, col.saturating_sub(1) as u32),
+                    start: Position::new(
+                        line.saturating_sub(1) as u32,
+                        col.saturating_sub(1) as u32,
+                    ),
                     end: Position::new(line.saturating_sub(1) as u32, col as u32),
                 },
                 severity: Some(DiagnosticSeverity::ERROR),
@@ -148,7 +151,11 @@ fn extract_symbols(stmts: &[LabeledStmt]) -> DocumentSymbols {
     syms
 }
 
-fn collect_symbols(stmts: &[LabeledStmt], syms: &mut DocumentSymbols, seen_vars: &mut HashSet<String>) {
+fn collect_symbols(
+    stmts: &[LabeledStmt],
+    syms: &mut DocumentSymbols,
+    seen_vars: &mut HashSet<String>,
+) {
     for ls in stmts {
         // Labels
         if let Some(ref label) = ls.label {
@@ -182,7 +189,11 @@ fn collect_symbols(stmts: &[LabeledStmt], syms: &mut DocumentSymbols, seen_vars:
                 add_variable(syms, var, ls.line, seen_vars);
             }
             Stmt::Dim(decls) | Stmt::Redim { decls, .. } => {
-                let tag = if matches!(&ls.stmt, Stmt::Redim { .. }) { "REDIM" } else { "DIM" };
+                let tag = if matches!(&ls.stmt, Stmt::Redim { .. }) {
+                    "REDIM"
+                } else {
+                    "DIM"
+                };
                 for d in decls {
                     let full = d.name.clone();
                     if seen_vars.insert(full.clone()) {
@@ -240,7 +251,12 @@ fn collect_symbols(stmts: &[LabeledStmt], syms: &mut DocumentSymbols, seen_vars:
     }
 }
 
-fn add_variable(syms: &mut DocumentSymbols, var: &Variable, line: usize, seen: &mut HashSet<String>) {
+fn add_variable(
+    syms: &mut DocumentSymbols,
+    var: &Variable,
+    line: usize,
+    seen: &mut HashSet<String>,
+) {
     let full = var.name.clone();
     if seen.insert(full.clone()) {
         syms.variables.push(SymbolInfo {
@@ -324,7 +340,10 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("TYPE", "Define a user-defined record type"),
         ("END TYPE", "End of TYPE definition"),
         // Error handling
-        ("WHEN EXCEPTION IN", "Begin guarded block for error handling"),
+        (
+            "WHEN EXCEPTION IN",
+            "Begin guarded block for error handling",
+        ),
         ("USE", "Begin error handler block"),
         ("END WHEN", "End of WHEN EXCEPTION block"),
         ("RETRY", "Re-execute the guarded block after error"),
@@ -350,7 +369,10 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("WIDTH", "Set terminal width"),
         ("VIEW PRINT", "Set scrolling region"),
         // Matrix
-        ("MAT", "Matrix operation (MAT PRINT, MAT READ, MAT +/-/*, etc.)"),
+        (
+            "MAT",
+            "Matrix operation (MAT PRINT, MAT READ, MAT +/-/*, etc.)",
+        ),
         // System
         ("SHELL", "Execute a system command"),
         ("SLEEP", "Pause execution"),
@@ -390,7 +412,10 @@ static BUILTIN_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("EXP", "EXP(n) — e raised to power n"),
         ("LOG", "LOG(n) — Natural logarithm"),
         ("RND", "RND — Random number [0,1)"),
-        ("ROUND", "ROUND(n[, places]) — Round to nearest integer or decimal place"),
+        (
+            "ROUND",
+            "ROUND(n[, places]) — Round to nearest integer or decimal place",
+        ),
         ("ASIN", "ASIN(n) — Arc sine (radians)"),
         ("ACOS", "ACOS(n) — Arc cosine (radians)"),
         ("COT", "COT(n) — Cotangent (radians)"),
@@ -398,7 +423,10 @@ static BUILTIN_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("SEC", "SEC(n) — Secant (radians)"),
         ("ANGLE", "ANGLE(x, y) — Two-argument arctangent (radians)"),
         ("CEIL", "CEIL(n) — Ceiling (smallest integer >= n)"),
-        ("TRUNCATE", "TRUNCATE(n, places) — Truncate to decimal places"),
+        (
+            "TRUNCATE",
+            "TRUNCATE(n, places) — Truncate to decimal places",
+        ),
         ("REMAINDER", "REMAINDER(a, b) — Remainder of a / b"),
         ("MAXNUM", "MAXNUM — Largest representable number"),
         ("PI", "PI — Value of pi (3.14159...)"),
@@ -463,132 +491,417 @@ static TYPE_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
 static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
     HashMap::from([
         // Math
-        ("ABS", "```basic\nABS(n)\n```\nReturns the absolute value of `n`."),
-        ("INT", "```basic\nINT(n)\n```\nReturns the largest integer ≤ `n` (floor)."),
+        (
+            "ABS",
+            "```basic\nABS(n)\n```\nReturns the absolute value of `n`.",
+        ),
+        (
+            "INT",
+            "```basic\nINT(n)\n```\nReturns the largest integer ≤ `n` (floor).",
+        ),
         ("FIX", "```basic\nFIX(n)\n```\nTruncates `n` toward zero."),
-        ("SGN", "```basic\nSGN(n)\n```\nReturns -1, 0, or 1 based on the sign of `n`."),
-        ("SQR", "```basic\nSQR(n)\n```\nReturns the square root of `n`."),
-        ("SIN", "```basic\nSIN(n)\n```\nReturns the sine of `n` (radians)."),
-        ("COS", "```basic\nCOS(n)\n```\nReturns the cosine of `n` (radians)."),
-        ("TAN", "```basic\nTAN(n)\n```\nReturns the tangent of `n` (radians)."),
-        ("ATN", "```basic\nATN(n)\n```\nReturns the arctangent of `n` (radians)."),
-        ("EXP", "```basic\nEXP(n)\n```\nReturns e raised to the power `n`."),
-        ("LOG", "```basic\nLOG(n)\n```\nReturns the natural logarithm of `n`."),
-        ("RND", "```basic\nRND[(n)]\n```\nReturns a random number in [0, 1)."),
-        ("ROUND", "```basic\nROUND(n[, places])\n```\nRounds `n` to the nearest integer, or to `places` decimal places."),
-        ("ASIN", "```basic\nASIN(n)\n```\nReturns the arc sine of `n` in radians."),
-        ("ACOS", "```basic\nACOS(n)\n```\nReturns the arc cosine of `n` in radians."),
-        ("COT", "```basic\nCOT(n)\n```\nReturns the cotangent of `n` (radians)."),
-        ("CSC", "```basic\nCSC(n)\n```\nReturns the cosecant of `n` (radians)."),
-        ("SEC", "```basic\nSEC(n)\n```\nReturns the secant of `n` (radians)."),
-        ("ANGLE", "```basic\nANGLE(x, y)\n```\nReturns the angle in radians from the positive x-axis to the point (x, y)."),
-        ("CEIL", "```basic\nCEIL(n)\n```\nReturns the smallest integer ≥ `n` (ceiling)."),
-        ("TRUNCATE", "```basic\nTRUNCATE(n, places)\n```\nTruncates `n` to `places` decimal places."),
-        ("REMAINDER", "```basic\nREMAINDER(a, b)\n```\nReturns the IEEE remainder of `a` divided by `b`."),
-        ("MAXNUM", "```basic\nMAXNUM\n```\nReturns the largest representable numeric value."),
-        ("PI", "```basic\nPI\n```\nReturns the value of pi (3.14159265358979...)."),
+        (
+            "SGN",
+            "```basic\nSGN(n)\n```\nReturns -1, 0, or 1 based on the sign of `n`.",
+        ),
+        (
+            "SQR",
+            "```basic\nSQR(n)\n```\nReturns the square root of `n`.",
+        ),
+        (
+            "SIN",
+            "```basic\nSIN(n)\n```\nReturns the sine of `n` (radians).",
+        ),
+        (
+            "COS",
+            "```basic\nCOS(n)\n```\nReturns the cosine of `n` (radians).",
+        ),
+        (
+            "TAN",
+            "```basic\nTAN(n)\n```\nReturns the tangent of `n` (radians).",
+        ),
+        (
+            "ATN",
+            "```basic\nATN(n)\n```\nReturns the arctangent of `n` (radians).",
+        ),
+        (
+            "EXP",
+            "```basic\nEXP(n)\n```\nReturns e raised to the power `n`.",
+        ),
+        (
+            "LOG",
+            "```basic\nLOG(n)\n```\nReturns the natural logarithm of `n`.",
+        ),
+        (
+            "RND",
+            "```basic\nRND[(n)]\n```\nReturns a random number in [0, 1).",
+        ),
+        (
+            "ROUND",
+            "```basic\nROUND(n[, places])\n```\nRounds `n` to the nearest integer, or to `places` decimal places.",
+        ),
+        (
+            "ASIN",
+            "```basic\nASIN(n)\n```\nReturns the arc sine of `n` in radians.",
+        ),
+        (
+            "ACOS",
+            "```basic\nACOS(n)\n```\nReturns the arc cosine of `n` in radians.",
+        ),
+        (
+            "COT",
+            "```basic\nCOT(n)\n```\nReturns the cotangent of `n` (radians).",
+        ),
+        (
+            "CSC",
+            "```basic\nCSC(n)\n```\nReturns the cosecant of `n` (radians).",
+        ),
+        (
+            "SEC",
+            "```basic\nSEC(n)\n```\nReturns the secant of `n` (radians).",
+        ),
+        (
+            "ANGLE",
+            "```basic\nANGLE(x, y)\n```\nReturns the angle in radians from the positive x-axis to the point (x, y).",
+        ),
+        (
+            "CEIL",
+            "```basic\nCEIL(n)\n```\nReturns the smallest integer ≥ `n` (ceiling).",
+        ),
+        (
+            "TRUNCATE",
+            "```basic\nTRUNCATE(n, places)\n```\nTruncates `n` to `places` decimal places.",
+        ),
+        (
+            "REMAINDER",
+            "```basic\nREMAINDER(a, b)\n```\nReturns the IEEE remainder of `a` divided by `b`.",
+        ),
+        (
+            "MAXNUM",
+            "```basic\nMAXNUM\n```\nReturns the largest representable numeric value.",
+        ),
+        (
+            "PI",
+            "```basic\nPI\n```\nReturns the value of pi (3.14159265358979...).",
+        ),
         // String
-        ("LEN", "```basic\nLEN(s$)\n```\nReturns the length of string `s$`."),
-        ("LEFT$", "```basic\nLEFT$(s$, n)\n```\nReturns the leftmost `n` characters of `s$`."),
-        ("RIGHT$", "```basic\nRIGHT$(s$, n)\n```\nReturns the rightmost `n` characters of `s$`."),
-        ("MID$", "```basic\nMID$(s$, start[, length])\n```\nReturns a substring starting at position `start`. If `length` is omitted, returns from `start` to end."),
-        ("INSTR", "```basic\nINSTR([start,] s$, search$)\n```\nReturns the position of `search$` in `s$`, or 0 if not found."),
-        ("UCASE$", "```basic\nUCASE$(s$)\n```\nConverts `s$` to uppercase."),
-        ("LCASE$", "```basic\nLCASE$(s$)\n```\nConverts `s$` to lowercase."),
-        ("LTRIM$", "```basic\nLTRIM$(s$)\n```\nRemoves leading spaces from `s$`."),
-        ("RTRIM$", "```basic\nRTRIM$(s$)\n```\nRemoves trailing spaces from `s$`."),
-        ("SPACE$", "```basic\nSPACE$(n)\n```\nReturns a string of `n` spaces."),
-        ("STRING$", "```basic\nSTRING$(n, char)\n```\nReturns a string of `n` copies of `char`."),
-        ("CHR$", "```basic\nCHR$(n)\n```\nReturns the character with ASCII code `n`."),
-        ("ASC", "```basic\nASC(s$)\n```\nReturns the ASCII code of the first character of `s$`."),
-        ("STR$", "```basic\nSTR$(n)\n```\nConverts number `n` to its string representation."),
-        ("VAL", "```basic\nVAL(s$)\n```\nConverts string `s$` to a number."),
-        ("HEX$", "```basic\nHEX$(n)\n```\nReturns the hexadecimal string representation of `n`."),
-        ("OCT$", "```basic\nOCT$(n)\n```\nReturns the octal string representation of `n`."),
+        (
+            "LEN",
+            "```basic\nLEN(s$)\n```\nReturns the length of string `s$`.",
+        ),
+        (
+            "LEFT$",
+            "```basic\nLEFT$(s$, n)\n```\nReturns the leftmost `n` characters of `s$`.",
+        ),
+        (
+            "RIGHT$",
+            "```basic\nRIGHT$(s$, n)\n```\nReturns the rightmost `n` characters of `s$`.",
+        ),
+        (
+            "MID$",
+            "```basic\nMID$(s$, start[, length])\n```\nReturns a substring starting at position `start`. If `length` is omitted, returns from `start` to end.",
+        ),
+        (
+            "INSTR",
+            "```basic\nINSTR([start,] s$, search$)\n```\nReturns the position of `search$` in `s$`, or 0 if not found.",
+        ),
+        (
+            "UCASE$",
+            "```basic\nUCASE$(s$)\n```\nConverts `s$` to uppercase.",
+        ),
+        (
+            "LCASE$",
+            "```basic\nLCASE$(s$)\n```\nConverts `s$` to lowercase.",
+        ),
+        (
+            "LTRIM$",
+            "```basic\nLTRIM$(s$)\n```\nRemoves leading spaces from `s$`.",
+        ),
+        (
+            "RTRIM$",
+            "```basic\nRTRIM$(s$)\n```\nRemoves trailing spaces from `s$`.",
+        ),
+        (
+            "SPACE$",
+            "```basic\nSPACE$(n)\n```\nReturns a string of `n` spaces.",
+        ),
+        (
+            "STRING$",
+            "```basic\nSTRING$(n, char)\n```\nReturns a string of `n` copies of `char`.",
+        ),
+        (
+            "CHR$",
+            "```basic\nCHR$(n)\n```\nReturns the character with ASCII code `n`.",
+        ),
+        (
+            "ASC",
+            "```basic\nASC(s$)\n```\nReturns the ASCII code of the first character of `s$`.",
+        ),
+        (
+            "STR$",
+            "```basic\nSTR$(n)\n```\nConverts number `n` to its string representation.",
+        ),
+        (
+            "VAL",
+            "```basic\nVAL(s$)\n```\nConverts string `s$` to a number.",
+        ),
+        (
+            "HEX$",
+            "```basic\nHEX$(n)\n```\nReturns the hexadecimal string representation of `n`.",
+        ),
+        (
+            "OCT$",
+            "```basic\nOCT$(n)\n```\nReturns the octal string representation of `n`.",
+        ),
         // File
-        ("FREEFILE", "```basic\nFREEFILE\n```\nReturns the next available file number."),
-        ("EOF", "```basic\nEOF(n)\n```\nReturns 1 (true) if at end of file `n`, 0 otherwise."),
-        ("LOF", "```basic\nLOF(n)\n```\nReturns the length in bytes of file `n`."),
-        ("LOC", "```basic\nLOC(n)\n```\nReturns the current byte position in file `n`."),
+        (
+            "FREEFILE",
+            "```basic\nFREEFILE\n```\nReturns the next available file number.",
+        ),
+        (
+            "EOF",
+            "```basic\nEOF(n)\n```\nReturns 1 (true) if at end of file `n`, 0 otherwise.",
+        ),
+        (
+            "LOF",
+            "```basic\nLOF(n)\n```\nReturns the length in bytes of file `n`.",
+        ),
+        (
+            "LOC",
+            "```basic\nLOC(n)\n```\nReturns the current byte position in file `n`.",
+        ),
         // System
-        ("ENVIRON$", "```basic\nENVIRON$(name$)\n```\nReturns the value of the environment variable `name$`."),
-        ("TIMER", "```basic\nTIMER\n```\nReturns the number of seconds elapsed since midnight."),
-        ("DATE$", "```basic\nDATE$\n```\nReturns the current date as MM-DD-YYYY."),
-        ("TIME$", "```basic\nTIME$\n```\nReturns the current time as HH:MM:SS."),
+        (
+            "ENVIRON$",
+            "```basic\nENVIRON$(name$)\n```\nReturns the value of the environment variable `name$`.",
+        ),
+        (
+            "TIMER",
+            "```basic\nTIMER\n```\nReturns the number of seconds elapsed since midnight.",
+        ),
+        (
+            "DATE$",
+            "```basic\nDATE$\n```\nReturns the current date as MM-DD-YYYY.",
+        ),
+        (
+            "TIME$",
+            "```basic\nTIME$\n```\nReturns the current time as HH:MM:SS.",
+        ),
         // Array (stubs)
-        ("LBOUND", "```basic\nLBOUND(array[, dim])\n```\nReturns the lower bound of `array`. *(Stub — not fully implemented.)*"),
-        ("UBOUND", "```basic\nUBOUND(array[, dim])\n```\nReturns the upper bound of `array`. *(Stub — not fully implemented.)*"),
+        (
+            "LBOUND",
+            "```basic\nLBOUND(array[, dim])\n```\nReturns the lower bound of `array`. *(Stub — not fully implemented.)*",
+        ),
+        (
+            "UBOUND",
+            "```basic\nUBOUND(array[, dim])\n```\nReturns the upper bound of `array`. *(Stub — not fully implemented.)*",
+        ),
     ])
 });
 
 static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
     HashMap::from([
         // I/O
-        ("PRINT", "```basic\nPRINT [expression][;|,] ...\n```\nDisplays output on the screen. Use `;` to suppress spacing, `,` for tab zones. Use `TAB(n)` and `SPC(n)` for positioning."),
-        ("PRINT USING", "```basic\nPRINT USING format$: expr[, expr...]\n```\nFormatted output. `#` for digits, `.` for decimal, `$$` for currency, `^^^^` for scientific notation."),
-        ("INPUT", "```basic\nINPUT [\"prompt\";] var[, var...]\n```\nReads values from the keyboard into variables."),
-        ("LINE INPUT", "```basic\nLINE INPUT [\"prompt\";] var$\n```\nReads an entire line of input into a string variable (no comma parsing)."),
-        ("WRITE", "```basic\nWRITE [expression][, expression...]\n```\nWrites comma-delimited data with strings in quotes."),
+        (
+            "PRINT",
+            "```basic\nPRINT [expression][;|,] ...\n```\nDisplays output on the screen. Use `;` to suppress spacing, `,` for tab zones. Use `TAB(n)` and `SPC(n)` for positioning.",
+        ),
+        (
+            "PRINT USING",
+            "```basic\nPRINT USING format$: expr[, expr...]\n```\nFormatted output. `#` for digits, `.` for decimal, `$$` for currency, `^^^^` for scientific notation.",
+        ),
+        (
+            "INPUT",
+            "```basic\nINPUT [\"prompt\";] var[, var...]\n```\nReads values from the keyboard into variables.",
+        ),
+        (
+            "LINE INPUT",
+            "```basic\nLINE INPUT [\"prompt\";] var$\n```\nReads an entire line of input into a string variable (no comma parsing).",
+        ),
+        (
+            "WRITE",
+            "```basic\nWRITE [expression][, expression...]\n```\nWrites comma-delimited data with strings in quotes.",
+        ),
         // Variables
-        ("LET", "```basic\nLET var = expression\n```\nAssigns a value to a variable. The `LET` keyword is optional."),
-        ("DIM", "```basic\nDIM var[(dims)] [AS type]\n```\nDeclares a variable or array with optional type and dimensions."),
-        ("CONST", "```basic\nCONST name = expression\n```\nDefines a named constant that cannot be reassigned."),
-        ("SWAP", "```basic\nSWAP var1, var2\n```\nExchanges the values of two variables."),
-        ("OPTION BASE", "```basic\nOPTION BASE {0|1}\n```\nSets the default lower bound for arrays. Default is 1 (ANSI convention)."),
-        ("REDIM", "```basic\nREDIM [PRESERVE] var(dims) [AS type]\n```\nRedimensions an array. Use `PRESERVE` to keep existing contents."),
-        ("ERASE", "```basic\nERASE array[, array...]\n```\nResets arrays to their default values."),
-        ("SHARED", "```basic\nSHARED var[, var...]\n```\nMakes variables in a SUB/FUNCTION refer to the main module's variables."),
-        ("STATIC", "```basic\nSTATIC var[, var...]\n```\nPreserves local variable values between calls to a SUB/FUNCTION."),
-        ("CLEAR", "```basic\nCLEAR\n```\nResets all variables to their default values (0 or \"\")."),
+        (
+            "LET",
+            "```basic\nLET var = expression\n```\nAssigns a value to a variable. The `LET` keyword is optional.",
+        ),
+        (
+            "DIM",
+            "```basic\nDIM var[(dims)] [AS type]\n```\nDeclares a variable or array with optional type and dimensions.",
+        ),
+        (
+            "CONST",
+            "```basic\nCONST name = expression\n```\nDefines a named constant that cannot be reassigned.",
+        ),
+        (
+            "SWAP",
+            "```basic\nSWAP var1, var2\n```\nExchanges the values of two variables.",
+        ),
+        (
+            "OPTION BASE",
+            "```basic\nOPTION BASE {0|1}\n```\nSets the default lower bound for arrays. Default is 1 (ANSI convention).",
+        ),
+        (
+            "REDIM",
+            "```basic\nREDIM [PRESERVE] var(dims) [AS type]\n```\nRedimensions an array. Use `PRESERVE` to keep existing contents.",
+        ),
+        (
+            "ERASE",
+            "```basic\nERASE array[, array...]\n```\nResets arrays to their default values.",
+        ),
+        (
+            "SHARED",
+            "```basic\nSHARED var[, var...]\n```\nMakes variables in a SUB/FUNCTION refer to the main module's variables.",
+        ),
+        (
+            "STATIC",
+            "```basic\nSTATIC var[, var...]\n```\nPreserves local variable values between calls to a SUB/FUNCTION.",
+        ),
+        (
+            "CLEAR",
+            "```basic\nCLEAR\n```\nResets all variables to their default values (0 or \"\").",
+        ),
         // Control flow
-        ("IF", "```basic\nIF condition THEN\n  ...\n[ELSEIF condition THEN\n  ...]\n[ELSE\n  ...]\nEND IF\n```\nConditional execution. Also supports single-line form: `IF cond THEN stmt [ELSE stmt]`."),
-        ("FOR", "```basic\nFOR var = start TO end [STEP inc]\n  ...\nNEXT [var]\n```\nCounted loop. Default STEP is 1."),
-        ("WHILE", "```basic\nWHILE condition\n  ...\nWEND\n```\nLoop while condition is true."),
-        ("DO", "```basic\nDO [{WHILE|UNTIL} condition]\n  ...\nLOOP [{WHILE|UNTIL} condition]\n```\nFlexible loop with condition at top or bottom."),
-        ("SELECT", "```basic\nSELECT CASE expression\n  CASE value[, value...]\n    ...\n  CASE ELSE\n    ...\nEND SELECT\n```\nMulti-way branch based on expression value."),
-        ("GOTO", "```basic\nGOTO label\n```\nTransfers execution to the specified label or line number."),
+        (
+            "IF",
+            "```basic\nIF condition THEN\n  ...\n[ELSEIF condition THEN\n  ...]\n[ELSE\n  ...]\nEND IF\n```\nConditional execution. Also supports single-line form: `IF cond THEN stmt [ELSE stmt]`.",
+        ),
+        (
+            "FOR",
+            "```basic\nFOR var = start TO end [STEP inc]\n  ...\nNEXT [var]\n```\nCounted loop. Default STEP is 1.",
+        ),
+        (
+            "WHILE",
+            "```basic\nWHILE condition\n  ...\nWEND\n```\nLoop while condition is true.",
+        ),
+        (
+            "DO",
+            "```basic\nDO [{WHILE|UNTIL} condition]\n  ...\nLOOP [{WHILE|UNTIL} condition]\n```\nFlexible loop with condition at top or bottom.",
+        ),
+        (
+            "SELECT",
+            "```basic\nSELECT CASE expression\n  CASE value[, value...]\n    ...\n  CASE ELSE\n    ...\nEND SELECT\n```\nMulti-way branch based on expression value.",
+        ),
+        (
+            "GOTO",
+            "```basic\nGOTO label\n```\nTransfers execution to the specified label or line number.",
+        ),
         ("END", "```basic\nEND\n```\nEnds program execution."),
         ("STOP", "```basic\nSTOP\n```\nStops program execution."),
-        ("SYSTEM", "```basic\nSYSTEM\n```\nExits to the operating system."),
+        (
+            "SYSTEM",
+            "```basic\nSYSTEM\n```\nExits to the operating system.",
+        ),
         // Procedures
-        ("SUB", "```basic\nSUB name (params)\n  ...\nEND SUB\n```\nDefines a subroutine. Called with `CALL name(args)` or just `name args`."),
-        ("FUNCTION", "```basic\nFUNCTION name[$] (params)\n  name = return_value\nEND FUNCTION\n```\nDefines a function that returns a value."),
-        ("CALL", "```basic\nCALL name(args)\n```\nCalls a SUB with the given arguments."),
-        ("DECLARE", "```basic\nDECLARE SUB name (params)\nDECLARE FUNCTION name (params)\n```\nForward-declares a SUB or FUNCTION."),
+        (
+            "SUB",
+            "```basic\nSUB name (params)\n  ...\nEND SUB\n```\nDefines a subroutine. Called with `CALL name(args)` or just `name args`.",
+        ),
+        (
+            "FUNCTION",
+            "```basic\nFUNCTION name[$] (params)\n  name = return_value\nEND FUNCTION\n```\nDefines a function that returns a value.",
+        ),
+        (
+            "CALL",
+            "```basic\nCALL name(args)\n```\nCalls a SUB with the given arguments.",
+        ),
+        (
+            "DECLARE",
+            "```basic\nDECLARE SUB name (params)\nDECLARE FUNCTION name (params)\n```\nForward-declares a SUB or FUNCTION.",
+        ),
         // Data
-        ("DATA", "```basic\nDATA value[, value...]\n```\nDefines inline data to be read with READ."),
-        ("READ", "```basic\nREAD var[, var...]\n```\nReads values from DATA statements into variables."),
-        ("RESTORE", "```basic\nRESTORE [label]\n```\nResets the DATA pointer to the beginning or to a specific label."),
+        (
+            "DATA",
+            "```basic\nDATA value[, value...]\n```\nDefines inline data to be read with READ.",
+        ),
+        (
+            "READ",
+            "```basic\nREAD var[, var...]\n```\nReads values from DATA statements into variables.",
+        ),
+        (
+            "RESTORE",
+            "```basic\nRESTORE [label]\n```\nResets the DATA pointer to the beginning or to a specific label.",
+        ),
         // User-defined types
-        ("TYPE", "```basic\nTYPE name\n  field AS type\n  ...\nEND TYPE\n```\nDefines a user-defined record type with named fields. Access fields with dot notation."),
+        (
+            "TYPE",
+            "```basic\nTYPE name\n  field AS type\n  ...\nEND TYPE\n```\nDefines a user-defined record type with named fields. Access fields with dot notation.",
+        ),
         // Error handling
-        ("WHEN EXCEPTION IN", "```basic\nWHEN EXCEPTION IN\n  ...\nUSE\n  PRINT EXTYPE; EXTEXT$\nEND WHEN\n```\nStructured exception handling. Code in the guarded block is protected; the USE block handles errors."),
-        ("RETRY", "```basic\nRETRY\n```\nRe-executes the guarded block from the beginning after an error in a WHEN EXCEPTION handler."),
-        ("CONTINUE", "```basic\nCONTINUE\n```\nResumes execution after the statement that caused the error in a WHEN EXCEPTION handler."),
+        (
+            "WHEN EXCEPTION IN",
+            "```basic\nWHEN EXCEPTION IN\n  ...\nUSE\n  PRINT EXTYPE; EXTEXT$\nEND WHEN\n```\nStructured exception handling. Code in the guarded block is protected; the USE block handles errors.",
+        ),
+        (
+            "RETRY",
+            "```basic\nRETRY\n```\nRe-executes the guarded block from the beginning after an error in a WHEN EXCEPTION handler.",
+        ),
+        (
+            "CONTINUE",
+            "```basic\nCONTINUE\n```\nResumes execution after the statement that caused the error in a WHEN EXCEPTION handler.",
+        ),
         // File I/O
-        ("OPEN", "```basic\nOPEN #n: NAME file$, ACCESS {INPUT|OUTPUT|OUTIN}, ORGANIZATION {SEQUENTIAL|STREAM}\n```\nOpens a file for I/O using ANSI Full BASIC syntax."),
+        (
+            "OPEN",
+            "```basic\nOPEN #n: NAME file$, ACCESS {INPUT|OUTPUT|OUTIN}, ORGANIZATION {SEQUENTIAL|STREAM}\n```\nOpens a file for I/O using ANSI Full BASIC syntax.",
+        ),
         ("CLOSE", "```basic\nCLOSE #n\n```\nCloses an open file."),
-        ("SET POINTER", "```basic\nSET #n: POINTER position\n```\nSets the file position for the next read or write."),
-        ("ASK POINTER", "```basic\nASK #n: POINTER var\n```\nQueries the current file position into a variable."),
+        (
+            "SET POINTER",
+            "```basic\nSET #n: POINTER position\n```\nSets the file position for the next read or write.",
+        ),
+        (
+            "ASK POINTER",
+            "```basic\nASK #n: POINTER var\n```\nQueries the current file position into a variable.",
+        ),
         // File system
         ("NAME", "```basic\nNAME old$ AS new$\n```\nRenames a file."),
         ("KILL", "```basic\nKILL file$\n```\nDeletes a file."),
         ("MKDIR", "```basic\nMKDIR dir$\n```\nCreates a directory."),
         ("RMDIR", "```basic\nRMDIR dir$\n```\nRemoves a directory."),
-        ("CHDIR", "```basic\nCHDIR dir$\n```\nChanges the current working directory."),
+        (
+            "CHDIR",
+            "```basic\nCHDIR dir$\n```\nChanges the current working directory.",
+        ),
         // Console
         ("CLS", "```basic\nCLS\n```\nClears the screen."),
-        ("LOCATE", "```basic\nLOCATE row[, col]\n```\nMoves the cursor to the specified row and column (1-based)."),
-        ("COLOR", "```basic\nCOLOR foreground[, background]\n```\nSets the text foreground and background colors (0-255)."),
+        (
+            "LOCATE",
+            "```basic\nLOCATE row[, col]\n```\nMoves the cursor to the specified row and column (1-based).",
+        ),
+        (
+            "COLOR",
+            "```basic\nCOLOR foreground[, background]\n```\nSets the text foreground and background colors (0-255).",
+        ),
         ("BEEP", "```basic\nBEEP\n```\nSounds the terminal bell."),
-        ("WIDTH", "```basic\nWIDTH columns\n```\nSets the terminal width for PRINT output."),
-        ("VIEW PRINT", "```basic\nVIEW PRINT [top TO bottom]\n```\nSets the scrolling region. Without arguments, resets to full screen."),
+        (
+            "WIDTH",
+            "```basic\nWIDTH columns\n```\nSets the terminal width for PRINT output.",
+        ),
+        (
+            "VIEW PRINT",
+            "```basic\nVIEW PRINT [top TO bottom]\n```\nSets the scrolling region. Without arguments, resets to full screen.",
+        ),
         // Matrix
-        ("MAT", "```basic\nMAT C = A + B\nMAT C = A * B\nMAT B = INV(A)\nMAT B = TRN(A)\nMAT A = ZER / CON / IDN\nMAT PRINT A\n```\nMatrix operations on numeric arrays."),
+        (
+            "MAT",
+            "```basic\nMAT C = A + B\nMAT C = A * B\nMAT B = INV(A)\nMAT B = TRN(A)\nMAT A = ZER / CON / IDN\nMAT PRINT A\n```\nMatrix operations on numeric arrays.",
+        ),
         // System
-        ("SHELL", "```basic\nSHELL command$\n```\nExecutes a system command."),
-        ("SLEEP", "```basic\nSLEEP [seconds]\n```\nPauses execution. Without an argument, pauses indefinitely."),
-        ("RANDOMIZE", "```basic\nRANDOMIZE [seed | TIMER]\n```\nSeeds the random number generator. Use a fixed seed for reproducible sequences."),
+        (
+            "SHELL",
+            "```basic\nSHELL command$\n```\nExecutes a system command.",
+        ),
+        (
+            "SLEEP",
+            "```basic\nSLEEP [seconds]\n```\nPauses execution. Without an argument, pauses indefinitely.",
+        ),
+        (
+            "RANDOMIZE",
+            "```basic\nRANDOMIZE [seed | TIMER]\n```\nSeeds the random number generator. Use a fixed seed for reproducible sequences.",
+        ),
     ])
 });
 
@@ -631,9 +944,7 @@ fn resolve_token_name(state: &DocumentState, pos: Position) -> Option<String> {
 
 fn token_name(tok: &rice::token::Token) -> Option<String> {
     match tok {
-        rice::token::Token::Identifier(name) => {
-            Some(name.clone())
-        }
+        rice::token::Token::Identifier(name) => Some(name.clone()),
         rice::token::Token::KwPrint => Some("PRINT".into()),
         rice::token::Token::KwInput => Some("INPUT".into()),
         rice::token::Token::KwLineInput => Some("LINE INPUT".into()),
@@ -726,7 +1037,11 @@ fn token_name(tok: &rice::token::Token) -> Option<String> {
 }
 
 /// Push completions from a symbol list.
-fn push_symbol_completions(items: &mut Vec<CompletionItem>, symbols: &[SymbolInfo], kind: CompletionItemKind) {
+fn push_symbol_completions(
+    items: &mut Vec<CompletionItem>,
+    symbols: &[SymbolInfo],
+    kind: CompletionItemKind,
+) {
     for sym in symbols {
         items.push(CompletionItem {
             label: sym.name.clone(),
@@ -739,7 +1054,9 @@ fn push_symbol_completions(items: &mut Vec<CompletionItem>, symbols: &[SymbolInf
 
 /// Find the first matching symbol by name across all categories.
 fn find_symbol<'a>(symbols: &'a DocumentSymbols, name: &str) -> Option<&'a SymbolInfo> {
-    symbols.subs.iter()
+    symbols
+        .subs
+        .iter()
         .chain(symbols.functions.iter())
         .chain(symbols.variables.iter())
         .chain(symbols.constants.iter())
@@ -782,11 +1099,8 @@ impl LanguageServer for RiceLspBackend {
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        self.analyze(
-            params.text_document.uri,
-            params.text_document.text,
-        )
-        .await;
+        self.analyze(params.text_document.uri, params.text_document.text)
+            .await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -796,7 +1110,10 @@ impl LanguageServer for RiceLspBackend {
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        self.documents.write().await.remove(&params.text_document.uri);
+        self.documents
+            .write()
+            .await
+            .remove(&params.text_document.uri);
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
@@ -809,11 +1126,31 @@ impl LanguageServer for RiceLspBackend {
         let uri = params.text_document_position.text_document.uri;
         let docs = self.documents.read().await;
         if let Some(state) = docs.get(&uri) {
-            push_symbol_completions(&mut items, &state.symbols.subs, CompletionItemKind::FUNCTION);
-            push_symbol_completions(&mut items, &state.symbols.functions, CompletionItemKind::FUNCTION);
-            push_symbol_completions(&mut items, &state.symbols.variables, CompletionItemKind::VARIABLE);
-            push_symbol_completions(&mut items, &state.symbols.constants, CompletionItemKind::CONSTANT);
-            push_symbol_completions(&mut items, &state.symbols.labels, CompletionItemKind::REFERENCE);
+            push_symbol_completions(
+                &mut items,
+                &state.symbols.subs,
+                CompletionItemKind::FUNCTION,
+            );
+            push_symbol_completions(
+                &mut items,
+                &state.symbols.functions,
+                CompletionItemKind::FUNCTION,
+            );
+            push_symbol_completions(
+                &mut items,
+                &state.symbols.variables,
+                CompletionItemKind::VARIABLE,
+            );
+            push_symbol_completions(
+                &mut items,
+                &state.symbols.constants,
+                CompletionItemKind::CONSTANT,
+            );
+            push_symbol_completions(
+                &mut items,
+                &state.symbols.labels,
+                CompletionItemKind::REFERENCE,
+            );
         }
 
         Ok(Some(CompletionResponse::Array(items)))

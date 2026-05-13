@@ -5,11 +5,7 @@ pub enum LexError {
     #[error("line {line}, col {col}: unterminated string literal")]
     UnterminatedString { line: usize, col: usize },
     #[error("line {line}, col {col}: unexpected character '{ch}'")]
-    UnexpectedChar {
-        line: usize,
-        col: usize,
-        ch: char,
-    },
+    UnexpectedChar { line: usize, col: usize, ch: char },
     #[error("line {line}, col {col}: invalid number")]
     InvalidNumber { line: usize, col: usize },
 }

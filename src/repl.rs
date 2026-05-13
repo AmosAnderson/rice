@@ -1,9 +1,9 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
+use rustyline::Editor;
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
-use rustyline::Editor;
 
 use crate::interpreter::Interpreter;
 use crate::lexer::Lexer;
@@ -38,7 +38,12 @@ impl Highlighter for BasicHelper {
         Cow::Owned(highlight_line(line))
     }
 
-    fn highlight_char(&self, _line: &str, _pos: usize, _forced: rustyline::highlight::CmdKind) -> bool {
+    fn highlight_char(
+        &self,
+        _line: &str,
+        _pos: usize,
+        _forced: rustyline::highlight::CmdKind,
+    ) -> bool {
         true
     }
 }
@@ -158,9 +163,7 @@ fn token_source_len(token: &Token, source_from_token: &str) -> usize {
                 len += 1;
             }
             // Optional exponent: E/e/D/d followed by optional +/- and digits
-            if len < bytes.len()
-                && matches!(bytes[len], b'E' | b'e' | b'D' | b'd')
-            {
+            if len < bytes.len() && matches!(bytes[len], b'E' | b'e' | b'D' | b'd') {
                 len += 1;
                 if len < bytes.len() && matches!(bytes[len], b'+' | b'-') {
                     len += 1;
@@ -175,15 +178,24 @@ fn token_source_len(token: &Token, source_from_token: &str) -> usize {
             }
             len.max(1)
         }
-        Token::Identifier(name) => {
-            name.len()
-        }
+        Token::Identifier(name) => name.len(),
         // Two-character operators
         Token::NotEqual | Token::LessEqual | Token::GreaterEqual => 2,
         // Single-character operators/punctuation
-        Token::Plus | Token::Minus | Token::Star | Token::Slash        | Token::Caret | Token::Equal | Token::Less | Token::Greater
-        | Token::LeftParen | Token::RightParen | Token::Comma | Token::Semicolon
-        | Token::Hash | Token::Colon => 1,
+        Token::Plus
+        | Token::Minus
+        | Token::Star
+        | Token::Slash
+        | Token::Caret
+        | Token::Equal
+        | Token::Less
+        | Token::Greater
+        | Token::LeftParen
+        | Token::RightParen
+        | Token::Comma
+        | Token::Semicolon
+        | Token::Hash
+        | Token::Colon => 1,
         // Compound keywords
         Token::KwEndIf => keyword_len(source_from_token, &["END", "IF"]),
         Token::KwEndSub => keyword_len(source_from_token, &["END", "SUB"]),
@@ -343,11 +355,25 @@ fn token_color(token: &Token) -> &'static str {
         Token::NumericLiteral(_) | Token::LineNumber(_) => COLOR_NUMBER,
         Token::Identifier(_) => COLOR_IDENT,
         Token::KwRem => COLOR_COMMENT,
-        Token::Plus | Token::Minus | Token::Star | Token::Slash        | Token::Caret | Token::Equal | Token::NotEqual | Token::Less | Token::Greater
-        | Token::LessEqual | Token::GreaterEqual | Token::LeftParen | Token::RightParen
-        | Token::Comma | Token::Semicolon | Token::Hash | Token::Colon => COLOR_OPERATOR,
+        Token::Plus
+        | Token::Minus
+        | Token::Star
+        | Token::Slash
+        | Token::Caret
+        | Token::Equal
+        | Token::NotEqual
+        | Token::Less
+        | Token::Greater
+        | Token::LessEqual
+        | Token::GreaterEqual
+        | Token::LeftParen
+        | Token::RightParen
+        | Token::Comma
+        | Token::Semicolon
+        | Token::Hash
+        | Token::Colon => COLOR_OPERATOR,
         Token::Newline | Token::Eof => COLOR_OPERATOR, // should be skipped, but safe default
-        _ => COLOR_KEYWORD, // All Kw* variants
+        _ => COLOR_KEYWORD,                            // All Kw* variants
     }
 }
 
@@ -628,11 +654,7 @@ impl Repl {
     /// Delete a line or range of lines from the stored program.
     fn delete_lines(&mut self, start: u32, end: Option<u32>) {
         let end = end.unwrap_or(start);
-        let to_remove: Vec<u32> = self
-            .program
-            .range(start..=end)
-            .map(|(&k, _)| k)
-            .collect();
+        let to_remove: Vec<u32> = self.program.range(start..=end).map(|(&k, _)| k).collect();
         for k in to_remove {
             self.program.remove(&k);
         }
@@ -659,8 +681,12 @@ fn compute_depth_delta(line: &str) -> i32 {
     let mut prev_was_do = false;
     for st in &tokens {
         match &st.token {
-            Token::KwFor | Token::KwDo | Token::KwSub
-            | Token::KwFunction | Token::KwSelect | Token::KwType => {
+            Token::KwFor
+            | Token::KwDo
+            | Token::KwSub
+            | Token::KwFunction
+            | Token::KwSelect
+            | Token::KwType => {
                 delta += 1;
                 prev_was_do = matches!(st.token, Token::KwDo);
                 continue;
@@ -680,9 +706,15 @@ fn compute_depth_delta(line: &str) -> i32 {
             Token::KwWhen => {
                 delta += 1;
             }
-            Token::KwNext | Token::KwWend | Token::KwLoop
-            | Token::KwEndIf | Token::KwEndSub | Token::KwEndFunction
-            | Token::KwEndSelect | Token::KwEndType | Token::KwEndWhen => {
+            Token::KwNext
+            | Token::KwWend
+            | Token::KwLoop
+            | Token::KwEndIf
+            | Token::KwEndSub
+            | Token::KwEndFunction
+            | Token::KwEndSelect
+            | Token::KwEndType
+            | Token::KwEndWhen => {
                 delta -= 1;
             }
             _ => {}
@@ -782,7 +814,10 @@ mod tests {
     #[test]
     fn test_highlight_contains_colors() {
         let result = highlight_line("PRINT \"hello\"");
-        assert!(result.contains(COLOR_KEYWORD), "should contain keyword color");
+        assert!(
+            result.contains(COLOR_KEYWORD),
+            "should contain keyword color"
+        );
         assert!(result.contains(COLOR_STRING), "should contain string color");
         assert!(result.contains(COLOR_RESET), "should contain reset");
     }
@@ -790,9 +825,15 @@ mod tests {
     #[test]
     fn test_highlight_comment() {
         let result = highlight_line("' this is a comment");
-        assert!(result.contains(COLOR_COMMENT), "should contain comment color");
+        assert!(
+            result.contains(COLOR_COMMENT),
+            "should contain comment color"
+        );
         // The whole line should be a comment
-        assert!(!result.contains(COLOR_KEYWORD), "should not contain keyword color");
+        assert!(
+            !result.contains(COLOR_KEYWORD),
+            "should not contain keyword color"
+        );
     }
 
     #[test]
@@ -896,22 +937,46 @@ mod tests {
 
     #[test]
     fn test_classify_list() {
-        assert!(matches!(classify_input("LIST"), ReplAction::List(None, None)));
-        assert!(matches!(classify_input("LIST 10"), ReplAction::List(Some(10), Some(10))));
-        assert!(matches!(classify_input("LIST 10-50"), ReplAction::List(Some(10), Some(50))));
-        assert!(matches!(classify_input("list"), ReplAction::List(None, None)));
+        assert!(matches!(
+            classify_input("LIST"),
+            ReplAction::List(None, None)
+        ));
+        assert!(matches!(
+            classify_input("LIST 10"),
+            ReplAction::List(Some(10), Some(10))
+        ));
+        assert!(matches!(
+            classify_input("LIST 10-50"),
+            ReplAction::List(Some(10), Some(50))
+        ));
+        assert!(matches!(
+            classify_input("list"),
+            ReplAction::List(None, None)
+        ));
     }
 
     #[test]
     fn test_classify_delete() {
-        assert!(matches!(classify_input("DELETE 10"), ReplAction::Delete(10, Some(10))));
-        assert!(matches!(classify_input("DELETE 10-50"), ReplAction::Delete(10, Some(50))));
+        assert!(matches!(
+            classify_input("DELETE 10"),
+            ReplAction::Delete(10, Some(10))
+        ));
+        assert!(matches!(
+            classify_input("DELETE 10-50"),
+            ReplAction::Delete(10, Some(50))
+        ));
     }
 
     #[test]
     fn test_classify_delete_invalid() {
-        assert!(matches!(classify_input("DELETE"), ReplAction::InvalidCommand(_)));
-        assert!(matches!(classify_input("DELETE abc"), ReplAction::InvalidCommand(_)));
+        assert!(matches!(
+            classify_input("DELETE"),
+            ReplAction::InvalidCommand(_)
+        ));
+        assert!(matches!(
+            classify_input("DELETE abc"),
+            ReplAction::InvalidCommand(_)
+        ));
     }
 
     #[test]
