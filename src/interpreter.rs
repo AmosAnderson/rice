@@ -334,8 +334,7 @@ impl Interpreter {
                     .get(name)
                     .unwrap_or(Value::Str(String::new()))
                     .to_string_val()?;
-                let start_0 = (start_f as usize).saturating_sub(1);
-                let end_0 = (end_f as usize).min(s.len());
+                let (start_0, end_0) = Self::string_slice_byte_range(&s, start_f, end_f);
                 if start_0 <= end_0 {
                     s.replace_range(start_0..end_0, &replacement);
                 }
@@ -769,8 +768,6 @@ impl Interpreter {
         preserve: bool,
     ) -> Result<ControlFlow, RuntimeError> {
         for decl in decls {
-            let default = Value::default_for(Self::resolve_decl_type(decl));
-            self.env.borrow_mut().set(&decl.name, default);
             if !preserve {
                 let prefix = format!("{}_", decl.name);
                 let keys: Vec<String> = self
@@ -783,6 +780,41 @@ impl Interpreter {
                 for key in keys {
                     self.env.borrow_mut().vars_mut().remove(&key);
                 }
+            }
+            let resolved = Self::resolve_decl_type(decl);
+            if let Some(dims) = &decl.dimensions {
+                let base = self.env.borrow().option_base as i64;
+                let mut bounds = Vec::new();
+                for dim in dims {
+                    let (lower, upper) = match dim {
+                        (upper_expr, None) => {
+                            let upper = self.eval_expr(upper_expr)?.to_i64()?;
+                            (base, upper)
+                        }
+                        (lower_expr, Some(upper_expr)) => {
+                            let lower = self.eval_expr(lower_expr)?.to_i64()?;
+                            let upper = self.eval_expr(upper_expr)?.to_i64()?;
+                            (lower, upper)
+                        }
+                    };
+                    bounds.push((lower, upper));
+                }
+                self.array_dim_info.insert(decl.name.clone(), bounds);
+            } else {
+                self.array_dim_info.remove(&decl.name);
+                self.array_type_map.remove(&decl.name);
+            }
+            if let BasicType::UserDefined(ref type_name) = resolved {
+                if decl.dimensions.is_some() {
+                    self.array_type_map
+                        .insert(decl.name.clone(), type_name.clone());
+                } else {
+                    let record = self.create_default_record(type_name)?;
+                    self.env.borrow_mut().set(&decl.name, record);
+                }
+            } else {
+                let default = Value::default_for(resolved);
+                self.env.borrow_mut().set(&decl.name, default);
             }
         }
         Ok(ControlFlow::Normal)
@@ -858,14 +890,26 @@ impl Interpreter {
                     self.write_text(&s);
                 }
                 PrintItem::Tab(expr) => {
-                    let n = self.eval_expr(expr)?.to_i64()? as usize;
+                    let n = self.eval_expr(expr)?.to_i64()?;
+                    if n < 0 {
+                        return Err(RuntimeError::IllegalFunctionCall {
+                            msg: "TAB argument must be non-negative".into(),
+                        });
+                    }
+                    let n = n as usize;
                     if n > self.print_col {
                         let spaces = n - self.print_col;
                         self.write_text(&" ".repeat(spaces));
                     }
                 }
                 PrintItem::Spc(expr) => {
-                    let n = self.eval_expr(expr)?.to_i64()? as usize;
+                    let n = self.eval_expr(expr)?.to_i64()?;
+                    if n < 0 {
+                        return Err(RuntimeError::IllegalFunctionCall {
+                            msg: "SPC argument must be non-negative".into(),
+                        });
+                    }
+                    let n = n as usize;
                     self.write_text(&" ".repeat(n));
                 }
                 PrintItem::Comma => {
@@ -1589,8 +1633,7 @@ impl Interpreter {
                         msg: "string slice index must be >= 1".into(),
                     });
                 }
-                let start_0 = (start_f as usize).saturating_sub(1);
-                let end_0 = (end_f as usize).min(s.len());
+                let (start_0, end_0) = Self::string_slice_byte_range(&s, start_f, end_f);
                 if start_0 > end_0 {
                     return Ok(Value::Str(String::new()));
                 }
@@ -1967,9 +2010,22 @@ impl Interpreter {
     fn extract_matrix(&self, name: &str) -> Result<Vec<Vec<f64>>, RuntimeError> {
         let prefix = format!("{}_", name);
         let env = self.env.borrow();
-        let base = env.option_base as i64;
-        let mut max_row: i64 = base - 1;
-        let mut max_col: i64 = base - 1;
+        let (row_base, col_base, rows, cols, has_dim_info) =
+            if let Some(bounds) = self.array_dim_info.get(name) {
+                if bounds.len() == 2 {
+                    let rows = (bounds[0].1 - bounds[0].0 + 1).max(0) as usize;
+                    let cols = (bounds[1].1 - bounds[1].0 + 1).max(0) as usize;
+                    (bounds[0].0, bounds[1].0, rows, cols, true)
+                } else {
+                    let base = env.option_base as i64;
+                    (base, base, 0, 0, false)
+                }
+            } else {
+                let base = env.option_base as i64;
+                (base, base, 0, 0, false)
+            };
+        let mut max_row: i64 = row_base - 1;
+        let mut max_col: i64 = col_base - 1;
         let mut cells: Vec<(i64, i64, f64)> = Vec::new();
         for key in env.var_keys() {
             if let Some(suffix) = key.strip_prefix(&prefix) {
@@ -1989,17 +2045,25 @@ impl Interpreter {
                 }
             }
         }
-        if max_row < base || max_col < base {
+        let rows = if rows == 0 {
+            (max_row - row_base + 1) as usize
+        } else {
+            rows
+        };
+        let cols = if cols == 0 {
+            (max_col - col_base + 1) as usize
+        } else {
+            cols
+        };
+        if rows == 0 || cols == 0 || (!has_dim_info && (max_row < row_base || max_col < col_base)) {
             return Err(RuntimeError::General {
                 msg: format!("MAT: array '{}' has no 2-D elements", name),
             });
         }
-        let rows = (max_row - base + 1) as usize;
-        let cols = (max_col - base + 1) as usize;
         let mut mat = vec![vec![0.0; cols]; rows];
         for (r, c, v) in cells {
-            let ri = (r - base) as usize;
-            let ci = (c - base) as usize;
+            let ri = (r - row_base) as usize;
+            let ci = (c - col_base) as usize;
             if ri < rows && ci < cols {
                 mat[ri][ci] = v;
             }
@@ -2008,7 +2072,20 @@ impl Interpreter {
     }
 
     fn store_matrix(&mut self, name: &str, mat: &[Vec<f64>]) {
-        let base = self.env.borrow().option_base as i64;
+        let (row_base, col_base) = self
+            .array_dim_info
+            .get(name)
+            .and_then(|bounds| {
+                if bounds.len() == 2 {
+                    Some((bounds[0].0, bounds[1].0))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| {
+                let base = self.env.borrow().option_base as i64;
+                (base, base)
+            });
         let prefix = format!("{}_", name);
         let keys: Vec<String> = self
             .env
@@ -2022,10 +2099,34 @@ impl Interpreter {
         }
         for (i, row) in mat.iter().enumerate() {
             for (j, &val) in row.iter().enumerate() {
-                let key = format!("{}_{}_{}", name, (i as i64) + base, (j as i64) + base);
+                let key = format!(
+                    "{}_{}_{}",
+                    name,
+                    (i as i64) + row_base,
+                    (j as i64) + col_base
+                );
                 self.env.borrow_mut().set(&key, Value::Numeric(val));
             }
         }
+    }
+
+    fn string_slice_byte_range(s: &str, start_f: f64, end_f: f64) -> (usize, usize) {
+        let start = (start_f as usize).saturating_sub(1);
+        let end = end_f as usize;
+        if start >= end {
+            return (s.len(), 0);
+        }
+        let start_byte = s
+            .char_indices()
+            .nth(start)
+            .map(|(idx, _)| idx)
+            .unwrap_or(s.len());
+        let end_byte = s
+            .char_indices()
+            .nth(end)
+            .map(|(idx, _)| idx)
+            .unwrap_or(s.len());
+        (start_byte, end_byte)
     }
 
     fn matrix_dims(&self, name: &str) -> Option<(usize, usize)> {

@@ -58,7 +58,7 @@ impl Parser {
         let stmt = self.parse_statement()?;
 
         // Consume statement terminator (newline, colon, or EOF)
-        if matches!(self.peek(), Token::Newline) {
+        if matches!(self.peek(), Token::Newline | Token::Colon) {
             self.advance();
         }
 
@@ -447,6 +447,32 @@ impl Parser {
             }
             // Not a slice — backtrack
             self.pos = save;
+
+            self.advance(); // consume (
+            let mut indices = Vec::new();
+            if !matches!(self.peek(), Token::RightParen) {
+                indices.push(self.parse_expr()?);
+                while matches!(self.peek(), Token::Comma) {
+                    self.advance();
+                    indices.push(self.parse_expr()?);
+                }
+            }
+            self.expect(Token::RightParen)?;
+            self.expect(Token::Equal)?;
+            let expr = self.parse_expr()?;
+            return Ok(Stmt::Let {
+                var: Variable {
+                    name: var.name.clone(),
+                },
+                expr: Expr::BinaryOp {
+                    left: Box::new(Expr::ArrayIndex {
+                        name: var.name,
+                        indices,
+                    }),
+                    op: BinOp::Eq,
+                    right: Box::new(expr),
+                },
+            });
         }
 
         self.expect(Token::Equal)?;
@@ -1211,6 +1237,13 @@ impl Parser {
         }
         let n = match self.peek() {
             Token::NumericLiteral(n) => {
+                if !n.is_finite() || n.fract() != 0.0 || (*n != 0.0 && *n != 1.0) {
+                    return Err(ParseError::Expected {
+                        line: self.current_line(),
+                        expected: "0 or 1".into(),
+                        found: n.to_string(),
+                    });
+                }
                 let n = *n as i32;
                 self.advance();
                 n
@@ -2042,6 +2075,13 @@ impl Parser {
     fn parse_label(&mut self) -> Result<Label, ParseError> {
         match self.peek().clone() {
             Token::NumericLiteral(n) => {
+                if !n.is_finite() || n.fract() != 0.0 || n < 0.0 || n > u32::MAX as f64 {
+                    return Err(ParseError::Expected {
+                        line: self.current_line(),
+                        expected: "non-negative integer line number".into(),
+                        found: n.to_string(),
+                    });
+                }
                 self.advance();
                 Ok(Label::Number(n as u32))
             }

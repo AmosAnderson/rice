@@ -246,6 +246,17 @@ impl Lexer {
             .flat_map(|c| c.to_uppercase())
             .collect();
 
+        // A trailing $ makes this a string identifier, even if the base word
+        // is otherwise a keyword or builtin name such as STRING$ or NAME$.
+        if self.peek_char() == Some('$') {
+            self.advance_char();
+            self.at_line_start = false;
+            return Ok(SpannedToken {
+                token: Token::Identifier(format!("{}$", word)),
+                span,
+            });
+        }
+
         // Check for compound keywords
         if let Some(token) = self.match_compound_keyword(&word) {
             self.at_line_start = false;

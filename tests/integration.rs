@@ -214,6 +214,57 @@ fn test_operator_precedence() {
 }
 
 #[test]
+fn test_colon_statement_separator() {
+    let output = run_bas("PRINT \"A\": PRINT \"B\"\n");
+    assert_eq!(output, "A\nB\n");
+}
+
+#[test]
+fn test_let_array_assignment() {
+    let output = run_bas("DIM A(1)\nLET A(1) = 42\nPRINT A(1)\n");
+    assert_eq!(output.trim(), "42");
+}
+
+#[test]
+fn test_string_dollar_keyword_identifier() {
+    let output = run_bas("PRINT STRING$(5, \"*\")\nNAME$ = \"rice\"\nPRINT NAME$\n");
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "*****");
+    assert_eq!(lines[1], "rice");
+}
+
+#[test]
+fn test_unicode_string_slice_and_instr() {
+    let output = run_bas(
+        "A$ = \"éx\"\nPRINT A$(1:1)\nA$(1:1) = \"z\"\nPRINT A$\nPRINT INSTR(2, \"éx\", \"x\")\n",
+    );
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "é");
+    assert_eq!(lines[1], "zx");
+    assert_eq!(lines[2], "2");
+}
+
+#[test]
+fn test_option_base_rejects_invalid_values() {
+    let (_output, result) = run_bas_may_fail("OPTION BASE 2\n");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_goto_rejects_fractional_line_number() {
+    let (_output, result) = run_bas_may_fail("GOTO 10.5\n");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_print_tab_spc_reject_negative_values() {
+    let (_output, result) = run_bas_may_fail("PRINT TAB(-1)\n");
+    assert!(result.is_err());
+    let (_output, result) = run_bas_may_fail("PRINT SPC(-1)\n");
+    assert!(result.is_err());
+}
+
+#[test]
 fn test_string_comparison() {
     let output = run_bas(
         r#"
@@ -1073,6 +1124,21 @@ fn test_mat_zer_con_idn() {
         "DIM A(1 TO 2, 1 TO 2)\nMAT A = ZER\nMAT PRINT A\nMAT A = CON\nMAT PRINT A\nMAT A = IDN\nMAT PRINT A\n",
     );
     assert_eq!(output, "0 0\n0 0\n1 1\n1 1\n1 0\n0 1\n");
+}
+
+#[test]
+fn test_mat_explicit_lower_bounds() {
+    let output = run_bas("DIM A(0 TO 1, 0 TO 1)\nMAT A = CON\nPRINT A(0,0)\nPRINT A(1,1)\n");
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "1");
+    assert_eq!(lines[1], "1");
+}
+
+#[test]
+fn test_redim_updates_mat_dimensions() {
+    let output =
+        run_bas("DIM A(1 TO 2, 1 TO 2)\nREDIM A(1 TO 3, 1 TO 3)\nMAT A = CON\nMAT PRINT A\n");
+    assert_eq!(output.lines().count(), 3);
 }
 
 #[test]

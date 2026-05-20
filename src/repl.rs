@@ -714,6 +714,7 @@ fn compute_depth_delta(line: &str) -> i32 {
             | Token::KwEndFunction
             | Token::KwEndSelect
             | Token::KwEndType
+            | Token::KwEndWhile
             | Token::KwEndWhen => {
                 delta -= 1;
             }
@@ -777,6 +778,11 @@ mod tests {
     #[test]
     fn test_depth_wend() {
         assert_eq!(compute_depth_delta("WEND"), -1);
+    }
+
+    #[test]
+    fn test_depth_end_while() {
+        assert_eq!(compute_depth_delta("END WHILE"), -1);
     }
 
     #[test]

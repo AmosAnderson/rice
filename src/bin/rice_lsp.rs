@@ -945,6 +945,8 @@ fn resolve_token_name(state: &DocumentState, pos: Position) -> Option<String> {
 fn token_name(tok: &rice::token::Token) -> Option<String> {
     match tok {
         rice::token::Token::Identifier(name) => Some(name.clone()),
+        rice::token::Token::NumericLiteral(n) => Some(n.to_string()),
+        rice::token::Token::LineNumber(n) => Some(n.to_string()),
         rice::token::Token::KwPrint => Some("PRINT".into()),
         rice::token::Token::KwInput => Some("INPUT".into()),
         rice::token::Token::KwLineInput => Some("LINE INPUT".into()),

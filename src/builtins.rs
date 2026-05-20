@@ -333,7 +333,10 @@ fn builtin_instr(args: &[Value]) -> Result<Value, RuntimeError> {
         2 => {
             let haystack = args[0].to_string_val()?;
             let needle = args[1].to_string_val()?;
-            let pos = haystack.find(&needle).map(|p| p + 1).unwrap_or(0);
+            let pos = haystack
+                .find(&needle)
+                .map(|p| haystack[..p].chars().count() + 1)
+                .unwrap_or(0);
             Ok(Value::Numeric(pos as f64))
         }
         3 => {

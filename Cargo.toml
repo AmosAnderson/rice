@@ -2,6 +2,7 @@
 name = "rice"
 version = "0.11.0"
 edition = "2024"
+default-run = "rice"
 license = "MIT"
 
 [lib]
