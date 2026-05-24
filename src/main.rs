@@ -18,26 +18,48 @@ fn run() {
     let args: Vec<String> = env::args().collect();
 
     let mut source_file: Option<String> = None;
+    let mut dialect = rice::Dialect::Ansi;
 
-    for arg in &args[1..] {
-        if arg.starts_with('-') {
+    let mut i = 1;
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == "--compat" {
+            dialect = rice::Dialect::QuickBasic;
+        } else if arg == "--dialect" {
+            if i + 1 >= args.len() {
+                eprintln!("error: --dialect requires an argument (ansi or qb)");
+                process::exit(1);
+            }
+            i += 1;
+            match args[i].to_lowercase().as_str() {
+                "ansi" => dialect = rice::Dialect::Ansi,
+                "qb" | "quickbasic" => dialect = rice::Dialect::QuickBasic,
+                other => {
+                    eprintln!("error: unknown dialect: {other}");
+                    process::exit(1);
+                }
+            }
+        } else if arg.starts_with('-') {
             eprintln!("error: unknown option: {arg}");
             process::exit(1);
+        } else {
+            if source_file.is_some() {
+                eprintln!("error: unexpected argument: {arg}");
+                process::exit(1);
+            }
+            source_file = Some(arg.clone());
         }
-        if source_file.is_some() {
-            eprintln!("error: unexpected argument: {arg}");
-            process::exit(1);
-        }
-        source_file = Some(arg.clone());
+        i += 1;
     }
 
     match source_file {
         None => {
-            let mut repl = rice::repl::Repl::new();
+            let mut repl = rice::repl::Repl::with_dialect(dialect);
             repl.run();
         }
         Some(filename) => {
             let mut interpreter = rice::interpreter::Interpreter::new();
+            interpreter.dialect = dialect;
             if let Err(e) = interpreter.run_file(&filename) {
                 eprintln!("{e}");
                 process::exit(1);

@@ -5,11 +5,16 @@ use crate::token::{SpannedToken, Token};
 pub struct Parser {
     tokens: Vec<SpannedToken>,
     pos: usize,
+    pub dialect: crate::Dialect,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<SpannedToken>) -> Self {
-        Self { tokens, pos: 0 }
+        Self { tokens, pos: 0, dialect: crate::Dialect::Ansi }
+    }
+
+    pub fn with_dialect(tokens: Vec<SpannedToken>, dialect: crate::Dialect) -> Self {
+        Self { tokens, pos: 0, dialect }
     }
 
     pub fn parse_program(&mut self) -> Result<Program, ParseError> {
@@ -87,14 +92,29 @@ impl Parser {
                 let label = self.parse_label()?;
                 Ok(Stmt::Goto(label))
             }
-            Token::KwGosub => Err(ParseError::General {
-                line: self.current_line(),
-                msg: "GOSUB is not supported; use SUB/FUNCTION instead".into(),
-            }),
-            Token::KwReturn => Err(ParseError::General {
-                line: self.current_line(),
-                msg: "RETURN is not supported; use EXIT SUB or EXIT FUNCTION instead".into(),
-            }),
+            Token::KwGosub => {
+                if self.dialect == crate::Dialect::QuickBasic {
+                    self.advance();
+                    let label = self.parse_label()?;
+                    Ok(Stmt::Gosub(label))
+                } else {
+                    Err(ParseError::General {
+                        line: self.current_line(),
+                        msg: "GOSUB is not supported; use SUB/FUNCTION instead".into(),
+                    })
+                }
+            }
+            Token::KwReturn => {
+                if self.dialect == crate::Dialect::QuickBasic {
+                    self.advance();
+                    Ok(Stmt::Return)
+                } else {
+                    Err(ParseError::General {
+                        line: self.current_line(),
+                        msg: "RETURN is not supported; use EXIT SUB or EXIT FUNCTION instead".into(),
+                    })
+                }
+            }
             Token::KwExit => self.parse_exit(),
             Token::KwEnd => {
                 self.advance();
@@ -114,7 +134,25 @@ impl Parser {
             Token::KwDeclare => self.parse_declare(),
             Token::KwRedim => self.parse_redim(),
             Token::KwErase => self.parse_erase(),
-            Token::KwOption => self.parse_option_base(),
+            Token::KwOption => {
+                if let Some(Token::Identifier(id)) = self.peek_at(1) {
+                    if id == "DIALECT" {
+                        self.advance(); // consume OPTION
+                        self.advance(); // consume DIALECT
+                        if let Token::StringLiteral(_) = self.peek() {
+                            self.advance();
+                            return Ok(Stmt::Rem);
+                        } else {
+                            return Err(ParseError::Expected {
+                                line: self.current_line(),
+                                expected: "string literal (e.g. \"QB\") after OPTION DIALECT".into(),
+                                found: format!("{:?}", self.peek()),
+                            });
+                        }
+                    }
+                }
+                self.parse_option_base()
+            }
             Token::KwSwap => self.parse_swap(),
             Token::KwData => self.parse_data(),
             Token::KwRead => self.parse_read(),
@@ -125,24 +163,52 @@ impl Parser {
             Token::KwGet => self.parse_get_put(true),
             Token::KwPut => self.parse_get_put(false),
             Token::KwOn => {
-                // Peek ahead to determine which ON form for a specific error message
-                let next = self.peek_at(1).cloned();
-                let msg = match next.as_ref() {
-                    Some(Token::KwError) => {
-                        "ON ERROR GOTO is not supported; use WHEN EXCEPTION instead"
+                if self.dialect == crate::Dialect::QuickBasic {
+                    self.advance(); // consume ON
+                    let expr = self.parse_expr()?;
+                    let is_gosub = match self.peek() {
+                        Token::KwGoto => {
+                            self.advance();
+                            false
+                        }
+                        Token::KwGosub => {
+                            self.advance();
+                            true
+                        }
+                        tok => {
+                            return Err(ParseError::Expected {
+                                line: self.current_line(),
+                                expected: "GOTO or GOSUB after ON expression".into(),
+                                found: format!("{:?}", tok),
+                            });
+                        }
+                    };
+                    let mut labels = vec![self.parse_label()?];
+                    while matches!(self.peek(), Token::Comma) {
+                        self.advance();
+                        labels.push(self.parse_label()?);
                     }
-                    Some(Token::KwTimer) => "ON TIMER is not supported in ANSI BASIC",
-                    Some(Token::KwKey) => "ON KEY is not supported in ANSI BASIC",
-                    _ => {
-                        // ON n GOTO or ON n GOSUB
-                        // Try to determine which, but default to a generic message
-                        "ON GOTO/ON GOSUB is not supported in ANSI BASIC"
-                    }
-                };
-                Err(ParseError::General {
-                    line: self.current_line(),
-                    msg: msg.into(),
-                })
+                    Ok(Stmt::OnGoto { expr, labels, is_gosub })
+                } else {
+                    // Peek ahead to determine which ON form for a specific error message
+                    let next = self.peek_at(1).cloned();
+                    let msg = match next.as_ref() {
+                        Some(Token::KwError) => {
+                            "ON ERROR GOTO is not supported; use WHEN EXCEPTION instead"
+                        }
+                        Some(Token::KwTimer) => "ON TIMER is not supported in ANSI BASIC",
+                        Some(Token::KwKey) => "ON KEY is not supported in ANSI BASIC",
+                        _ => {
+                            // ON n GOTO or ON n GOSUB
+                            // Try to determine which, but default to a generic message
+                            "ON GOTO/ON GOSUB is not supported in ANSI BASIC"
+                        }
+                    };
+                    Err(ParseError::General {
+                        line: self.current_line(),
+                        msg: msg.into(),
+                    })
+                }
             }
             Token::KwResume => Err(ParseError::General {
                 line: self.current_line(),
@@ -281,6 +347,25 @@ impl Parser {
                 msg: "WEND is not supported; use END WHILE instead".into(),
             }),
             Token::KwMat => self.parse_mat(),
+            Token::Identifier(ref id) if id == "OPTION" => {
+                if let Some(Token::Identifier(id2)) = self.peek_at(1) {
+                    if id2 == "DIALECT" {
+                        self.advance(); // consume OPTION
+                        self.advance(); // consume DIALECT
+                        if let Token::StringLiteral(_) = self.peek() {
+                            self.advance();
+                            return Ok(Stmt::Rem);
+                        } else {
+                            return Err(ParseError::Expected {
+                                line: self.current_line(),
+                                expected: "string literal (e.g. \"QB\") after OPTION DIALECT".into(),
+                                found: format!("{:?}", self.peek()),
+                            });
+                        }
+                    }
+                }
+                self.parse_assignment_or_call()
+            }
             Token::Identifier(_) => self.parse_assignment_or_call(),
             _ => {
                 let tok = self.peek().clone();
@@ -559,18 +644,23 @@ impl Parser {
 
             // SUB call with parenthesized args — re-parse since indices
             // may have consumed expressions differently than args would
-            self.pos = paren_save;
-            self.advance(); // consume (
-            let mut args = Vec::new();
-            if !matches!(self.peek(), Token::RightParen) {
-                args.push(self.parse_expr()?);
-                while matches!(self.peek(), Token::Comma) {
-                    self.advance();
+            if self.dialect == crate::Dialect::QuickBasic {
+                self.pos = paren_save;
+                // fall through to SUB call without parens
+            } else {
+                self.pos = paren_save;
+                self.advance(); // consume (
+                let mut args = Vec::new();
+                if !matches!(self.peek(), Token::RightParen) {
                     args.push(self.parse_expr()?);
+                    while matches!(self.peek(), Token::Comma) {
+                        self.advance();
+                        args.push(self.parse_expr()?);
+                    }
                 }
+                self.expect(Token::RightParen)?;
+                return Ok(Stmt::Call { name, args });
             }
-            self.expect(Token::RightParen)?;
-            return Ok(Stmt::Call { name, args });
         }
 
         // Member access on scalar: name.field[.field...] = expr
@@ -1104,12 +1194,15 @@ impl Parser {
     }
 
     fn parse_param(&mut self) -> Result<Param, ParseError> {
-        // ANSI BASIC: parameters are BYVAL by default
         let by_val = if matches!(self.peek(), Token::KwByVal) {
             self.advance();
             true
+        } else if matches!(self.peek(), Token::KwByRef) {
+            self.advance();
+            false
         } else {
-            true // ANSI default: pass by value
+            // Default based on dialect: BYREF in QB, BYVAL in ANSI
+            self.dialect == crate::Dialect::Ansi
         };
 
         let name = self.expect_identifier()?;
@@ -1334,90 +1427,207 @@ impl Parser {
 
     fn parse_open(&mut self) -> Result<Stmt, ParseError> {
         self.advance(); // consume OPEN
-        // ANSI BASIC: OPEN #channel: NAME expr [, ORGANIZATION kw] [, ACCESS kw]
-        self.expect(Token::Hash)?;
-        let channel = self.parse_expr()?;
-        self.expect(Token::Colon)?;
 
-        // Expect NAME keyword (reused as KwName token)
-        if !matches!(self.peek(), Token::KwName) {
-            return Err(ParseError::Expected {
-                line: self.current_line(),
-                expected: "NAME".into(),
-                found: format!("{:?}", self.peek()),
-            });
-        }
-        self.advance(); // consume NAME
+        // In ANSI BASIC, the syntax starts with #channel:
+        // In QuickBASIC, the syntax starts with name_expr FOR mode...
+        if matches!(self.peek(), Token::Hash) {
+            // ANSI BASIC style
+            self.advance(); // consume #
+            let channel = self.parse_expr()?;
+            self.expect(Token::Colon)?;
 
-        let name = self.parse_expr()?;
+            // Expect NAME keyword (reused as KwName token)
+            if !matches!(self.peek(), Token::KwName) {
+                return Err(ParseError::Expected {
+                    line: self.current_line(),
+                    expected: "NAME".into(),
+                    found: format!("{:?}", self.peek()),
+                });
+            }
+            self.advance(); // consume NAME
 
-        let mut access = FileAccess::Input; // default
-        let mut organization = None;
+            let name = self.parse_expr()?;
 
-        // Parse optional clauses separated by commas
-        while matches!(self.peek(), Token::Comma) {
-            self.advance();
-            match self.peek() {
-                Token::KwAccess => {
-                    self.advance();
-                    match self.peek() {
-                        Token::KwInput => {
-                            self.advance();
-                            access = FileAccess::Input;
-                        }
-                        Token::KwOutput => {
-                            self.advance();
-                            access = FileAccess::Output;
-                        }
-                        Token::KwOutIn => {
-                            self.advance();
-                            access = FileAccess::OutIn;
-                        }
-                        _ => {
-                            return Err(ParseError::Expected {
-                                line: self.current_line(),
-                                expected: "INPUT, OUTPUT, or OUTIN".into(),
-                                found: format!("{:?}", self.peek()),
-                            });
+            let mut access = FileAccess::Input; // default
+            let mut organization = None;
+
+            // Parse optional clauses separated by commas
+            while matches!(self.peek(), Token::Comma) {
+                self.advance();
+                match self.peek() {
+                    Token::KwAccess => {
+                        self.advance();
+                        match self.peek() {
+                            Token::KwInput => {
+                                self.advance();
+                                access = FileAccess::Input;
+                            }
+                            Token::KwOutput => {
+                                self.advance();
+                                access = FileAccess::Output;
+                            }
+                            Token::KwOutIn => {
+                                self.advance();
+                                access = FileAccess::OutIn;
+                            }
+                            _ => {
+                                return Err(ParseError::Expected {
+                                    line: self.current_line(),
+                                    expected: "INPUT, OUTPUT, or OUTIN".into(),
+                                    found: format!("{:?}", self.peek()),
+                                });
+                            }
                         }
                     }
-                }
-                Token::KwOrganization => {
-                    self.advance();
-                    match self.peek() {
-                        Token::KwSequential => {
-                            self.advance();
-                            organization = Some(FileOrg::Sequential);
-                        }
-                        Token::KwStream => {
-                            self.advance();
-                            organization = Some(FileOrg::Stream);
-                        }
-                        _ => {
-                            return Err(ParseError::Expected {
-                                line: self.current_line(),
-                                expected: "SEQUENTIAL or STREAM".into(),
-                                found: format!("{:?}", self.peek()),
-                            });
+                    Token::KwOrganization => {
+                        self.advance();
+                        match self.peek() {
+                            Token::KwSequential => {
+                                self.advance();
+                                organization = Some(FileOrg::Sequential);
+                            }
+                            Token::KwStream => {
+                                self.advance();
+                                organization = Some(FileOrg::Stream);
+                            }
+                            _ => {
+                                return Err(ParseError::Expected {
+                                    line: self.current_line(),
+                                    expected: "SEQUENTIAL or STREAM".into(),
+                                    found: format!("{:?}", self.peek()),
+                                });
+                            }
                         }
                     }
+                    _ => {
+                        return Err(ParseError::Expected {
+                            line: self.current_line(),
+                            expected: "ACCESS or ORGANIZATION".into(),
+                            found: format!("{:?}", self.peek()),
+                        });
+                    }
                 }
-                _ => {
+            }
+
+            Ok(Stmt::Open(OpenStmt {
+                channel,
+                name,
+                access,
+                organization,
+            }))
+        } else {
+            // QuickBASIC style: name_expr FOR mode ...
+            let name = self.parse_expr()?;
+
+            // Expect FOR keyword
+            self.expect(Token::KwFor)?;
+
+            // Expect Mode
+            let access;
+            let organization;
+
+            match self.peek().clone() {
+                Token::KwInput => {
+                    self.advance();
+                    access = FileAccess::Input;
+                    organization = Some(FileOrg::Sequential);
+                }
+                Token::KwOutput => {
+                    self.advance();
+                    access = FileAccess::Output;
+                    organization = Some(FileOrg::Sequential);
+                }
+                Token::Identifier(ref mode) if mode == "APPEND" => {
+                    self.advance();
+                    access = FileAccess::Append;
+                    organization = Some(FileOrg::Sequential);
+                }
+                Token::Identifier(ref mode) if mode == "BINARY" => {
+                    self.advance();
+                    access = FileAccess::OutIn;
+                    organization = Some(FileOrg::Stream);
+                }
+                Token::Identifier(ref mode) if mode == "RANDOM" => {
+                    self.advance();
+                    access = FileAccess::OutIn;
+                    organization = Some(FileOrg::Sequential);
+                }
+                tok => {
                     return Err(ParseError::Expected {
                         line: self.current_line(),
-                        expected: "ACCESS or ORGANIZATION".into(),
-                        found: format!("{:?}", self.peek()),
+                        expected: "INPUT, OUTPUT, APPEND, BINARY, or RANDOM".into(),
+                        found: format!("{:?}", tok),
                     });
                 }
             }
-        }
 
-        Ok(Stmt::Open(OpenStmt {
-            channel,
-            name,
-            access,
-            organization,
-        }))
+            // Optional ACCESS read/write/read write
+            if matches!(self.peek(), Token::KwAccess) {
+                self.advance(); // consume ACCESS
+                // Consume read/write/read write
+                match self.peek() {
+                    Token::KwRead => {
+                        self.advance();
+                        if matches!(self.peek(), Token::KwWrite) {
+                            self.advance();
+                        }
+                    }
+                    Token::KwWrite => {
+                        self.advance();
+                    }
+                    _ => {}
+                }
+            }
+
+            // Optional locks: SHARED, LOCK READ, LOCK WRITE, LOCK READ WRITE
+            match self.peek().clone() {
+                Token::Identifier(ref lock) if lock == "SHARED" => {
+                    self.advance();
+                }
+                Token::Identifier(ref lock) if lock == "LOCK" => {
+                    self.advance();
+                    // consume READ/WRITE/READ WRITE
+                    match self.peek() {
+                        Token::KwRead => {
+                            self.advance();
+                            if matches!(self.peek(), Token::KwWrite) {
+                                self.advance();
+                            }
+                        }
+                        Token::KwWrite => {
+                            self.advance();
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+
+            // Expect AS
+            self.expect(Token::KwAs)?;
+
+            // Optional #
+            if matches!(self.peek(), Token::Hash) {
+                self.advance();
+            }
+
+            let channel = self.parse_expr()?;
+
+            // Optional LEN = reclen_expr
+            if matches!(self.peek(), Token::KwLen) {
+                self.advance(); // consume LEN
+                self.expect(Token::Equal)?;
+                let _reclen = self.parse_expr()?;
+                // We ignore record length for now since we do simple binary serialization or standard streams
+            }
+
+            Ok(Stmt::Open(OpenStmt {
+                channel,
+                name,
+                access,
+                organization,
+            }))
+        }
     }
 
     fn parse_close(&mut self) -> Result<Stmt, ParseError> {
@@ -2106,28 +2316,28 @@ impl Parser {
         match self.peek().clone() {
             Token::KwInteger => {
                 self.advance();
-                Ok(BasicType::Numeric)
+                Ok(BasicType::Integer)
             }
             Token::KwLong => {
                 self.advance();
-                Ok(BasicType::Numeric)
+                Ok(BasicType::Long)
             }
             Token::KwSingle => {
                 self.advance();
-                Ok(BasicType::Numeric)
+                Ok(BasicType::Single)
             }
             Token::KwDouble => {
                 self.advance();
-                Ok(BasicType::Numeric)
+                Ok(BasicType::Double)
             }
             Token::KwString => {
                 self.advance();
-                // Check for STRING * n (treat as plain String in ANSI BASIC)
+                // Check for STRING * n
                 if matches!(self.peek(), Token::Star) {
                     self.advance(); // consume *
-                    if let Token::NumericLiteral(_n) = self.peek().clone() {
+                    if let Token::NumericLiteral(n) = self.peek().clone() {
                         self.advance();
-                        Ok(BasicType::String)
+                        Ok(BasicType::FixedLengthString(n as usize))
                     } else {
                         Err(ParseError::Expected {
                             line: self.current_line(),

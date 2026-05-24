@@ -59,6 +59,13 @@ pub enum Stmt {
     DoLoop(DoLoopStmt),
     SelectCase(SelectCaseStmt),
     Goto(Label),
+    Gosub(Label),
+    Return,
+    OnGoto {
+        expr: Expr,
+        labels: Vec<Label>,
+        is_gosub: bool,
+    },
     ExitFor,
     ExitDo,
 
@@ -319,6 +326,7 @@ pub enum FileAccess {
     Input,
     Output,
     OutIn,
+    Append,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

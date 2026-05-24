@@ -7,6 +7,7 @@ pub struct Lexer {
     line: usize,
     col: usize,
     at_line_start: bool,
+    pub dialect: crate::Dialect,
 }
 
 impl Lexer {
@@ -17,6 +18,18 @@ impl Lexer {
             line: 1,
             col: 1,
             at_line_start: true,
+            dialect: crate::Dialect::Ansi,
+        }
+    }
+
+    pub fn with_dialect(source: &str, dialect: crate::Dialect) -> Self {
+        Self {
+            source: source.chars().collect(),
+            pos: 0,
+            line: 1,
+            col: 1,
+            at_line_start: true,
+            dialect,
         }
     }
 
@@ -117,7 +130,54 @@ impl Lexer {
             ';' => Token::Semicolon,
             ':' => Token::Colon,
             '#' => Token::Hash,
-            '&' => Token::Ampersand,
+            '&' => {
+                if self.dialect == crate::Dialect::QuickBasic {
+                    if let Some(next_c) = self.peek_char() {
+                        if next_c == 'H' || next_c == 'h' {
+                            self.advance_char(); // consume 'H'
+                            let start = self.pos;
+                            while let Some(ch) = self.peek_char() {
+                                if ch.is_ascii_hexdigit() {
+                                    self.advance_char();
+                                } else {
+                                    break;
+                                }
+                            }
+                            let hex_str: String = self.source[start..self.pos].iter().collect();
+                            let val = u64::from_str_radix(&hex_str, 16).unwrap_or(0) as f64;
+                            if self.peek_char() == Some('&') {
+                                self.advance_char(); // consume trailing & suffix
+                            }
+                            self.at_line_start = false;
+                            return Ok(SpannedToken {
+                                token: Token::NumericLiteral(val),
+                                span,
+                            });
+                        } else if next_c == 'O' || next_c == 'o' {
+                            self.advance_char(); // consume 'O'
+                            let start = self.pos;
+                            while let Some(ch) = self.peek_char() {
+                                if ('0'..='7').contains(&ch) {
+                                    self.advance_char();
+                                } else {
+                                    break;
+                                }
+                            }
+                            let oct_str: String = self.source[start..self.pos].iter().collect();
+                            let val = u64::from_str_radix(&oct_str, 8).unwrap_or(0) as f64;
+                            if self.peek_char() == Some('&') {
+                                self.advance_char(); // consume trailing & suffix
+                            }
+                            self.at_line_start = false;
+                            return Ok(SpannedToken {
+                                token: Token::NumericLiteral(val),
+                                span,
+                            });
+                        }
+                    }
+                }
+                Token::Ampersand
+            }
             '.' => Token::Dot,
             _ => {
                 return Err(LexError::UnexpectedChar {
@@ -246,13 +306,23 @@ impl Lexer {
             .flat_map(|c| c.to_uppercase())
             .collect();
 
-        // A trailing $ makes this a string identifier, even if the base word
-        // is otherwise a keyword or builtin name such as STRING$ or NAME$.
-        if self.peek_char() == Some('$') {
+        // A trailing suffix makes this an identifier, bypassing keyword matches
+        let suffix = if self.peek_char() == Some('$') {
             self.advance_char();
+            Some('$')
+        } else if self.dialect == crate::Dialect::QuickBasic
+            && self.peek_char().is_some_and(|ch| ch == '%' || ch == '!' || ch == '#' || ch == '&')
+        {
+            let ch = self.advance_char();
+            Some(ch)
+        } else {
+            None
+        };
+
+        if let Some(suf) = suffix {
             self.at_line_start = false;
             return Ok(SpannedToken {
-                token: Token::Identifier(format!("{}$", word)),
+                token: Token::Identifier(format!("{}{}", word, suf)),
                 span,
             });
         }
@@ -312,6 +382,7 @@ impl Lexer {
             "SHARED" => Token::KwShared,
             "STATIC" => Token::KwStatic,
             "BYVAL" => Token::KwByVal,
+            "BYREF" => Token::KwByRef,
             "REDIM" => Token::KwRedim,
             "ERASE" => Token::KwErase,
             "PRESERVE" => Token::KwPreserve,
@@ -395,6 +466,11 @@ impl Lexer {
                 if self.peek_char() == Some('$') {
                     self.advance_char();
                     Token::Identifier(format!("{}$", word))
+                } else if self.dialect == crate::Dialect::QuickBasic
+                    && self.peek_char().is_some_and(|ch| ch == '%' || ch == '!' || ch == '#' || ch == '&')
+                {
+                    let ch = self.advance_char();
+                    Token::Identifier(format!("{}{}", word, ch))
                 } else {
                     Token::Identifier(word)
                 }

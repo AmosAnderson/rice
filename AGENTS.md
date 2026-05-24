@@ -18,14 +18,29 @@
 ## BASIC Semantics To Preserve
 
 - Identifiers are case-insensitive and normalized to UPPERCASE internally.
-- Only two primitive types exist: NUMERIC `f64` and STRING; variables ending in `$` are strings, all others numeric.
-- Undefined variables auto-initialize to `0` or `""`; truth values are numeric `1` and `0`.
+- Only two primitive types exist in memory: NUMERIC `f64` and STRING; variables ending in `$` are strings, all others numeric.
+- Undefined variables auto-initialize to `0` or `""`.
 - Statement-level `=` is assignment; inside expressions it is comparison.
-- String concatenation is `&`, not `+`; `+` remains arithmetic.
-- Logical `AND`, `OR`, `NOT`, `XOR` are logical, not bitwise; `MOD` works on real numbers.
-- `OPTION BASE` defaults to 1, parameters are BYVAL by default, and GOSUB/RETURN are not supported.
+- `MOD` works on real numbers.
 - PRINT formatting intentionally has no leading space for positive numbers and uses 16-character comma zones.
 - Arrays currently use flattened keys; avoid broad array-storage refactors unless the task and tests are specifically about that.
+- **Dialect Semantics**: Rice BASIC supports both ANSI mode (default) and QuickBasic compatibility mode (activated via `OPTION DIALECT "QB"` or `--dialect qb`/`--compat` flags).
+  - **ANSI Mode Semantics**:
+    - Suffixes other than `$` are not supported.
+    - Truth values are `1.0` (true) and `0.0` (false).
+    - String concatenation is `&`, not `+`; `+` remains arithmetic.
+    - Logical `AND`, `OR`, `NOT`, `XOR` are logical, not bitwise.
+    - `OPTION BASE` defaults to 1.
+    - Subroutine/function parameters are `BYVAL` by default.
+    - `GOSUB`/`RETURN` and `ON GOTO/GOSUB` are not supported.
+  - **QuickBasic Mode Semantics**:
+    - Suffixes (`%`, `!`, `#`, `&`, `$`) are supported in variable names to distinguish different variables (which all hold `f64` or `String` values in memory).
+    - Truth values are `-1.0` (true) and `0.0` (false).
+    - String concatenation is `+` (for strings) or `&`.
+    - Logical `AND`, `OR`, `NOT`, `XOR` perform bitwise operations on numeric values.
+    - Subroutine/function parameters are `BYREF` by default. Passing a parenthesized argument (e.g. `MySub (x)`) forces it to be evaluated as an expression, passing it by value (`BYVAL`).
+    - `GOSUB`/`RETURN` (using a return address stack) and `ON GOTO/GOSUB` are supported.
+    - Structured binary record I/O (`GET`/`PUT` with recursive UDT field serialization) and `APPEND` file mode are supported.
 
 ## Parser And Interpreter Gotchas
 

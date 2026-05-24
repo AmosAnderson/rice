@@ -11,6 +11,50 @@ pub mod repl;
 pub mod token;
 pub mod value;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dialect {
+    Ansi,
+    QuickBasic,
+}
+
+pub fn detect_dialect(source: &str) -> Dialect {
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let mut clean_line = String::new();
+        let mut in_string = false;
+        let chars: Vec<char> = trimmed.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            if c == '"' {
+                in_string = !in_string;
+            }
+            if !in_string {
+                if c == '\'' {
+                    break;
+                }
+                if i + 3 <= chars.len() && chars[i..i+3].iter().collect::<String>().to_uppercase() == "REM" {
+                    if i + 3 == chars.len() || chars[i+3].is_whitespace() {
+                        break;
+                    }
+                }
+            }
+            clean_line.push(c);
+            i += 1;
+        }
+        
+        let upper_line = clean_line.to_uppercase();
+        let normalized: String = upper_line.split_whitespace().collect();
+        if normalized.contains("OPTIONDIALECT\"QB\"") || normalized.contains("OPTIONDIALECT\"QUICKBASIC\"") {
+            return Dialect::QuickBasic;
+        }
+    }
+    Dialect::Ansi
+}
+
 /// Non-blocking read of a single keypress using crossterm.
 /// Returns empty string if no key available or on error.
 pub fn poll_inkey() -> String {

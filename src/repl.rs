@@ -19,7 +19,9 @@ const COLOR_OPERATOR: &str = "\x1b[38;2;212;212;212m";
 const COLOR_COMMENT: &str = "\x1b[38;2;106;153;85m";
 const COLOR_RESET: &str = "\x1b[0m";
 
-struct BasicHelper;
+struct BasicHelper {
+    dialect: crate::Dialect,
+}
 
 impl rustyline::Helper for BasicHelper {}
 impl rustyline::completion::Completer for BasicHelper {
@@ -35,7 +37,7 @@ impl Highlighter for BasicHelper {
         if line.is_empty() {
             return Cow::Borrowed(line);
         }
-        Cow::Owned(highlight_line(line))
+        Cow::Owned(highlight_line(line, self.dialect))
     }
 
     fn highlight_char(
@@ -77,7 +79,7 @@ fn find_comment_start(line: &str) -> Option<usize> {
     None
 }
 
-fn highlight_line(line: &str) -> String {
+fn highlight_line(line: &str, dialect: crate::Dialect) -> String {
     let comment_start = find_comment_start(line);
     let (code_part, comment_part) = match comment_start {
         Some(pos) => (&line[..pos], Some(&line[pos..])),
@@ -87,7 +89,7 @@ fn highlight_line(line: &str) -> String {
     let mut result = String::with_capacity(line.len() * 3);
 
     if !code_part.is_empty() {
-        let tokens = match Lexer::new(code_part).tokenize() {
+        let tokens = match Lexer::with_dialect(code_part, dialect).tokenize() {
             Ok(t) => t,
             Err(_) => {
                 // Lex error — return line uncolored
@@ -491,6 +493,15 @@ impl Repl {
         }
     }
 
+    pub fn with_dialect(dialect: crate::Dialect) -> Self {
+        let mut interpreter = Interpreter::new();
+        interpreter.dialect = dialect;
+        Self {
+            interpreter,
+            program: BTreeMap::new(),
+        }
+    }
+
     pub fn run(&mut self) {
         println!("RICE BASIC v{}", env!("CARGO_PKG_VERSION"));
         println!("Type SYSTEM or press Ctrl+D to exit.");
@@ -498,7 +509,7 @@ impl Repl {
         println!();
 
         let mut editor = Editor::new().expect("failed to create editor");
-        editor.set_helper(Some(BasicHelper));
+        editor.set_helper(Some(BasicHelper { dialect: self.interpreter.dialect }));
         let history_file = dirs_history_path();
         let _ = editor.load_history(&history_file);
 
@@ -561,7 +572,7 @@ impl Repl {
                         }
                     }
 
-                    let delta = compute_depth_delta(trimmed);
+                    let delta = compute_depth_delta(trimmed, self.interpreter.dialect);
 
                     if depth == 0 {
                         if delta <= 0 {
@@ -610,8 +621,8 @@ impl Repl {
     }
 
     fn execute_line(&mut self, line: &str) -> Result<bool, Box<dyn std::error::Error>> {
-        let tokens = Lexer::new(line).tokenize()?;
-        let program = Parser::new(tokens).parse_program()?;
+        let tokens = Lexer::with_dialect(line, self.interpreter.dialect).tokenize()?;
+        let program = Parser::with_dialect(tokens, self.interpreter.dialect).parse_program()?;
         // Check if any statement is END
         let has_end = program
             .statements
@@ -663,8 +674,8 @@ impl Repl {
 
 /// Compute the net nesting depth change for a single line of BASIC code.
 /// Returns positive for block openers, negative for block closers.
-fn compute_depth_delta(line: &str) -> i32 {
-    let tokens = match Lexer::new(line).tokenize() {
+fn compute_depth_delta(line: &str, dialect: crate::Dialect) -> i32 {
+    let tokens = match Lexer::with_dialect(line, dialect).tokenize() {
         Ok(t) => t,
         Err(_) => return 0,
     };
@@ -736,6 +747,14 @@ fn dirs_history_path() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn compute_depth_delta(line: &str) -> i32 {
+        super::compute_depth_delta(line, crate::Dialect::Ansi)
+    }
+
+    fn highlight_line(line: &str) -> String {
+        super::highlight_line(line, crate::Dialect::Ansi)
+    }
 
     #[test]
     fn test_depth_single_line_if() {

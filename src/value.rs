@@ -6,7 +6,12 @@ use crate::error::RuntimeError;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BasicType {
     Numeric,
+    Integer,
+    Long,
+    Single,
+    Double,
     String,
+    FixedLengthString(usize),
     UserDefined(String),
 }
 
@@ -23,8 +28,12 @@ pub enum Value {
 impl Value {
     pub fn default_for(ty: BasicType) -> Value {
         match ty {
-            BasicType::Numeric => Value::Numeric(0.0),
-            BasicType::String => Value::Str(String::new()),
+            BasicType::Numeric
+            | BasicType::Integer
+            | BasicType::Long
+            | BasicType::Single
+            | BasicType::Double => Value::Numeric(0.0),
+            BasicType::String | BasicType::FixedLengthString(_) => Value::Str(String::new()),
             BasicType::UserDefined(_) => {
                 panic!(
                     "default_for(UserDefined) requires type definition context; use Interpreter::create_default_record"
@@ -80,8 +89,12 @@ impl Value {
 
     pub fn coerce_to(&self, ty: BasicType) -> Result<Value, RuntimeError> {
         match ty {
-            BasicType::Numeric => Ok(Value::Numeric(self.to_f64()?)),
-            BasicType::String => Ok(Value::Str(self.to_string_val()?)),
+            BasicType::Numeric
+            | BasicType::Integer
+            | BasicType::Long
+            | BasicType::Single
+            | BasicType::Double => Ok(Value::Numeric(self.to_f64()?)),
+            BasicType::String | BasicType::FixedLengthString(_) => Ok(Value::Str(self.to_string_val()?)),
             BasicType::UserDefined(_) => Err(RuntimeError::TypeMismatch {
                 msg: "cannot coerce to user-defined type".into(),
             }),

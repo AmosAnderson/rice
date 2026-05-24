@@ -1195,3 +1195,47 @@ fn test_mat_copy() {
     );
     assert_eq!(output, "1 2\n3 4\n");
 }
+
+#[test]
+fn test_qb_compat() {
+    let output = run_file("tests/programs/qb_compat.bas");
+    let lines: Vec<&str> = output.lines().map(|l| l.trim()).collect();
+    assert_eq!(lines[0], "10");
+    assert_eq!(lines[1], "200000");
+    // Float values formatting: print strips trailing zeros or handles formats.
+    // Let's assert shape/start of strings if they might have floating representation variations
+    assert!(lines[2].starts_with("3.14"));
+    assert!(lines[3].starts_with("2.71828182"));
+    assert_eq!(lines[4], "hello");
+    
+    // Comparison
+    assert_eq!(lines[5], "-1");
+    assert_eq!(lines[6], "-1");
+    assert_eq!(lines[7], "0");
+    
+    // Bitwise
+    assert_eq!(lines[8], "1");
+    assert_eq!(lines[9], "7");
+    assert_eq!(lines[10], "0");
+    assert_eq!(lines[11], "6");
+    
+    // String concat +
+    assert_eq!(lines[12], "hello world");
+    
+    // Hex/Octal
+    assert_eq!(lines[13], "255");
+    assert_eq!(lines[14], "63");
+    
+    // GOSUB
+    assert_eq!(lines[15], "inside GOSUB");
+    assert_eq!(lines[16], "after GOSUB");
+    assert_eq!(lines[17], "done GOSUB");
+    
+    // ON GOTO
+    assert_eq!(lines[18], "400");
+    assert_eq!(lines[19], "done ON GOTO");
+    
+    // Parameter passing: BYREF vs BYVAL
+    assert_eq!(lines[20], "42");
+    assert_eq!(lines[21], "10");
+}

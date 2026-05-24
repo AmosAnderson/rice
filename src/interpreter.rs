@@ -47,6 +47,8 @@ enum ControlFlow {
     ExitSub,
     ExitFunction(Value),
     Goto(Label),
+    Gosub(Label),
+    Return,
     End,
     Retry,
     Continue,
@@ -80,6 +82,8 @@ struct FileHandle {
 }
 
 pub struct Interpreter {
+    pub dialect: crate::Dialect,
+    gosub_stack: Vec<usize>,
     env: EnvRef,
     builtins: BuiltinRegistry,
     subs: HashMap<String, UserSub>,
@@ -140,6 +144,8 @@ impl Interpreter {
 
     pub fn with_io(output: Box<dyn Write>, input: Box<dyn BufRead>) -> Self {
         Self {
+            dialect: crate::Dialect::Ansi,
+            gosub_stack: Vec::new(),
             env: Environment::new_global(),
             builtins: BuiltinRegistry::new(),
             subs: HashMap::new(),
@@ -175,8 +181,13 @@ impl Interpreter {
     }
 
     pub fn run_source(&mut self, source: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let tokens = crate::lexer::Lexer::new(source).tokenize()?;
-        let program = crate::parser::Parser::new(tokens).parse_program()?;
+        let detected = crate::detect_dialect(source);
+        if detected == crate::Dialect::QuickBasic {
+            self.dialect = detected;
+        }
+        let tokens = crate::lexer::Lexer::with_dialect(source, self.dialect).tokenize()?;
+        let mut parser = crate::parser::Parser::with_dialect(tokens, self.dialect);
+        let program = parser.parse_program()?;
         self.run_program(&program)?;
         Ok(())
     }
@@ -301,6 +312,26 @@ impl Interpreter {
                         return Ok(ControlFlow::Goto(label));
                     }
                 }
+                ControlFlow::Gosub(label) => {
+                    let resolved = self.env.borrow().resolve_label(&label);
+                    if let Some(idx) = resolved {
+                        self.gosub_stack.push(pc + 1);
+                        pc = idx;
+                    } else {
+                        return Err(RuntimeError::General {
+                            msg: format!("Label not found for GOSUB: {label}"),
+                        });
+                    }
+                }
+                ControlFlow::Return => {
+                    if let Some(return_pc) = self.gosub_stack.pop() {
+                        pc = return_pc;
+                    } else {
+                        return Err(RuntimeError::General {
+                            msg: "RETURN without GOSUB".into(),
+                        });
+                    }
+                }
                 other => return Ok(other),
             }
         }
@@ -371,6 +402,9 @@ impl Interpreter {
             Stmt::DoLoop(do_stmt) => self.exec_do(do_stmt),
             Stmt::SelectCase(select) => self.exec_select(select),
             Stmt::Goto(label) => Ok(ControlFlow::Goto(label.clone())),
+            Stmt::Gosub(label) => Ok(ControlFlow::Gosub(label.clone())),
+            Stmt::Return => Ok(ControlFlow::Return),
+            Stmt::OnGoto { expr, labels, is_gosub } => self.exec_on_goto(expr, labels, *is_gosub),
             Stmt::ExitFor => Ok(ControlFlow::ExitFor),
             Stmt::ExitDo => Ok(ControlFlow::ExitDo),
             Stmt::ExitSub => Ok(ControlFlow::ExitSub),
@@ -997,6 +1031,26 @@ impl Interpreter {
         }
 
         Ok(ControlFlow::Normal)
+    }
+
+    fn exec_on_goto(
+        &mut self,
+        expr: &Expr,
+        labels: &[Label],
+        is_gosub: bool,
+    ) -> Result<ControlFlow, RuntimeError> {
+        let val = self.eval_expr(expr)?;
+        let n = val.to_i64()?;
+        if n >= 1 && n <= labels.len() as i64 {
+            let label = &labels[(n - 1) as usize];
+            if is_gosub {
+                Ok(ControlFlow::Gosub(label.clone()))
+            } else {
+                Ok(ControlFlow::Goto(label.clone()))
+            }
+        } else {
+            Ok(ControlFlow::Normal)
+        }
     }
 
     fn exec_for(&mut self, for_stmt: &ForStmt) -> Result<ControlFlow, RuntimeError> {
@@ -1741,11 +1795,26 @@ impl Interpreter {
         op: BinOp,
         right: &Value,
     ) -> Result<Value, RuntimeError> {
+        let true_val = if self.dialect == crate::Dialect::QuickBasic { -1.0 } else { 1.0 };
+
         // String concatenation with &
         if matches!(op, BinOp::Concat) {
             let a = left.to_string_val()?;
             let b = right.to_string_val()?;
             return Ok(Value::Str(format!("{a}{b}")));
+        }
+
+        // String concatenation with + (in QuickBASIC mode)
+        if op == BinOp::Add && self.dialect == crate::Dialect::QuickBasic {
+            if let Value::Str(sa) = left {
+                let sb = right.to_string_val()?;
+                return Ok(Value::Str(format!("{}{}", sa, sb)));
+            }
+            if let Value::Str(_) = right {
+                return Err(RuntimeError::TypeMismatch {
+                    msg: "cannot concatenate string and number".into(),
+                });
+            }
         }
 
         // String comparison
@@ -1763,7 +1832,7 @@ impl Interpreter {
                 BinOp::Ge => a >= b,
                 _ => unreachable!(),
             };
-            return Ok(Value::Numeric(if result { 1.0 } else { 0.0 }));
+            return Ok(Value::Numeric(if result { true_val } else { 0.0 }));
         }
 
         // Numeric operations
@@ -1788,20 +1857,40 @@ impl Interpreter {
                 Ok(Value::Numeric(a - b * (a / b).floor()))
             }
             BinOp::Pow => Ok(Value::Numeric(a.powf(b))),
-            BinOp::Eq => Ok(Value::Numeric(if a == b { 1.0 } else { 0.0 })),
-            BinOp::Ne => Ok(Value::Numeric(if a != b { 1.0 } else { 0.0 })),
-            BinOp::Lt => Ok(Value::Numeric(if a < b { 1.0 } else { 0.0 })),
-            BinOp::Gt => Ok(Value::Numeric(if a > b { 1.0 } else { 0.0 })),
-            BinOp::Le => Ok(Value::Numeric(if a <= b { 1.0 } else { 0.0 })),
-            BinOp::Ge => Ok(Value::Numeric(if a >= b { 1.0 } else { 0.0 })),
-            // ANSI logical operators (not bitwise)
-            BinOp::And => Ok(Value::Numeric(if a != 0.0 && b != 0.0 { 1.0 } else { 0.0 })),
-            BinOp::Or => Ok(Value::Numeric(if a != 0.0 || b != 0.0 { 1.0 } else { 0.0 })),
-            BinOp::Xor => Ok(Value::Numeric(if (a != 0.0) ^ (b != 0.0) {
-                1.0
-            } else {
-                0.0
-            })),
+            BinOp::Eq => Ok(Value::Numeric(if a == b { true_val } else { 0.0 })),
+            BinOp::Ne => Ok(Value::Numeric(if a != b { true_val } else { 0.0 })),
+            BinOp::Lt => Ok(Value::Numeric(if a < b { true_val } else { 0.0 })),
+            BinOp::Gt => Ok(Value::Numeric(if a > b { true_val } else { 0.0 })),
+            BinOp::Le => Ok(Value::Numeric(if a <= b { true_val } else { 0.0 })),
+            BinOp::Ge => Ok(Value::Numeric(if a >= b { true_val } else { 0.0 })),
+            // Logical/Bitwise operators
+            BinOp::And => {
+                if self.dialect == crate::Dialect::QuickBasic {
+                    let ia = a as i64;
+                    let ib = b as i64;
+                    Ok(Value::Numeric((ia & ib) as f64))
+                } else {
+                    Ok(Value::Numeric(if a != 0.0 && b != 0.0 { 1.0 } else { 0.0 }))
+                }
+            }
+            BinOp::Or => {
+                if self.dialect == crate::Dialect::QuickBasic {
+                    let ia = a as i64;
+                    let ib = b as i64;
+                    Ok(Value::Numeric((ia | ib) as f64))
+                } else {
+                    Ok(Value::Numeric(if a != 0.0 || b != 0.0 { 1.0 } else { 0.0 }))
+                }
+            }
+            BinOp::Xor => {
+                if self.dialect == crate::Dialect::QuickBasic {
+                    let ia = a as i64;
+                    let ib = b as i64;
+                    Ok(Value::Numeric((ia ^ ib) as f64))
+                } else {
+                    Ok(Value::Numeric(if (a != 0.0) ^ (b != 0.0) { 1.0 } else { 0.0 }))
+                }
+            }
             BinOp::Concat => unreachable!("Concat handled above"),
         }
     }
@@ -1814,7 +1903,12 @@ impl Interpreter {
             }
             UnaryOp::Not => {
                 let n = val.to_f64()?;
-                Ok(Value::Numeric(if n == 0.0 { 1.0 } else { 0.0 }))
+                if self.dialect == crate::Dialect::QuickBasic {
+                    let inum = n as i64;
+                    Ok(Value::Numeric((!inum) as f64))
+                } else {
+                    Ok(Value::Numeric(if n == 0.0 { 1.0 } else { 0.0 }))
+                }
             }
             UnaryOp::Pos => Ok(val.clone()),
         }
@@ -2473,6 +2567,17 @@ impl Interpreter {
                 })?;
                 (Some(BufReader::new(f)), Some(BufWriter::new(f2)))
             }
+            FileAccess::Append => {
+                let f = OpenOptions::new()
+                    .write(true)
+                    .append(true)
+                    .create(true)
+                    .open(&filename)
+                    .map_err(|e| RuntimeError::General {
+                        msg: format!("cannot open '{filename}': {e}"),
+                    })?;
+                (None, Some(BufWriter::new(f)))
+            }
         };
 
         self.file_handles.insert(
@@ -2866,30 +2971,180 @@ impl Interpreter {
         Ok(())
     }
 
-    fn exec_get_put(&mut self, gp: &GetPutStmt) -> Result<(), RuntimeError> {
-        let file_num = self.eval_expr(&gp.file_num)?.to_i64()?;
-        let record = if let Some(expr) = &gp.record {
-            Some(self.eval_expr(expr)?.to_i64()?)
+    fn get_var_basic_type(&self, name: &str) -> BasicType {
+        if name.ends_with('%') {
+            BasicType::Integer
+        } else if name.ends_with('&') {
+            BasicType::Long
+        } else if name.ends_with('!') {
+            BasicType::Single
+        } else if name.ends_with('#') {
+            BasicType::Double
+        } else if name.ends_with('$') {
+            BasicType::String
         } else {
-            None
-        };
+            if let Some(t_name) = self.array_type_map.get(name) {
+                if t_name == "NUMERIC" {
+                    BasicType::Numeric
+                } else if t_name == "STRING" {
+                    BasicType::String
+                } else {
+                    BasicType::UserDefined(t_name.clone())
+                }
+            } else {
+                BasicType::Numeric
+            }
+        }
+    }
 
-        let fh = self
-            .file_handles
-            .get_mut(&file_num)
-            .ok_or_else(|| RuntimeError::General {
-                msg: format!("file #{file_num} is not open"),
-            })?;
-
-        if gp.is_get {
-            // Flush writer before reading to ensure data is on disk
-            if let Some(writer) = &mut fh.writer {
-                writer.flush().map_err(|e| RuntimeError::General {
-                    msg: format!("flush error: {e}"),
+    fn serialize_value(&self, writer: &mut BufWriter<File>, val: &Value, ty: &BasicType) -> Result<(), RuntimeError> {
+        match ty {
+            BasicType::Integer => {
+                let n = val.to_f64()? as i16;
+                writer.write_all(&n.to_le_bytes()).map_err(|e| RuntimeError::General {
+                    msg: format!("binary write error: {e}"),
                 })?;
             }
+            BasicType::Long => {
+                let n = val.to_f64()? as i32;
+                writer.write_all(&n.to_le_bytes()).map_err(|e| RuntimeError::General {
+                    msg: format!("binary write error: {e}"),
+                })?;
+            }
+            BasicType::Single => {
+                let n = val.to_f64()? as f32;
+                writer.write_all(&n.to_le_bytes()).map_err(|e| RuntimeError::General {
+                    msg: format!("binary write error: {e}"),
+                })?;
+            }
+            BasicType::Double | BasicType::Numeric => {
+                let n = val.to_f64()?;
+                writer.write_all(&n.to_le_bytes()).map_err(|e| RuntimeError::General {
+                    msg: format!("binary write error: {e}"),
+                })?;
+            }
+            BasicType::FixedLengthString(len) => {
+                let s = val.to_string_val()?;
+                let mut bytes = s.into_bytes();
+                bytes.resize(*len, 0);
+                writer.write_all(&bytes).map_err(|e| RuntimeError::General {
+                    msg: format!("binary write error: {e}"),
+                })?;
+            }
+            BasicType::String => {
+                let s = val.to_string_val()?;
+                let len = s.len() as u16;
+                writer.write_all(&len.to_le_bytes()).map_err(|e| RuntimeError::General {
+                    msg: format!("binary write error: {e}"),
+                })?;
+                writer.write_all(s.as_bytes()).map_err(|e| RuntimeError::General {
+                    msg: format!("binary write error: {e}"),
+                })?;
+            }
+            BasicType::UserDefined(nested_name) => {
+                if let Value::Record { fields, .. } = val {
+                    let fields_def = self.type_defs.get(nested_name).ok_or_else(|| RuntimeError::General {
+                        msg: format!("undefined TYPE: {nested_name}"),
+                    })?;
+                    for field in fields_def {
+                        let field_val = fields.get(&field.name).ok_or_else(|| RuntimeError::General {
+                            msg: format!("missing field in record: {}", field.name),
+                        })?;
+                        self.serialize_value(writer, field_val, &field.field_type)?;
+                    }
+                } else {
+                    return Err(RuntimeError::TypeMismatch {
+                        msg: format!("expected record of type {nested_name}"),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
 
-            // Seek if position specified (1-based byte position)
+    fn deserialize_value(&self, reader: &mut BufReader<File>, ty: &BasicType) -> Result<Value, RuntimeError> {
+        match ty {
+            BasicType::Integer => {
+                let mut buf = [0u8; 2];
+                reader.read_exact(&mut buf).map_err(|e| RuntimeError::General {
+                    msg: format!("binary read error: {e}"),
+                })?;
+                let val = i16::from_le_bytes(buf) as f64;
+                Ok(Value::Numeric(val))
+            }
+            BasicType::Long => {
+                let mut buf = [0u8; 4];
+                reader.read_exact(&mut buf).map_err(|e| RuntimeError::General {
+                    msg: format!("binary read error: {e}"),
+                })?;
+                let val = i32::from_le_bytes(buf) as f64;
+                Ok(Value::Numeric(val))
+            }
+            BasicType::Single => {
+                let mut buf = [0u8; 4];
+                reader.read_exact(&mut buf).map_err(|e| RuntimeError::General {
+                    msg: format!("binary read error: {e}"),
+                })?;
+                let val = f32::from_le_bytes(buf) as f64;
+                Ok(Value::Numeric(val))
+            }
+            BasicType::Double | BasicType::Numeric => {
+                let mut buf = [0u8; 8];
+                reader.read_exact(&mut buf).map_err(|e| RuntimeError::General {
+                    msg: format!("binary read error: {e}"),
+                })?;
+                let val = f64::from_le_bytes(buf);
+                Ok(Value::Numeric(val))
+            }
+            BasicType::FixedLengthString(len) => {
+                let mut buf = vec![0u8; *len];
+                reader.read_exact(&mut buf).map_err(|e| RuntimeError::General {
+                    msg: format!("binary read error: {e}"),
+                })?;
+                let s = String::from_utf8_lossy(&buf).trim_end_matches('\0').to_string();
+                Ok(Value::Str(s))
+            }
+            BasicType::String => {
+                let mut len_buf = [0u8; 2];
+                reader.read_exact(&mut len_buf).map_err(|e| RuntimeError::General {
+                    msg: format!("binary read error: {e}"),
+                })?;
+                let len = u16::from_le_bytes(len_buf) as usize;
+                let mut buf = vec![0u8; len];
+                reader.read_exact(&mut buf).map_err(|e| RuntimeError::General {
+                    msg: format!("binary read error: {e}"),
+                })?;
+                let s = String::from_utf8_lossy(&buf).to_string();
+                Ok(Value::Str(s))
+            }
+            BasicType::UserDefined(nested_name) => {
+                let fields_def = self.type_defs.get(nested_name).ok_or_else(|| RuntimeError::General {
+                    msg: format!("undefined TYPE: {nested_name}"),
+                })?;
+                let mut fields = HashMap::new();
+                for field in fields_def {
+                    let field_val = self.deserialize_value(reader, &field.field_type)?;
+                    fields.insert(field.name.clone(), field_val);
+                }
+                Ok(Value::Record {
+                    type_name: nested_name.clone(),
+                    fields,
+                })
+            }
+        }
+    }
+
+    fn exec_get_put_inner(
+        &mut self,
+        fh: &mut FileHandle,
+        gp: &GetPutStmt,
+        record: Option<i64>,
+    ) -> Result<(), RuntimeError> {
+        if gp.is_get {
+            if let Some(writer) = &mut fh.writer {
+                writer.flush().ok();
+            }
+
             if let Some(pos) = record {
                 let byte_pos = (pos - 1).max(0) as u64;
                 if let Some(reader) = &mut fh.reader {
@@ -2902,34 +3157,37 @@ impl Interpreter {
             }
 
             let reader = fh.reader.as_mut().ok_or_else(|| RuntimeError::General {
-                msg: format!("file #{file_num} is not open for reading"),
+                msg: "file is not open for reading".into(),
             })?;
 
             if let Some(var) = &gp.var {
-                // Read based on current variable length, or default 128 bytes
-                let val = self
-                    .env
-                    .borrow()
-                    .get(&var.name)
-                    .unwrap_or(Value::Str(String::new()));
-                let read_len = match &val {
-                    Value::Str(s) if !s.is_empty() => s.len(),
-                    _ => 128,
-                };
-                let mut buf = vec![0u8; read_len];
-                let bytes_read = reader.read(&mut buf).unwrap_or(0);
-                if bytes_read == 0 {
-                    fh.eof_flag = true;
+                if self.dialect == crate::Dialect::QuickBasic {
+                    let var_type = self.get_var_basic_type(&var.name);
+                    let val = self.deserialize_value(reader, &var_type)?;
+                    self.env.borrow_mut().set(&var.name, val);
+                } else {
+                    let val = self
+                        .env
+                        .borrow()
+                        .get(&var.name)
+                        .unwrap_or(Value::Str(String::new()));
+                    let read_len = match &val {
+                        Value::Str(s) if !s.is_empty() => s.len(),
+                        _ => 128,
+                    };
+                    let mut buf = vec![0u8; read_len];
+                    let bytes_read = reader.read(&mut buf).unwrap_or(0);
+                    if bytes_read == 0 {
+                        fh.eof_flag = true;
+                    }
+                    buf.truncate(bytes_read);
+                    let s = String::from_utf8_lossy(&buf)
+                        .trim_end_matches('\0')
+                        .to_string();
+                    self.env.borrow_mut().set(&var.name, Value::Str(s));
                 }
-                buf.truncate(bytes_read);
-                let s = String::from_utf8_lossy(&buf)
-                    .trim_end_matches('\0')
-                    .to_string();
-                self.env.borrow_mut().set(&var.name, Value::Str(s));
             }
         } else {
-            // PUT
-            // Seek if position specified (1-based byte position)
             if let Some(pos) = record {
                 let byte_pos = (pos - 1).max(0) as u64;
                 if let Some(writer) = &mut fh.writer {
@@ -2942,23 +3200,53 @@ impl Interpreter {
             }
 
             let writer = fh.writer.as_mut().ok_or_else(|| RuntimeError::General {
-                msg: format!("file #{file_num} is not open for writing"),
+                msg: "file is not open for writing".into(),
             })?;
 
             if let Some(var) = &gp.var {
-                let val = self
-                    .env
-                    .borrow()
-                    .get(&var.name)
-                    .unwrap_or(Value::Str(String::new()));
-                let s = match val {
-                    Value::Str(s) => s,
-                    other => other.format_for_write(),
-                };
-                let _ = writer.write_all(s.as_bytes());
+                if self.dialect == crate::Dialect::QuickBasic {
+                    let val = self
+                        .env
+                        .borrow()
+                        .get(&var.name)
+                        .unwrap_or(Value::Numeric(0.0));
+                    let var_type = self.get_var_basic_type(&var.name);
+                    self.serialize_value(writer, &val, &var_type)?;
+                } else {
+                    let val = self
+                        .env
+                        .borrow()
+                        .get(&var.name)
+                        .unwrap_or(Value::Str(String::new()));
+                    let s = match val {
+                        Value::Str(s) => s,
+                        other => other.format_for_write(),
+                    };
+                    let _ = writer.write_all(s.as_bytes());
+                }
             }
         }
 
         Ok(())
+    }
+
+    fn exec_get_put(&mut self, gp: &GetPutStmt) -> Result<(), RuntimeError> {
+        let file_num = self.eval_expr(&gp.file_num)?.to_i64()?;
+        let record = if let Some(expr) = &gp.record {
+            Some(self.eval_expr(expr)?.to_i64()?)
+        } else {
+            None
+        };
+
+        let mut fh = self
+            .file_handles
+            .remove(&file_num)
+            .ok_or_else(|| RuntimeError::General {
+                msg: format!("file #{file_num} is not open"),
+            })?;
+
+        let res = self.exec_get_put_inner(&mut fh, gp, record);
+        self.file_handles.insert(file_num, fh);
+        res
     }
 }

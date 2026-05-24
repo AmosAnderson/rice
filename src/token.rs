@@ -83,6 +83,7 @@ pub enum Token {
     KwShared,
     KwStatic,
     KwByVal,
+    KwByRef,
     KwRedim,
     KwErase,
     KwPreserve,
