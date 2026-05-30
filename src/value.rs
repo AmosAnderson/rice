@@ -94,7 +94,9 @@ impl Value {
             | BasicType::Long
             | BasicType::Single
             | BasicType::Double => Ok(Value::Numeric(self.to_f64()?)),
-            BasicType::String | BasicType::FixedLengthString(_) => Ok(Value::Str(self.to_string_val()?)),
+            BasicType::String | BasicType::FixedLengthString(_) => {
+                Ok(Value::Str(self.to_string_val()?))
+            }
             BasicType::UserDefined(_) => Err(RuntimeError::TypeMismatch {
                 msg: "cannot coerce to user-defined type".into(),
             }),

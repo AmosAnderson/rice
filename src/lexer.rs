@@ -131,49 +131,49 @@ impl Lexer {
             ':' => Token::Colon,
             '#' => Token::Hash,
             '&' => {
-                if self.dialect == crate::Dialect::QuickBasic {
-                    if let Some(next_c) = self.peek_char() {
-                        if next_c == 'H' || next_c == 'h' {
-                            self.advance_char(); // consume 'H'
-                            let start = self.pos;
-                            while let Some(ch) = self.peek_char() {
-                                if ch.is_ascii_hexdigit() {
-                                    self.advance_char();
-                                } else {
-                                    break;
-                                }
+                if self.dialect == crate::Dialect::QuickBasic
+                    && let Some(next_c) = self.peek_char()
+                {
+                    if next_c == 'H' || next_c == 'h' {
+                        self.advance_char(); // consume 'H'
+                        let start = self.pos;
+                        while let Some(ch) = self.peek_char() {
+                            if ch.is_ascii_hexdigit() {
+                                self.advance_char();
+                            } else {
+                                break;
                             }
-                            let hex_str: String = self.source[start..self.pos].iter().collect();
-                            let val = u64::from_str_radix(&hex_str, 16).unwrap_or(0) as f64;
-                            if self.peek_char() == Some('&') {
-                                self.advance_char(); // consume trailing & suffix
-                            }
-                            self.at_line_start = false;
-                            return Ok(SpannedToken {
-                                token: Token::NumericLiteral(val),
-                                span,
-                            });
-                        } else if next_c == 'O' || next_c == 'o' {
-                            self.advance_char(); // consume 'O'
-                            let start = self.pos;
-                            while let Some(ch) = self.peek_char() {
-                                if ('0'..='7').contains(&ch) {
-                                    self.advance_char();
-                                } else {
-                                    break;
-                                }
-                            }
-                            let oct_str: String = self.source[start..self.pos].iter().collect();
-                            let val = u64::from_str_radix(&oct_str, 8).unwrap_or(0) as f64;
-                            if self.peek_char() == Some('&') {
-                                self.advance_char(); // consume trailing & suffix
-                            }
-                            self.at_line_start = false;
-                            return Ok(SpannedToken {
-                                token: Token::NumericLiteral(val),
-                                span,
-                            });
                         }
+                        let hex_str: String = self.source[start..self.pos].iter().collect();
+                        let val = u64::from_str_radix(&hex_str, 16).unwrap_or(0) as f64;
+                        if self.peek_char() == Some('&') {
+                            self.advance_char(); // consume trailing & suffix
+                        }
+                        self.at_line_start = false;
+                        return Ok(SpannedToken {
+                            token: Token::NumericLiteral(val),
+                            span,
+                        });
+                    } else if next_c == 'O' || next_c == 'o' {
+                        self.advance_char(); // consume 'O'
+                        let start = self.pos;
+                        while let Some(ch) = self.peek_char() {
+                            if ('0'..='7').contains(&ch) {
+                                self.advance_char();
+                            } else {
+                                break;
+                            }
+                        }
+                        let oct_str: String = self.source[start..self.pos].iter().collect();
+                        let val = u64::from_str_radix(&oct_str, 8).unwrap_or(0) as f64;
+                        if self.peek_char() == Some('&') {
+                            self.advance_char(); // consume trailing & suffix
+                        }
+                        self.at_line_start = false;
+                        return Ok(SpannedToken {
+                            token: Token::NumericLiteral(val),
+                            span,
+                        });
                     }
                 }
                 Token::Ampersand
@@ -311,7 +311,9 @@ impl Lexer {
             self.advance_char();
             Some('$')
         } else if self.dialect == crate::Dialect::QuickBasic
-            && self.peek_char().is_some_and(|ch| ch == '%' || ch == '!' || ch == '#' || ch == '&')
+            && self
+                .peek_char()
+                .is_some_and(|ch| ch == '%' || ch == '!' || ch == '#' || ch == '&')
         {
             let ch = self.advance_char();
             Some(ch)
@@ -467,7 +469,9 @@ impl Lexer {
                     self.advance_char();
                     Token::Identifier(format!("{}$", word))
                 } else if self.dialect == crate::Dialect::QuickBasic
-                    && self.peek_char().is_some_and(|ch| ch == '%' || ch == '!' || ch == '#' || ch == '&')
+                    && self
+                        .peek_char()
+                        .is_some_and(|ch| ch == '%' || ch == '!' || ch == '#' || ch == '&')
                 {
                     let ch = self.advance_char();
                     Token::Identifier(format!("{}{}", word, ch))

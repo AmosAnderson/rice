@@ -50,7 +50,7 @@ END WHEN
 
 ## RETRY
 
-Within a `USE` block, `RETRY` re-executes the statement that caused the exception. This is useful when the handler can correct the condition that caused the error:
+Within a `USE` block, `RETRY` re-executes the protected `WHEN EXCEPTION IN` block from the beginning. This is useful when the handler can correct the condition that caused the error:
 
 ```basic
 DIM filename AS STRING
@@ -116,7 +116,7 @@ WHEN EXCEPTION IN
     OPEN #1: NAME "config.txt", ACCESS INPUT
 
     ' Process file...
-    LINE INPUT #1: line
+    LINE INPUT #1, line
     CLOSE #1
 USE
     PRINT "Could not open config.txt, using defaults"

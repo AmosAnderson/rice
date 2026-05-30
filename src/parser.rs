@@ -10,11 +10,19 @@ pub struct Parser {
 
 impl Parser {
     pub fn new(tokens: Vec<SpannedToken>) -> Self {
-        Self { tokens, pos: 0, dialect: crate::Dialect::Ansi }
+        Self {
+            tokens,
+            pos: 0,
+            dialect: crate::Dialect::Ansi,
+        }
     }
 
     pub fn with_dialect(tokens: Vec<SpannedToken>, dialect: crate::Dialect) -> Self {
-        Self { tokens, pos: 0, dialect }
+        Self {
+            tokens,
+            pos: 0,
+            dialect,
+        }
     }
 
     pub fn parse_program(&mut self) -> Result<Program, ParseError> {
@@ -111,7 +119,8 @@ impl Parser {
                 } else {
                     Err(ParseError::General {
                         line: self.current_line(),
-                        msg: "RETURN is not supported; use EXIT SUB or EXIT FUNCTION instead".into(),
+                        msg: "RETURN is not supported; use EXIT SUB or EXIT FUNCTION instead"
+                            .into(),
                     })
                 }
             }
@@ -135,20 +144,20 @@ impl Parser {
             Token::KwRedim => self.parse_redim(),
             Token::KwErase => self.parse_erase(),
             Token::KwOption => {
-                if let Some(Token::Identifier(id)) = self.peek_at(1) {
-                    if id == "DIALECT" {
-                        self.advance(); // consume OPTION
-                        self.advance(); // consume DIALECT
-                        if let Token::StringLiteral(_) = self.peek() {
-                            self.advance();
-                            return Ok(Stmt::Rem);
-                        } else {
-                            return Err(ParseError::Expected {
-                                line: self.current_line(),
-                                expected: "string literal (e.g. \"QB\") after OPTION DIALECT".into(),
-                                found: format!("{:?}", self.peek()),
-                            });
-                        }
+                if let Some(Token::Identifier(id)) = self.peek_at(1)
+                    && id == "DIALECT"
+                {
+                    self.advance(); // consume OPTION
+                    self.advance(); // consume DIALECT
+                    if let Token::StringLiteral(_) = self.peek() {
+                        self.advance();
+                        return Ok(Stmt::Rem);
+                    } else {
+                        return Err(ParseError::Expected {
+                            line: self.current_line(),
+                            expected: "string literal (e.g. \"QB\") after OPTION DIALECT".into(),
+                            found: format!("{:?}", self.peek()),
+                        });
                     }
                 }
                 self.parse_option_base()
@@ -188,7 +197,11 @@ impl Parser {
                         self.advance();
                         labels.push(self.parse_label()?);
                     }
-                    Ok(Stmt::OnGoto { expr, labels, is_gosub })
+                    Ok(Stmt::OnGoto {
+                        expr,
+                        labels,
+                        is_gosub,
+                    })
                 } else {
                     // Peek ahead to determine which ON form for a specific error message
                     let next = self.peek_at(1).cloned();
@@ -348,20 +361,20 @@ impl Parser {
             }),
             Token::KwMat => self.parse_mat(),
             Token::Identifier(ref id) if id == "OPTION" => {
-                if let Some(Token::Identifier(id2)) = self.peek_at(1) {
-                    if id2 == "DIALECT" {
-                        self.advance(); // consume OPTION
-                        self.advance(); // consume DIALECT
-                        if let Token::StringLiteral(_) = self.peek() {
-                            self.advance();
-                            return Ok(Stmt::Rem);
-                        } else {
-                            return Err(ParseError::Expected {
-                                line: self.current_line(),
-                                expected: "string literal (e.g. \"QB\") after OPTION DIALECT".into(),
-                                found: format!("{:?}", self.peek()),
-                            });
-                        }
+                if let Some(Token::Identifier(id2)) = self.peek_at(1)
+                    && id2 == "DIALECT"
+                {
+                    self.advance(); // consume OPTION
+                    self.advance(); // consume DIALECT
+                    if let Token::StringLiteral(_) = self.peek() {
+                        self.advance();
+                        return Ok(Stmt::Rem);
+                    } else {
+                        return Err(ParseError::Expected {
+                            line: self.current_line(),
+                            expected: "string literal (e.g. \"QB\") after OPTION DIALECT".into(),
+                            found: format!("{:?}", self.peek()),
+                        });
                     }
                 }
                 self.parse_assignment_or_call()

@@ -55,6 +55,17 @@ Save your program with a `.bas` extension and run it:
 cargo run -- myprogram.bas
 ```
 
+### Selecting a Dialect
+
+ANSI mode is the default. To run a QuickBasic-style program, use a flag or put `OPTION DIALECT "QB"` in the source:
+
+```bash
+cargo run -- --dialect qb legacy.bas
+cargo run -- --compat legacy.bas
+```
+
+For interactive QuickBasic syntax in the REPL, start the REPL with `cargo run -- --dialect qb`. See [Dialects](dialects.md) for the exact compatibility rules.
+
 ## Your First Program
 
 Create a file called `hello.bas`:
@@ -99,7 +110,7 @@ DIM count AS NUMERIC     ' Explicit declaration
 CONST PI = 3.14159       ' Constant (cannot be reassigned)
 ```
 
-ANSI BASIC has two types: NUMERIC and STRING. There are no type suffixes.
+ANSI BASIC has two types: NUMERIC and STRING. There are no numeric type suffixes in ANSI mode. QuickBasic mode accepts suffixes such as `%`, `!`, `#`, `&`, and `$` in variable names for compatibility.
 
 ### Control Flow
 
@@ -174,12 +185,12 @@ names(1) = "Alice"
 ```basic
 ' Write to a file
 OPEN #1: NAME "output.txt", ACCESS OUTPUT
-PRINT #1: "Hello, file!"
+PRINT #1, "Hello, file!"
 CLOSE #1
 
 ' Read from a file
 OPEN #1: NAME "output.txt", ACCESS INPUT
-LINE INPUT #1: text
+LINE INPUT #1, text
 PRINT text
 CLOSE #1
 ```
@@ -191,7 +202,7 @@ ANSI BASIC uses structured exception handling:
 ```basic
 WHEN EXCEPTION IN
     OPEN #1: NAME "data.txt", ACCESS INPUT
-    INPUT #1: value
+    INPUT #1, value
     CLOSE #1
 USE
     PRINT "Error: "; EXTEXT$

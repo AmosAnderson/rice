@@ -14,25 +14,16 @@ PRINT s(8:12)      ' "World"    - characters 8 through 12
 PRINT s(1:1)       ' "H"        - single character
 ```
 
-### Open-Ended Slices
-
-Omit one end of the range to slice from the beginning or to the end:
-
-```basic
-s = "Hello, World!"
-
-PRINT s(8:)        ' "World!"   - from position 8 to the end
-PRINT s(:5)        ' "Hello"    - from the beginning through position 5
-```
-
 ### Equivalence to Traditional Functions
 
 | Traditional Function     | ANSI Slice Equivalent     |
 |--------------------------|---------------------------|
 | `LEFT$(s, n)`            | `s(1:n)`                  |
-| `RIGHT$(s, n)`           | `s(LEN(s)-n+1:)`          |
+| `RIGHT$(s, n)`           | `s(LEN(s)-n+1:LEN(s))`    |
 | `MID$(s, start, length)` | `s(start:start+length-1)` |
-| `MID$(s, start)`         | `s(start:)`               |
+| `MID$(s, start)`         | `s(start:LEN(s))`         |
+
+Both bounds are required in the current parser.
 
 ---
 
@@ -76,16 +67,6 @@ s = "Hello, World!"
 s(1:5) = "Greet"
 PRINT s    ' "Greet, World!"
 ```
-
-### Replacing to the End
-
-```basic
-s = "Hello, World!"
-s(8:) = "Everyone!"
-PRINT s    ' "Hello, Everyone!"
-```
-
----
 
 ## Examples
 

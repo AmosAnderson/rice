@@ -1,15 +1,33 @@
 # RICE BASIC Language Reference
 
+This reference describes ANSI mode unless a section explicitly says otherwise. RICE BASIC also provides QuickBasic compatibility mode for selected QBasic/QuickBasic syntax and semantics; see [Dialects](dialects.md) for the full compatibility table.
+
+## Running and Dialect Selection
+
+```bash
+rice program.bas
+rice --dialect qb program.bas
+rice --compat program.bas
+```
+
+ANSI mode is the default. QuickBasic compatibility mode can also be requested inside a complete source file:
+
+```basic
+OPTION DIALECT "QB"
+```
+
+Use `--dialect qb` or `--compat` when starting the REPL if you want interactive one-line QuickBasic syntax.
+
 ## Data Types
 
-RICE BASIC follows the ANSI X3.113-1991 (Full BASIC) standard and provides two fundamental data types:
+RICE BASIC follows the ANSI X3.113-1991 (Full BASIC) standard by default and provides two fundamental data types:
 
 | Type    | Description                                              |
 |---------|----------------------------------------------------------|
 | NUMERIC | All numbers (integer and floating-point). Stored as 64-bit float (`f64`). |
 | STRING  | Variable-length text.                                    |
 
-There are no type suffixes. Variable type is determined by context or explicit declaration. The default type for undeclared variables is NUMERIC.
+In ANSI mode, `$` marks string variables and numeric variables have no type suffixes. QuickBasic mode accepts `%`, `!`, `#`, `&`, and `$` suffixes as part of variable names, but numeric values are still stored as `f64`. The default type for undeclared variables is NUMERIC.
 
 ### Auto-Initialization
 
@@ -22,6 +40,8 @@ Following the ANSI standard:
 - **False** = `0`
 
 Any non-zero value is considered true in conditional expressions.
+
+In QuickBasic mode, comparisons return `-1` for true and `0` for false.
 
 ---
 
@@ -124,6 +144,8 @@ These are logical (not bitwise) operators, operating on truth values:
 | `NOT`    | Logical NOT      | `NOT (x = 0)`             |
 | `XOR`    | Exclusive OR     | `(x = 1) XOR (y = 1)`     |
 
+In QuickBasic mode, these operators perform bitwise operations on numeric values.
+
 ### String Concatenation
 
 Use `&` for string concatenation:
@@ -131,6 +153,8 @@ Use `&` for string concatenation:
 ```basic
 result = "Hello" & ", " & "World!"
 ```
+
+In QuickBasic mode, `+` also concatenates strings.
 
 ### Operator Precedence
 
@@ -265,6 +289,27 @@ Line numbers are also supported:
 20 GOTO 10
 ```
 
+### GOSUB / RETURN
+
+`GOSUB` and `RETURN` are available only in QuickBasic compatibility mode:
+
+```basic
+OPTION DIALECT "QB"
+GOSUB 100
+PRINT "back"
+END
+
+100 PRINT "inside subroutine"
+RETURN
+```
+
+QuickBasic mode also supports computed jumps:
+
+```basic
+ON choice GOTO 100, 200, 300
+ON choice GOSUB 100, 200, 300
+```
+
 ### END / STOP / SYSTEM
 
 ```basic
@@ -272,6 +317,8 @@ END       ' End program execution
 STOP      ' Stop execution
 SYSTEM    ' Exit to system
 ```
+
+When running from the REPL, `END` and `STOP` end the BASIC program normally. `Ctrl+D` exits at the REPL prompt. There is not currently a graceful break key that returns to `Ok` while a BASIC program is running.
 
 ---
 
@@ -335,8 +382,8 @@ PRINT SPC(10); "After 10 spaces"
 Formatted output (see [PRINT USING Formatting](print-using.md) for full details):
 
 ```basic
-PRINT USING "###.##": 3.14159        '   3.14
-PRINT USING "$$#,###.##": 1234.5     ' $1,234.50
+PRINT USING "###.##"; 3.14159        '   3.14
+PRINT USING "$$#,###.##"; 1234.5     ' $1,234.50
 ```
 
 ### INPUT

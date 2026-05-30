@@ -293,6 +293,7 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("CONST", "Declare a constant"),
         ("SWAP", "Swap two variables"),
         ("OPTION BASE", "Set default array lower bound"),
+        ("OPTION DIALECT", "Select QuickBasic compatibility mode"),
         ("REDIM", "Redimension an array"),
         ("ERASE", "Erase an array"),
         ("SHARED", "Share variable with main module"),
@@ -309,7 +310,7 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("STEP", "Specify FOR loop increment"),
         ("NEXT", "End of FOR loop"),
         ("WHILE", "Begin a WHILE loop"),
-        ("WEND", "End of WHILE loop"),
+        ("END WHILE", "End of WHILE loop"),
         ("DO", "Begin a DO loop"),
         ("LOOP", "End of DO loop"),
         ("UNTIL", "Loop until condition is true"),
@@ -317,6 +318,10 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("CASE", "Branch of SELECT CASE"),
         ("END SELECT", "End of SELECT CASE"),
         ("GOTO", "Jump to a label"),
+        ("GOSUB", "Jump to a subroutine label in QuickBasic mode"),
+        ("RETURN", "Return from GOSUB in QuickBasic mode"),
+        ("ON GOTO", "Computed GOTO in QuickBasic mode"),
+        ("ON GOSUB", "Computed GOSUB in QuickBasic mode"),
         ("EXIT FOR", "Exit a FOR loop early"),
         ("EXIT DO", "Exit a DO loop early"),
         ("EXIT SUB", "Exit a SUB early"),
@@ -332,6 +337,7 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("CALL", "Call a SUB"),
         ("DECLARE", "Forward-declare a SUB or FUNCTION"),
         ("BYVAL", "Pass argument by value"),
+        ("BYREF", "Pass argument by reference"),
         // Data
         ("DATA", "Define inline data"),
         ("READ", "Read from DATA"),
@@ -349,7 +355,7 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("RETRY", "Re-execute the guarded block after error"),
         ("CONTINUE", "Resume after the failed statement"),
         // File I/O
-        ("OPEN", "Open a file (ANSI syntax)"),
+        ("OPEN", "Open a file"),
         ("CLOSE", "Close a file"),
         ("SET POINTER", "Set file position"),
         ("ASK POINTER", "Query file position"),
@@ -708,7 +714,7 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "PRINT USING",
-            "```basic\nPRINT USING format$: expr[, expr...]\n```\nFormatted output. `#` for digits, `.` for decimal, `$$` for currency, `^^^^` for scientific notation.",
+            "```basic\nPRINT USING format$; expr[, expr...]\n```\nFormatted output. `#` for digits, `.` for decimal, `$$` for currency, `^^^^` for scientific notation.",
         ),
         (
             "INPUT",
@@ -744,6 +750,10 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
             "```basic\nOPTION BASE {0|1}\n```\nSets the default lower bound for arrays. Default is 1 (ANSI convention).",
         ),
         (
+            "OPTION DIALECT",
+            "```basic\nOPTION DIALECT \"QB\"\n```\nSelects QuickBasic compatibility mode for a complete source file or stored REPL program run with `RUN`.",
+        ),
+        (
             "REDIM",
             "```basic\nREDIM [PRESERVE] var(dims) [AS type]\n```\nRedimensions an array. Use `PRESERVE` to keep existing contents.",
         ),
@@ -774,7 +784,7 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "WHILE",
-            "```basic\nWHILE condition\n  ...\nWEND\n```\nLoop while condition is true.",
+            "```basic\nWHILE condition\n  ...\nEND WHILE\n```\nLoop while condition is true.",
         ),
         (
             "DO",
@@ -787,6 +797,22 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         (
             "GOTO",
             "```basic\nGOTO label\n```\nTransfers execution to the specified label or line number.",
+        ),
+        (
+            "GOSUB",
+            "```basic\nGOSUB label\n...\nRETURN\n```\nQuickBasic compatibility mode only. Calls a label using the GOSUB return stack.",
+        ),
+        (
+            "RETURN",
+            "```basic\nRETURN\n```\nQuickBasic compatibility mode only. Returns to the statement after the most recent GOSUB.",
+        ),
+        (
+            "ON GOTO",
+            "```basic\nON expr GOTO label1, label2[, label3...]\n```\nQuickBasic compatibility mode only. Jumps to the label selected by the 1-based numeric expression.",
+        ),
+        (
+            "ON GOSUB",
+            "```basic\nON expr GOSUB label1, label2[, label3...]\n```\nQuickBasic compatibility mode only. Calls the label selected by the 1-based numeric expression.",
         ),
         ("END", "```basic\nEND\n```\nEnds program execution."),
         ("STOP", "```basic\nSTOP\n```\nStops program execution."),
@@ -810,6 +836,14 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         (
             "DECLARE",
             "```basic\nDECLARE SUB name (params)\nDECLARE FUNCTION name (params)\n```\nForward-declares a SUB or FUNCTION.",
+        ),
+        (
+            "BYVAL",
+            "```basic\nSUB name (BYVAL x AS NUMERIC)\n```\nPasses a parameter by value. This is the default in ANSI mode.",
+        ),
+        (
+            "BYREF",
+            "```basic\nSUB name (BYREF x AS NUMERIC)\n```\nPasses a parameter by reference. This is the default in QuickBasic compatibility mode.",
         ),
         // Data
         (
@@ -845,7 +879,7 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         // File I/O
         (
             "OPEN",
-            "```basic\nOPEN #n: NAME file$, ACCESS {INPUT|OUTPUT|OUTIN}, ORGANIZATION {SEQUENTIAL|STREAM}\n```\nOpens a file for I/O using ANSI Full BASIC syntax.",
+            "```basic\nOPEN #n: NAME file$, ACCESS {INPUT|OUTPUT|OUTIN}, ORGANIZATION {SEQUENTIAL|STREAM}\nOPEN file$ FOR {INPUT|OUTPUT|APPEND|BINARY|RANDOM} AS #n\n```\nOpens a file for I/O. The second form is QuickBasic compatibility mode syntax.",
         ),
         ("CLOSE", "```basic\nCLOSE #n\n```\nCloses an open file."),
         (
@@ -1013,6 +1047,7 @@ fn token_name(tok: &rice::token::Token) -> Option<String> {
         rice::token::Token::KwShared => Some("SHARED".into()),
         rice::token::Token::KwStatic => Some("STATIC".into()),
         rice::token::Token::KwByVal => Some("BYVAL".into()),
+        rice::token::Token::KwByRef => Some("BYREF".into()),
         rice::token::Token::KwSleep => Some("SLEEP".into()),
         rice::token::Token::KwClear => Some("CLEAR".into()),
         rice::token::Token::KwName => Some("NAME".into()),

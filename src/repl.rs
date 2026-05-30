@@ -509,7 +509,9 @@ impl Repl {
         println!();
 
         let mut editor = Editor::new().expect("failed to create editor");
-        editor.set_helper(Some(BasicHelper { dialect: self.interpreter.dialect }));
+        editor.set_helper(Some(BasicHelper {
+            dialect: self.interpreter.dialect,
+        }));
         let history_file = dirs_history_path();
         let _ = editor.load_history(&history_file);
 

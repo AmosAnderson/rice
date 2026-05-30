@@ -1,6 +1,6 @@
 # RICE BASIC Language Reference
 
-RICE BASIC is a structured BASIC interpreter implementing ANSI X3.113-1991 (Full BASIC). This document covers the full syntax supported by RICE BASIC.
+RICE BASIC is a structured BASIC interpreter implementing ANSI X3.113-1991 (Full BASIC), with an optional QuickBasic compatibility mode. This document covers the syntax supported by RICE BASIC.
 
 ## Running Programs
 
@@ -12,6 +12,23 @@ rice myprogram.bas    # Execute a file
 In the REPL, type statements and press Enter to execute them. Type `SYSTEM` or press Ctrl+D to exit.
 
 The REPL supports old-school line-number editing: type numbered lines to build a program, then use `RUN`, `LIST`, `NEW`, and `DELETE` to manage and execute it. Unnumbered lines execute immediately.
+
+## Dialects
+
+ANSI mode is the default. QuickBasic compatibility mode can be selected with:
+
+```bash
+rice --dialect qb program.bas
+rice --compat program.bas
+```
+
+or in a complete source file:
+
+```basic
+OPTION DIALECT "QB"
+```
+
+QuickBasic mode accepts numeric type suffixes in variable names, `-1` true values, string `+` concatenation, bitwise numeric logical operators, `GOSUB`/`RETURN`, `ON ... GOTO`/`ON ... GOSUB`, hex/octal literals, and QuickBasic-style `OPEN file$ FOR mode AS #n` file syntax. See [docs/dialects.md](docs/dialects.md) for the full dialect coverage.
 
 ---
 
@@ -27,14 +44,14 @@ x = 5  ' Inline comment after a statement
 
 ## Data Types
 
-RICE BASIC follows the ANSI standard with two fundamental types:
+RICE BASIC follows the ANSI standard by default with two fundamental types:
 
 | Type    | Description                                       |
 |---------|---------------------------------------------------|
 | NUMERIC | All numbers. Stored as double-precision float (f64). |
 | STRING  | Variable-length text.                             |
 
-There are no type suffixes for numeric subtypes. All numeric values are double-precision. Variables ending in `$` are strings; all others are numeric.
+In ANSI mode, there are no type suffixes for numeric subtypes. All numeric values are double-precision. Variables ending in `$` are strings; all others are numeric. QuickBasic mode accepts numeric suffixes as part of variable names; see [docs/dialects.md](docs/dialects.md).
 
 Undeclared variables auto-initialize to `0` (numeric) or `""` (string).
 
@@ -216,14 +233,14 @@ FOR i = 1 TO 100
 NEXT i
 ```
 
-### WHILE / WEND
+### WHILE / END WHILE
 
 ```basic
 x = 1
 WHILE x <= 10
     PRINT x
     x = x + 1
-WEND
+END WHILE
 ```
 
 ### DO / LOOP
@@ -345,7 +362,7 @@ PRINT Factorial(10)    ' Prints 3628800
 
 Use `EXIT SUB` or `EXIT FUNCTION` to return early.
 
-### Parameters: BYVAL (default)
+### Parameters: BYVAL (default in ANSI mode)
 
 In ANSI Full BASIC, parameters are passed by value by default. Changes inside the procedure do not affect the original variable:
 
@@ -354,6 +371,8 @@ SUB Test (x AS NUMERIC)
     x = x + 1        ' Does not affect the caller's variable
 END SUB
 ```
+
+QuickBasic compatibility mode uses `BYREF` by default and supports explicit `BYVAL`/`BYREF`.
 
 ---
 
@@ -379,7 +398,7 @@ Arrays of types and passing types to procedures are supported. See the [User-Def
 
 ## Strings
 
-ANSI Full BASIC uses colon slicing instead of LEFT$/RIGHT$/MID$:
+ANSI Full BASIC supports colon slicing; LEFT$/RIGHT$/MID$ are also available as compatibility functions:
 
 ```basic
 LET A$ = "Hello, World!"
@@ -482,8 +501,8 @@ Access modes: INPUT, OUTPUT, OUTIN. Organization: SEQUENTIAL (default), STREAM.
 
 ```basic
 OPEN #1: NAME "output.txt", ACCESS OUTPUT
-PRINT #1: "Hello, World!"
-PRINT #1: x; y; z
+PRINT #1, "Hello, World!"
+PRINT #1, x; y; z
 CLOSE #1
 ```
 
@@ -503,7 +522,7 @@ CLOSE #1
 ```basic
 OPEN #1: NAME "data.txt", ACCESS INPUT
 DO WHILE NOT EOF(1)
-    LINE INPUT #1: x$
+    LINE INPUT #1, x$
     PRINT x$
 LOOP
 CLOSE #1
@@ -513,7 +532,7 @@ CLOSE #1
 
 ```basic
 OPEN #1: NAME "data.csv", ACCESS INPUT
-INPUT #1: name$, age, score
+INPUT #1, name$, age, score
 PRINT name$; age; score
 CLOSE #1
 ```
@@ -550,7 +569,7 @@ CLOSE #1
 ' Read them back
 OPEN #1: NAME "people.txt", ACCESS INPUT
 DO WHILE NOT EOF(1)
-    INPUT #1: name$, age
+    INPUT #1, name$, age
     PRINT name$; " is"; age; "years old"
 LOOP
 CLOSE #1
@@ -576,7 +595,7 @@ CLOSE #1
 | `STR$(n)`                | Number to string                       | `STR$(42)` → `"42"`          |
 | `VAL(s$)`                | String to number                       | `VAL("3.14")` → `3.14`       |
 
-For substring operations, use colon slicing: `A$(3:7)` instead of MID$/LEFT$/RIGHT$.
+For substring operations, ANSI-style code should prefer colon slicing such as `A$(3:7)`. LEFT$/RIGHT$/MID$ are available for compatibility.
 
 ### Math Functions
 
@@ -647,7 +666,7 @@ RICE BASIC uses ANSI structured exception handling (not ON ERROR GOTO):
 WHEN EXCEPTION IN
     ' Code that might cause errors
     OPEN #1: NAME "missing.txt", ACCESS INPUT
-    LINE INPUT #1: x$
+    LINE INPUT #1, x$
     CLOSE #1
 USE
     PRINT "Error:"; EXTYPE; EXTEXT$
@@ -771,7 +790,7 @@ VIEW PRINT                ' Reset scrolling region
 
 ## MAT Operations
 
-Full matrix support for numeric arrays:
+MAT support for numeric arrays:
 
 ```basic
 DIM A(3, 3), B(3, 3), C(3, 3)
@@ -914,14 +933,14 @@ END FUNCTION
 
 ## Limitations
 
-RICE BASIC intentionally omits:
+RICE BASIC intentionally omits or limits:
 
 - **Graphics modes**: No `SCREEN` (mode switching), `PSET`, `LINE`, `CIRCLE`, `DRAW`, `PAINT`, `PALETTE`, `WINDOW`
 - **Sound**: No `SOUND`, `PLAY`
 - **Memory access**: No `DEF SEG`, `PEEK`, `POKE`
 - **Legacy error handling**: No `ON ERROR GOTO`, `ERR`, `ERL` (use `WHEN EXCEPTION` instead)
-- **Legacy procedures**: No `GOSUB`/`RETURN`, `DEF FN` (use `SUB`/`FUNCTION` instead)
-- **Legacy string functions**: No `LEFT$`, `RIGHT$`, `MID$` (use colon slicing instead)
+- **Legacy procedures**: `GOSUB`/`RETURN` are QuickBasic-mode only; `DEF FN` is not supported (use `SUB`/`FUNCTION` instead)
+- **String slicing**: ANSI colon slicing is supported; `LEFT$`, `RIGHT$`, and `MID$` are also available as compatibility functions
 - **Legacy operators**: No `\` (integer division), `IMP`, `EQV`
 - **Proper array storage**: Arrays use a flattened key representation; `LBOUND`/`UBOUND` are stubs only
 

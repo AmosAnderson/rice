@@ -100,7 +100,7 @@ DECLARE FUNCTION MyFunc (x AS NUMERIC) AS NUMERIC
 
 ## Parameters
 
-### Pass by Value (Default)
+### Pass by Value (Default in ANSI Mode)
 
 In ANSI Full BASIC, parameters are passed by value by default. Changes inside the procedure do not affect the original variable:
 
@@ -114,6 +114,32 @@ DIM n AS NUMERIC
 n = 10
 CALL TryIncrement(n)
 PRINT "Outside: "; n        ' 10
+```
+
+Use `BYREF` to request write-back to the caller:
+
+```basic
+SUB Increment (BYREF x AS NUMERIC)
+    x = x + 1
+END SUB
+```
+
+In QuickBasic compatibility mode, parameters are `BYREF` by default. Passing a parenthesized argument to an unparenthesized call forces that argument to be evaluated as an expression and passed by value:
+
+```basic
+OPTION DIALECT "QB"
+
+SUB ChangeMe (x)
+    x = 42
+END SUB
+
+n = 10
+ChangeMe n
+PRINT n        ' 42
+
+n = 10
+ChangeMe (n)
+PRINT n        ' 10
 ```
 
 ### Array Parameters

@@ -1207,34 +1207,34 @@ fn test_qb_compat() {
     assert!(lines[2].starts_with("3.14"));
     assert!(lines[3].starts_with("2.71828182"));
     assert_eq!(lines[4], "hello");
-    
+
     // Comparison
     assert_eq!(lines[5], "-1");
     assert_eq!(lines[6], "-1");
     assert_eq!(lines[7], "0");
-    
+
     // Bitwise
     assert_eq!(lines[8], "1");
     assert_eq!(lines[9], "7");
     assert_eq!(lines[10], "0");
     assert_eq!(lines[11], "6");
-    
+
     // String concat +
     assert_eq!(lines[12], "hello world");
-    
+
     // Hex/Octal
     assert_eq!(lines[13], "255");
     assert_eq!(lines[14], "63");
-    
+
     // GOSUB
     assert_eq!(lines[15], "inside GOSUB");
     assert_eq!(lines[16], "after GOSUB");
     assert_eq!(lines[17], "done GOSUB");
-    
+
     // ON GOTO
     assert_eq!(lines[18], "400");
     assert_eq!(lines[19], "done ON GOTO");
-    
+
     // Parameter passing: BYREF vs BYVAL
     assert_eq!(lines[20], "42");
     assert_eq!(lines[21], "10");

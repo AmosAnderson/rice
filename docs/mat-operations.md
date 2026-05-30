@@ -1,6 +1,6 @@
 # MAT Operations
 
-RICE BASIC supports matrix operations as defined in the ANSI X3.113-1991 Full BASIC standard. MAT statements operate on entire arrays at once, providing concise syntax for common linear algebra and array manipulation tasks.
+RICE BASIC supports a practical subset of ANSI X3.113-1991 MAT operations. MAT statements operate on whole numeric arrays and provide concise syntax for common linear algebra and array manipulation tasks.
 
 ## MAT Assignment and Initialization
 
@@ -52,25 +52,23 @@ MAT b = a
 
 ### MAT PRINT
 
-Print all elements of an array. Semicolons produce compact output; commas use tab zones:
+Print all elements of an array:
 
 ```basic
 DIM a(3) AS NUMERIC
 a(1) = 10: a(2) = 20: a(3) = 30
 
-MAT PRINT a;         ' Print on one line, separated by spaces
-MAT PRINT a,         ' Print with tab-zone spacing
-MAT PRINT a          ' Print one element per line
+MAT PRINT a
 ```
 
-For a 2D array, MAT PRINT outputs one row per line:
+MAT PRINT outputs one row per line. A 1D array is treated as a single-column matrix:
 
 ```basic
 DIM m(2, 3) AS NUMERIC
 m(1,1) = 1: m(1,2) = 2: m(1,3) = 3
 m(2,1) = 4: m(2,2) = 5: m(2,3) = 6
 
-MAT PRINT m;
+MAT PRINT m
 ' Output:
 '  1  2  3
 '  4  5  6
@@ -208,19 +206,9 @@ PRINT "Determinant:"; DET
 
 ---
 
-## Resizing with MAT
+## Array Dimensions
 
-MAT operations can resize the target array. Specify new dimensions in parentheses after the target name:
-
-```basic
-DIM a(5) AS NUMERIC
-MAT a = ZER(10)
-' a now has 10 elements, all zero
-
-DIM m(2, 2) AS NUMERIC
-MAT m = CON(3, 4)
-' m is now 3-by-4, all ones
-```
+MAT operations use the array dimensions established by `DIM` or `REDIM`. `ZER`, `CON`, and `IDN` require the target array to already be dimensioned.
 
 ---
 

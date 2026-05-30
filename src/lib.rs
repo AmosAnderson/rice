@@ -36,19 +36,22 @@ pub fn detect_dialect(source: &str) -> Dialect {
                 if c == '\'' {
                     break;
                 }
-                if i + 3 <= chars.len() && chars[i..i+3].iter().collect::<String>().to_uppercase() == "REM" {
-                    if i + 3 == chars.len() || chars[i+3].is_whitespace() {
-                        break;
-                    }
+                if i + 3 <= chars.len()
+                    && chars[i..i + 3].iter().collect::<String>().to_uppercase() == "REM"
+                    && (i + 3 == chars.len() || chars[i + 3].is_whitespace())
+                {
+                    break;
                 }
             }
             clean_line.push(c);
             i += 1;
         }
-        
+
         let upper_line = clean_line.to_uppercase();
         let normalized: String = upper_line.split_whitespace().collect();
-        if normalized.contains("OPTIONDIALECT\"QB\"") || normalized.contains("OPTIONDIALECT\"QUICKBASIC\"") {
+        if normalized.contains("OPTIONDIALECT\"QB\"")
+            || normalized.contains("OPTIONDIALECT\"QUICKBASIC\"")
+        {
             return Dialect::QuickBasic;
         }
     }

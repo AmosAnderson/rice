@@ -404,7 +404,11 @@ impl Interpreter {
             Stmt::Goto(label) => Ok(ControlFlow::Goto(label.clone())),
             Stmt::Gosub(label) => Ok(ControlFlow::Gosub(label.clone())),
             Stmt::Return => Ok(ControlFlow::Return),
-            Stmt::OnGoto { expr, labels, is_gosub } => self.exec_on_goto(expr, labels, *is_gosub),
+            Stmt::OnGoto {
+                expr,
+                labels,
+                is_gosub,
+            } => self.exec_on_goto(expr, labels, *is_gosub),
             Stmt::ExitFor => Ok(ControlFlow::ExitFor),
             Stmt::ExitDo => Ok(ControlFlow::ExitDo),
             Stmt::ExitSub => Ok(ControlFlow::ExitSub),
@@ -1795,7 +1799,11 @@ impl Interpreter {
         op: BinOp,
         right: &Value,
     ) -> Result<Value, RuntimeError> {
-        let true_val = if self.dialect == crate::Dialect::QuickBasic { -1.0 } else { 1.0 };
+        let true_val = if self.dialect == crate::Dialect::QuickBasic {
+            -1.0
+        } else {
+            1.0
+        };
 
         // String concatenation with &
         if matches!(op, BinOp::Concat) {
@@ -1888,7 +1896,11 @@ impl Interpreter {
                     let ib = b as i64;
                     Ok(Value::Numeric((ia ^ ib) as f64))
                 } else {
-                    Ok(Value::Numeric(if (a != 0.0) ^ (b != 0.0) { 1.0 } else { 0.0 }))
+                    Ok(Value::Numeric(if (a != 0.0) ^ (b != 0.0) {
+                        1.0
+                    } else {
+                        0.0
+                    }))
                 }
             }
             BinOp::Concat => unreachable!("Concat handled above"),
@@ -2569,7 +2581,6 @@ impl Interpreter {
             }
             FileAccess::Append => {
                 let f = OpenOptions::new()
-                    .write(true)
                     .append(true)
                     .create(true)
                     .open(&filename)
@@ -2997,59 +3008,84 @@ impl Interpreter {
         }
     }
 
-    fn serialize_value(&self, writer: &mut BufWriter<File>, val: &Value, ty: &BasicType) -> Result<(), RuntimeError> {
+    fn serialize_value(
+        &self,
+        writer: &mut BufWriter<File>,
+        val: &Value,
+        ty: &BasicType,
+    ) -> Result<(), RuntimeError> {
         match ty {
             BasicType::Integer => {
                 let n = val.to_f64()? as i16;
-                writer.write_all(&n.to_le_bytes()).map_err(|e| RuntimeError::General {
-                    msg: format!("binary write error: {e}"),
-                })?;
+                writer
+                    .write_all(&n.to_le_bytes())
+                    .map_err(|e| RuntimeError::General {
+                        msg: format!("binary write error: {e}"),
+                    })?;
             }
             BasicType::Long => {
                 let n = val.to_f64()? as i32;
-                writer.write_all(&n.to_le_bytes()).map_err(|e| RuntimeError::General {
-                    msg: format!("binary write error: {e}"),
-                })?;
+                writer
+                    .write_all(&n.to_le_bytes())
+                    .map_err(|e| RuntimeError::General {
+                        msg: format!("binary write error: {e}"),
+                    })?;
             }
             BasicType::Single => {
                 let n = val.to_f64()? as f32;
-                writer.write_all(&n.to_le_bytes()).map_err(|e| RuntimeError::General {
-                    msg: format!("binary write error: {e}"),
-                })?;
+                writer
+                    .write_all(&n.to_le_bytes())
+                    .map_err(|e| RuntimeError::General {
+                        msg: format!("binary write error: {e}"),
+                    })?;
             }
             BasicType::Double | BasicType::Numeric => {
                 let n = val.to_f64()?;
-                writer.write_all(&n.to_le_bytes()).map_err(|e| RuntimeError::General {
-                    msg: format!("binary write error: {e}"),
-                })?;
+                writer
+                    .write_all(&n.to_le_bytes())
+                    .map_err(|e| RuntimeError::General {
+                        msg: format!("binary write error: {e}"),
+                    })?;
             }
             BasicType::FixedLengthString(len) => {
                 let s = val.to_string_val()?;
                 let mut bytes = s.into_bytes();
                 bytes.resize(*len, 0);
-                writer.write_all(&bytes).map_err(|e| RuntimeError::General {
-                    msg: format!("binary write error: {e}"),
-                })?;
+                writer
+                    .write_all(&bytes)
+                    .map_err(|e| RuntimeError::General {
+                        msg: format!("binary write error: {e}"),
+                    })?;
             }
             BasicType::String => {
                 let s = val.to_string_val()?;
                 let len = s.len() as u16;
-                writer.write_all(&len.to_le_bytes()).map_err(|e| RuntimeError::General {
-                    msg: format!("binary write error: {e}"),
-                })?;
-                writer.write_all(s.as_bytes()).map_err(|e| RuntimeError::General {
-                    msg: format!("binary write error: {e}"),
-                })?;
+                writer
+                    .write_all(&len.to_le_bytes())
+                    .map_err(|e| RuntimeError::General {
+                        msg: format!("binary write error: {e}"),
+                    })?;
+                writer
+                    .write_all(s.as_bytes())
+                    .map_err(|e| RuntimeError::General {
+                        msg: format!("binary write error: {e}"),
+                    })?;
             }
             BasicType::UserDefined(nested_name) => {
                 if let Value::Record { fields, .. } = val {
-                    let fields_def = self.type_defs.get(nested_name).ok_or_else(|| RuntimeError::General {
-                        msg: format!("undefined TYPE: {nested_name}"),
-                    })?;
+                    let fields_def =
+                        self.type_defs
+                            .get(nested_name)
+                            .ok_or_else(|| RuntimeError::General {
+                                msg: format!("undefined TYPE: {nested_name}"),
+                            })?;
                     for field in fields_def {
-                        let field_val = fields.get(&field.name).ok_or_else(|| RuntimeError::General {
-                            msg: format!("missing field in record: {}", field.name),
-                        })?;
+                        let field_val =
+                            fields
+                                .get(&field.name)
+                                .ok_or_else(|| RuntimeError::General {
+                                    msg: format!("missing field in record: {}", field.name),
+                                })?;
                         self.serialize_value(writer, field_val, &field.field_type)?;
                     }
                 } else {
@@ -3062,65 +3098,88 @@ impl Interpreter {
         Ok(())
     }
 
-    fn deserialize_value(&self, reader: &mut BufReader<File>, ty: &BasicType) -> Result<Value, RuntimeError> {
+    fn deserialize_value(
+        &self,
+        reader: &mut BufReader<File>,
+        ty: &BasicType,
+    ) -> Result<Value, RuntimeError> {
         match ty {
             BasicType::Integer => {
                 let mut buf = [0u8; 2];
-                reader.read_exact(&mut buf).map_err(|e| RuntimeError::General {
-                    msg: format!("binary read error: {e}"),
-                })?;
+                reader
+                    .read_exact(&mut buf)
+                    .map_err(|e| RuntimeError::General {
+                        msg: format!("binary read error: {e}"),
+                    })?;
                 let val = i16::from_le_bytes(buf) as f64;
                 Ok(Value::Numeric(val))
             }
             BasicType::Long => {
                 let mut buf = [0u8; 4];
-                reader.read_exact(&mut buf).map_err(|e| RuntimeError::General {
-                    msg: format!("binary read error: {e}"),
-                })?;
+                reader
+                    .read_exact(&mut buf)
+                    .map_err(|e| RuntimeError::General {
+                        msg: format!("binary read error: {e}"),
+                    })?;
                 let val = i32::from_le_bytes(buf) as f64;
                 Ok(Value::Numeric(val))
             }
             BasicType::Single => {
                 let mut buf = [0u8; 4];
-                reader.read_exact(&mut buf).map_err(|e| RuntimeError::General {
-                    msg: format!("binary read error: {e}"),
-                })?;
+                reader
+                    .read_exact(&mut buf)
+                    .map_err(|e| RuntimeError::General {
+                        msg: format!("binary read error: {e}"),
+                    })?;
                 let val = f32::from_le_bytes(buf) as f64;
                 Ok(Value::Numeric(val))
             }
             BasicType::Double | BasicType::Numeric => {
                 let mut buf = [0u8; 8];
-                reader.read_exact(&mut buf).map_err(|e| RuntimeError::General {
-                    msg: format!("binary read error: {e}"),
-                })?;
+                reader
+                    .read_exact(&mut buf)
+                    .map_err(|e| RuntimeError::General {
+                        msg: format!("binary read error: {e}"),
+                    })?;
                 let val = f64::from_le_bytes(buf);
                 Ok(Value::Numeric(val))
             }
             BasicType::FixedLengthString(len) => {
                 let mut buf = vec![0u8; *len];
-                reader.read_exact(&mut buf).map_err(|e| RuntimeError::General {
-                    msg: format!("binary read error: {e}"),
-                })?;
-                let s = String::from_utf8_lossy(&buf).trim_end_matches('\0').to_string();
+                reader
+                    .read_exact(&mut buf)
+                    .map_err(|e| RuntimeError::General {
+                        msg: format!("binary read error: {e}"),
+                    })?;
+                let s = String::from_utf8_lossy(&buf)
+                    .trim_end_matches('\0')
+                    .to_string();
                 Ok(Value::Str(s))
             }
             BasicType::String => {
                 let mut len_buf = [0u8; 2];
-                reader.read_exact(&mut len_buf).map_err(|e| RuntimeError::General {
-                    msg: format!("binary read error: {e}"),
-                })?;
+                reader
+                    .read_exact(&mut len_buf)
+                    .map_err(|e| RuntimeError::General {
+                        msg: format!("binary read error: {e}"),
+                    })?;
                 let len = u16::from_le_bytes(len_buf) as usize;
                 let mut buf = vec![0u8; len];
-                reader.read_exact(&mut buf).map_err(|e| RuntimeError::General {
-                    msg: format!("binary read error: {e}"),
-                })?;
+                reader
+                    .read_exact(&mut buf)
+                    .map_err(|e| RuntimeError::General {
+                        msg: format!("binary read error: {e}"),
+                    })?;
                 let s = String::from_utf8_lossy(&buf).to_string();
                 Ok(Value::Str(s))
             }
             BasicType::UserDefined(nested_name) => {
-                let fields_def = self.type_defs.get(nested_name).ok_or_else(|| RuntimeError::General {
-                    msg: format!("undefined TYPE: {nested_name}"),
-                })?;
+                let fields_def =
+                    self.type_defs
+                        .get(nested_name)
+                        .ok_or_else(|| RuntimeError::General {
+                            msg: format!("undefined TYPE: {nested_name}"),
+                        })?;
                 let mut fields = HashMap::new();
                 for field in fields_def {
                     let field_val = self.deserialize_value(reader, &field.field_type)?;

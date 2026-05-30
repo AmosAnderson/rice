@@ -70,13 +70,13 @@ col = POS(0)
 PRINT "Cursor is at column"; col
 ```
 
-### INKEY
+### INKEY$
 
 Reads a single keypress without waiting. Returns an empty string if no key is available:
 
 ```basic
 DO
-    k = INKEY
+    k = INKEY$
     IF k <> "" THEN PRINT "You pressed: "; k
 LOOP UNTIL k = CHR(27)   ' ESC to exit
 ```

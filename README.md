@@ -1,6 +1,6 @@
 # RICE BASIC
 
-An ANSI X3.113-1991 (Full BASIC) interpreter written in Rust. Supports an interactive REPL and file execution. No graphics or sound -- pure text-mode BASIC.
+An ANSI X3.113-1991 (Full BASIC) interpreter written in Rust, with an optional QuickBasic compatibility mode. Supports an interactive REPL and file execution. No graphics or sound APIs -- pure text-mode BASIC with a terminal bell.
 
 ## Getting Started
 
@@ -17,7 +17,7 @@ cargo run
 ```
 
 ```
-RICE BASIC v0.11.0
+RICE BASIC v0.12.0
 Type SYSTEM or press Ctrl+D to exit.
 Commands: RUN, LIST, NEW, DELETE
 
@@ -56,6 +56,17 @@ Unnumbered lines execute immediately. Numbered lines are stored and can be manag
 cargo run -- myprogram.bas
 ```
 
+### Dialects
+
+RICE BASIC runs in ANSI mode by default. QuickBasic compatibility mode can be selected with `--dialect qb`, `--compat`, or `OPTION DIALECT "QB"` in a complete source file:
+
+```bash
+cargo run -- --dialect qb legacy.bas
+cargo run -- --compat legacy.bas
+```
+
+See [Dialects](docs/dialects.md) for the exact ANSI and QuickBasic behavior covered by RICE BASIC.
+
 ### Run Tests
 
 ```bash
@@ -67,7 +78,7 @@ cargo test test_hello          # A single test by name
 
 ## Language Features
 
-RICE BASIC implements the ANSI X3.113-1991 Full BASIC standard:
+RICE BASIC implements ANSI X3.113-1991 Full BASIC semantics by default:
 
 ### Data Types
 
@@ -86,16 +97,18 @@ There are no type suffixes for numeric subtypes. All numeric values are double-p
 - **Logical**: `AND`, `OR`, `NOT`, `XOR` (logical, not bitwise)
 - **Truth values**: 1 = true, 0 = false
 
+In QuickBasic compatibility mode, comparisons return `-1` for true, string `+` concatenation is accepted, logical operators are bitwise for numeric values, type suffixes are accepted in variable names, and `GOSUB`/`RETURN` plus `ON ... GOTO`/`ON ... GOSUB` are enabled.
+
 ### Statements
 
 - **Output**: PRINT, PRINT USING, WRITE
 - **Input**: INPUT, LINE INPUT
 - **Variables**: LET, DIM, CONST, SWAP, OPTION BASE (default 1), REDIM, ERASE, SHARED, STATIC, CLEAR, TYPE...END TYPE (user-defined types)
 - **Control flow**: IF/ELSEIF/ELSE/END IF, FOR/NEXT, WHILE/END WHILE, DO/LOOP, SELECT CASE, GOTO, EXIT FOR/DO/SUB/FUNCTION, RANDOMIZE, END, STOP, SYSTEM, SLEEP
-- **Procedures**: SUB/END SUB, FUNCTION/END FUNCTION, CALL, DECLARE (BYVAL by default)
+- **Procedures**: SUB/END SUB, FUNCTION/END FUNCTION, CALL, DECLARE (BYVAL by default in ANSI mode; BYREF by default in QuickBasic mode)
 - **Data**: DATA, READ, RESTORE
 - **Error handling**: WHEN EXCEPTION IN...USE...END WHEN, RETRY, CONTINUE, EXTYPE, EXTEXT$
-- **File I/O**: OPEN (ANSI syntax), CLOSE, PRINT#, INPUT#, LINE INPUT#, SET POINTER, ASK POINTER
+- **File I/O**: OPEN (ANSI syntax; QuickBasic syntax in compatibility mode), CLOSE, PRINT#, INPUT#, LINE INPUT#, SET POINTER, ASK POINTER, GET, PUT
 - **File system**: NAME...AS, KILL, MKDIR, RMDIR, CHDIR
 - **Console**: CLS, LOCATE, COLOR, BEEP, WIDTH, VIEW PRINT
 - **MAT operations**: MAT PRINT, MAT READ, MAT INPUT, MAT arithmetic (+, -, *), scalar multiply, INV, TRN, DET, ZER, CON, IDN
@@ -143,13 +156,13 @@ RICE BASIC uses ANSI Full BASIC file I/O syntax:
 ```basic
 ! Write to a file
 OPEN #1: NAME "data.txt", ACCESS OUTPUT, ORGANIZATION SEQUENTIAL
-PRINT #1: "Hello, File!"
+PRINT #1, "Hello, File!"
 CLOSE #1
 
 ! Read from a file
 OPEN #1: NAME "data.txt", ACCESS INPUT, ORGANIZATION SEQUENTIAL
 DO WHILE NOT EOF(1)
-    LINE INPUT #1: x$
+    LINE INPUT #1, x$
     PRINT x$
 LOOP
 CLOSE #1
@@ -164,7 +177,7 @@ ANSI Full BASIC structured exception handling:
 ```basic
 WHEN EXCEPTION IN
     OPEN #1: NAME "missing.txt", ACCESS INPUT
-    LINE INPUT #1: x$
+    LINE INPUT #1, x$
     CLOSE #1
 USE
     PRINT "Error"; EXTYPE; EXTEXT$
@@ -175,7 +188,7 @@ Use RETRY to re-execute the guarded block, or CONTINUE to resume after the faile
 
 ### MAT Operations
 
-Full matrix support for numeric arrays:
+MAT support for numeric arrays:
 
 ```basic
 DIM A(3, 3), B(3, 3), C(3, 3)
@@ -287,7 +300,6 @@ Source -> Lexer -> Tokens -> Parser -> AST -> Tree-Walking Interpreter -> Output
 - [crossterm](https://crates.io/crates/crossterm) -- cross-platform terminal manipulation
 - [tower-lsp](https://crates.io/crates/tower-lsp) -- LSP server framework
 - [tokio](https://crates.io/crates/tokio) -- async runtime (for LSP)
-- [serde_json](https://crates.io/crates/serde_json) -- JSON serialization (for LSP)
 ## License
 
 This project is licensed under the [MIT License](LICENSE).

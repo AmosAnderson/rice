@@ -15,7 +15,10 @@ END TYPE
 ### Supported Field Types
 
 - `NUMERIC` - Numeric value
+- `INTEGER`, `LONG`, `SINGLE`, `DOUBLE` - QuickBasic-compatible numeric declarations; values are still stored as `f64`
 - `STRING` - Variable-length string
+- `STRING * n` - Fixed-length string field for binary record I/O padding/truncation
+- Another user-defined type name - Nested record field
 
 ### Example
 
