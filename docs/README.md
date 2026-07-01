@@ -1,6 +1,6 @@
 # RICE BASIC Language Documentation
 
-RICE BASIC is a structured BASIC interpreter written in Rust, implementing ANSI X3.113-1991 (Full BASIC) with an optional QuickBasic compatibility mode. It supports an interactive REPL and file execution. No graphics or sound APIs beyond the terminal bell.
+RICE BASIC is a structured BASIC interpreter written in Rust, with QBasic 1.1-compatible defaults and an ANSI X3.113-1991 (Full BASIC) mode. It supports an interactive REPL and file execution. No graphics or sound APIs beyond the terminal bell.
 
 ## Documentation
 

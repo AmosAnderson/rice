@@ -123,6 +123,43 @@ fn test_decimal_place_math_functions() {
 }
 
 #[test]
+fn test_default_dialect_is_qbasic() {
+    let output = run_bas(
+        r#"
+PRINT 5 > 3
+PRINT "hello " + "world"
+GOSUB 100
+END
+100 PRINT "gosub"
+RETURN
+"#,
+    );
+    assert_eq!(output, "-1\nhello world\ngosub\n");
+}
+
+#[test]
+fn test_option_dialect_ansi_overrides_default() {
+    let output = run_bas(
+        r#"
+OPTION DIALECT "ANSI"
+PRINT 5 > 3
+"#,
+    );
+    assert_eq!(output, "1\n");
+}
+
+#[test]
+fn test_option_dialect_qbasic_11_alias() {
+    let output = run_bas(
+        r#"
+OPTION DIALECT "QBasic 1.1"
+PRINT 5 > 3
+"#,
+    );
+    assert_eq!(output, "-1\n");
+}
+
+#[test]
 fn test_zero_arg_builtins_reject_extra_args() {
     let (_output, result) = run_bas_may_fail("PRINT PI(1)\n");
     assert!(result.is_err());
@@ -352,10 +389,10 @@ PRINT #1, "Second line"
 CLOSE #1
 
 OPEN #1: NAME "{DIR}/test.txt", ACCESS INPUT
-LINE INPUT #1, a
-PRINT a
-LINE INPUT #1, b
-PRINT b
+LINE INPUT #1, a$
+PRINT a$
+LINE INPUT #1, b$
+PRINT b$
 PRINT EOF(1)
 CLOSE #1
 "#,
@@ -363,7 +400,7 @@ CLOSE #1
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(lines[0], "Hello, File!");
     assert_eq!(lines[1], "Second line");
-    assert_eq!(lines[2].trim(), "1"); // EOF should be true
+    assert_eq!(lines[2].trim(), "-1"); // EOF should be true in QBasic mode
 }
 
 #[test]
@@ -376,10 +413,10 @@ WRITE #1, "Bob", 25
 CLOSE #1
 
 OPEN #1: NAME "{DIR}/test.txt", ACCESS INPUT
-INPUT #1, name1, age1
-PRINT name1; age1
-INPUT #1, name2, age2
-PRINT name2; age2
+INPUT #1, name1$, age1
+PRINT name1$; age1
+INPUT #1, name2$, age2
+PRINT name2$; age2
 CLOSE #1
 "#,
     );
@@ -404,10 +441,10 @@ PRINT #1, "Line 2"
 CLOSE #1
 
 OPEN #1: NAME "{DIR}/test.txt", ACCESS INPUT
-LINE INPUT #1, a
-PRINT a
-LINE INPUT #1, b
-PRINT b
+LINE INPUT #1, a$
+PRINT a$
+LINE INPUT #1, b$
+PRINT b$
 CLOSE #1
 "#,
     );
@@ -420,14 +457,14 @@ CLOSE #1
 fn test_file_binary() {
     let (output, _dir) = run_bas_with_tmpdir(
         r#"
-msg = "HELLO"
+msg$ = "HELLO"
 OPEN #1: NAME "{DIR}/test.bin", ORGANIZATION STREAM, ACCESS OUTIN
-PUT #1, 1, msg
+PUT #1, 1, msg$
 CLOSE #1
 
 OPEN #1: NAME "{DIR}/test.bin", ORGANIZATION STREAM, ACCESS OUTIN
-GET #1, 1, result
-PRINT result
+GET #1, 1, result$
+PRINT result$
 CLOSE #1
 "#,
     );
@@ -484,8 +521,8 @@ CLOSE #1
 
 OPEN #1: NAME "{DIR}/test.txt", ACCESS INPUT
 DO WHILE NOT EOF(1)
-    LINE INPUT #1, x
-    PRINT x
+    LINE INPUT #1, x$
+    PRINT x$
 LOOP
 CLOSE #1
 "#,
@@ -646,8 +683,8 @@ PRINT #1, USING "###.##"; 3.14
 CLOSE #1
 
 OPEN #1: NAME "{DIR}/test.txt", ACCESS INPUT
-LINE INPUT #1, x
-PRINT x
+LINE INPUT #1, x$
+PRINT x$
 CLOSE #1
 "####,
     );
@@ -748,9 +785,9 @@ fn test_file_ops() {
         CLOSE #1
         NAME "{DIR}/testsubdir/test.txt" AS "{DIR}/testsubdir/renamed.txt"
         OPEN #1: NAME "{DIR}/testsubdir/renamed.txt", ACCESS INPUT
-        LINE INPUT #1, x
+        LINE INPUT #1, x$
         CLOSE #1
-        PRINT x
+        PRINT x$
         KILL "{DIR}/testsubdir/renamed.txt"
         RMDIR "{DIR}/testsubdir"
         PRINT "done"
@@ -985,9 +1022,8 @@ fn test_set_ask_pointer() {
     let (output, _dir) = run_bas_with_tmpdir(
         r#"
 OPEN #1: NAME "{DIR}/seek.dat", ORGANIZATION STREAM, ACCESS OUTIN
-DIM s AS STRING
-s = "ABCDEFGHIJ"
-PUT #1, 1, s
+s$ = "ABCDEFGHIJ"
+PUT #1, 1, s$
 ASK #1: POINTER p
 PRINT p
 SET #1: POINTER 1
@@ -996,10 +1032,11 @@ PRINT p
 CLOSE #1
 "#,
     );
-    // After PUT of 10 bytes, position should be 11 (1-based)
+    // QBasic variable-length string records include a 2-byte length prefix.
+    // After PUT of 12 bytes, position should be 13 (1-based).
     // After SET POINTER to 1, position should be 1
     let lines: Vec<&str> = output.lines().collect();
-    assert_eq!(lines[0].trim(), "11");
+    assert_eq!(lines[0].trim(), "13");
     assert_eq!(lines[1].trim(), "1");
 }
 
@@ -1007,7 +1044,7 @@ CLOSE #1
 
 #[test]
 fn test_byref_sub() {
-    // ANSI BASIC: parameters are BYVAL by default, so x is NOT modified
+    // QBasic mode is the default, so parameters are BYREF unless BYVAL is explicit.
     let output = run_bas(
         r#"
 DIM x AS NUMERIC
@@ -1020,7 +1057,7 @@ SUB AddFive(n AS NUMERIC)
 END SUB
 "#,
     );
-    assert_eq!(output, "10\n");
+    assert_eq!(output, "15\n");
 }
 
 #[test]
@@ -1042,7 +1079,7 @@ END SUB
 
 #[test]
 fn test_byval_paren_forces_byval() {
-    // ANSI BASIC: BYVAL by default, parenthesized arg also forces BYVAL
+    // In QBasic mode, a parenthesized call argument forces BYVAL.
     let output = run_bas(
         r#"
 DIM x AS NUMERIC
@@ -1077,7 +1114,7 @@ END SUB
 
 #[test]
 fn test_byref_function() {
-    // ANSI BASIC: BYVAL by default, so x is NOT modified by the function
+    // QBasic mode is the default, so function parameters are BYREF unless BYVAL is explicit.
     let output = run_bas(
         r#"
 DIM x AS NUMERIC
@@ -1093,7 +1130,7 @@ FUNCTION Dbl(n AS NUMERIC)
 END FUNCTION
 "#,
     );
-    assert_eq!(output, "10\n20\n");
+    assert_eq!(output, "20\n20\n");
 }
 
 #[test]
@@ -1238,4 +1275,195 @@ fn test_qb_compat() {
     // Parameter passing: BYREF vs BYVAL
     assert_eq!(lines[20], "42");
     assert_eq!(lines[21], "10");
+}
+
+// ==================== Tier 1 QBasic features ====================
+
+#[test]
+fn test_while_wend() {
+    let output = run_bas("x = 0\nWHILE x < 3\nPRINT x\nx = x + 1\nWEND\n");
+    assert_eq!(output, "0\n1\n2\n");
+}
+
+#[test]
+fn test_lbound_ubound() {
+    let output = run_bas("DIM A(5 TO 12)\nPRINT LBOUND(A)\nPRINT UBOUND(A)\n");
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "5");
+    assert_eq!(lines[1], "12");
+}
+
+#[test]
+fn test_lbound_ubound_dim() {
+    let output = run_bas("DIM A(1 TO 3, 4 TO 9)\nPRINT LBOUND(A, 2)\nPRINT UBOUND(A, 2)\n");
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "4");
+    assert_eq!(lines[1], "9");
+}
+
+#[test]
+fn test_numeric_conversions() {
+    let output = run_bas("PRINT CINT(2.5)\nPRINT CINT(3.5)\nPRINT CLNG(-2.5)\nPRINT CDBL(3)\n");
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "2"); // round half to even
+    assert_eq!(lines[1], "4"); // round half to even
+    assert_eq!(lines[2], "-2");
+    assert_eq!(lines[3], "3");
+}
+
+#[test]
+fn test_val_hex_octal() {
+    let output = run_bas("PRINT VAL(\"&HFF\")\nPRINT VAL(\"&O77\")\nPRINT VAL(\"42\")\n");
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "255");
+    assert_eq!(lines[1], "63");
+    assert_eq!(lines[2], "42");
+}
+
+#[test]
+fn test_seek_function_and_statement() {
+    let (output, _dir) = run_bas_with_tmpdir(
+        r#"
+OPEN #1: NAME "{DIR}/seek.dat", ORGANIZATION STREAM, ACCESS OUTIN
+s$ = "ABCDEFGHIJ"
+PUT #1, 1, s$
+SEEK #1, 3
+PRINT SEEK(1)
+RESET
+"#,
+    );
+    assert_eq!(output.trim(), "3");
+}
+
+// ==================== Tier 2 QBasic features ====================
+
+#[test]
+fn test_on_error_resume_next_err_erl() {
+    let output = run_bas(
+        r#"
+10 ON ERROR GOTO 100
+20 PRINT 1 / 0
+30 PRINT "after"
+40 END
+100 PRINT ERR
+110 PRINT ERL
+120 RESUME NEXT
+"#,
+    );
+    assert_eq!(output, "11\n20\nafter\n");
+}
+
+#[test]
+fn test_error_statement_resume_label() {
+    let output = run_bas(
+        r#"
+10 ON ERROR GOTO 100
+20 ERROR 53
+30 END
+100 PRINT ERR
+110 RESUME 200
+200 PRINT "resumed"
+"#,
+    );
+    assert_eq!(output, "53\nresumed\n");
+}
+
+#[test]
+fn test_mk_cv_packed_conversions() {
+    let output = run_bas(
+        r#"
+PRINT LEN(MKI$(258))
+PRINT CVI(MKI$(-2))
+PRINT CVL(MKL$(123456))
+PRINT INT(CVS(MKS$(1.5)) * 10)
+PRINT CVD(MKD$(2.25))
+"#,
+    );
+    assert_eq!(output, "2\n-2\n123456\n15\n2.25\n");
+}
+
+#[test]
+fn test_field_lset_rset_random_records() {
+    let (output, _dir) = run_bas_with_tmpdir(
+        r#"
+OPEN "{DIR}/records.dat" FOR RANDOM AS #1 LEN = 12
+FIELD #1, 5 AS A$, 3 AS B$
+LSET A$ = "ALPHA!"
+RSET B$ = "7"
+PUT #1, 1
+LSET A$ = "BETA"
+RSET B$ = "42"
+PUT #1, 2
+LSET A$ = ""
+LSET B$ = ""
+GET #1, 1
+PRINT A$ + "|" + B$
+GET #1, 2
+PRINT A$ + "|" + B$
+CLOSE #1
+"#,
+    );
+    assert_eq!(output, "ALPHA|  7\nBETA | 42\n");
+}
+
+#[test]
+fn test_ansi_rejects_qbasic_only_tier2_syntax() {
+    let cases = [
+        "OPTION DIALECT \"ANSI\"\nDEFSTR A-Z\n",
+        "OPTION DIALECT \"ANSI\"\nDEF FNX(X) = X\nPRINT FNX(1)\n",
+        "OPTION DIALECT \"ANSI\"\nA$ = \"ABC\"\nMID$(A$, 1, 1) = \"Z\"\n",
+    ];
+    for source in cases {
+        let (_output, result) = run_bas_may_fail(source);
+        assert!(result.is_err(), "source should fail in ANSI mode: {source}");
+    }
+}
+
+#[test]
+fn test_seek_function_prefers_writer_position() {
+    let (output, _dir) = run_bas_with_tmpdir(
+        r#"
+OPTION DIALECT "ANSI"
+OPEN #1: NAME "{DIR}/seek-outin.dat", ORGANIZATION STREAM, ACCESS OUTIN
+s$ = "ABC"
+PUT #1, 1, s$
+PRINT SEEK(1)
+RESET
+"#,
+    );
+    assert_eq!(output, "4\n");
+}
+
+#[test]
+fn test_on_error_open_uses_io_err_code() {
+    let (output, _dir) = run_bas_with_tmpdir(
+        r#"
+10 ON ERROR GOTO 100
+20 OPEN "{DIR}/missing.txt" FOR INPUT AS #1
+30 END
+100 PRINT ERR
+110 RESUME 200
+200 PRINT "handled"
+"#,
+    );
+    assert_eq!(output, "53\nhandled\n");
+}
+
+#[test]
+fn test_binary_string_serialization_preserves_packed_bytes() {
+    let (output, _dir) = run_bas_with_tmpdir(
+        r#"
+s$ = MKI$(32767)
+OPEN "{DIR}/packed.dat" FOR BINARY AS #1
+PUT #1, 1, s$
+CLOSE #1
+OPEN "{DIR}/packed.dat" FOR BINARY AS #1
+PRINT LOF(1)
+GET #1, 1, t$
+PRINT LEN(t$)
+PRINT CVI(t$)
+CLOSE #1
+"#,
+    );
+    assert_eq!(output, "4\n2\n32767\n");
 }

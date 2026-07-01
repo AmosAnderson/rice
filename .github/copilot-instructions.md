@@ -10,8 +10,8 @@
 ## Architecture
 - Execution pipeline: Source → Lexer → Tokens → Parser → AST → Tree-walking Interpreter → Output. All hand-written (no parser generators).
 - `Interpreter::run_source` is the execution entry point; it pre-scans labels, DATA, SUB/FUNCTION definitions before execution. Prescan recurses into nested blocks (IF, FOR, WHILE, DO, SELECT CASE); preserve this ordering.
-- Control transfer (`GOTO`, `EXIT*`, `END`) relies on `ControlFlow` enum variants bubbling up through `exec_block()`. GOSUB/RETURN are not supported; use SUB/FUNCTION instead.
-- Environment keying is by name (all identifiers normalized to UPPERCASE). Only two types: NUMERIC and STRING. No type suffixes. Variables ending in `$` are strings; all others are numeric. Scopes use `Rc<RefCell<Environment>>` chain.
+- Control transfer (`GOTO`, `GOSUB`, `EXIT*`, `END`) relies on `ControlFlow` enum variants bubbling up through `exec_block()`. GOSUB/RETURN are supported in QBasic mode and rejected in ANSI mode.
+- Environment keying is by name (all identifiers normalized to UPPERCASE). Only two runtime value types exist: NUMERIC and STRING. QBasic mode accepts suffixes (`%`, `!`, `#`, `&`, `$`) in variable names; ANSI mode only supports `$` for strings. Scopes use `Rc<RefCell<Environment>>` chain.
 - Builtins are centralized in `src/builtins.rs`; resolution order: builtin → user-defined function → array.
 - `=` disambiguation: at statement level `=` is assignment; inside expressions `=` is comparison.
 - Expression parsing uses precedence climbing: XOR → OR → AND → NOT → comparison → &(concat) → +/- → MOD → */÷ → unary → ^.
@@ -54,12 +54,12 @@
 2. For `RuntimeError`: add error code mapping in `io_error_to_basic_code()` if applicable.
 
 ## Project Conventions
-- BASIC truth values are numeric: true = `1`, false = `0` (ANSI BASIC convention); do not change casually.
+- BASIC truth values are numeric: QBasic mode true = `-1`, false = `0`; ANSI mode true = `1`, false = `0`.
 - `PRINT` formatting follows ANSI BASIC behavior (no leading space for positive numbers, 16-char comma zones).
 - Single-line vs block `IF` is parser-sensitive; `ELSE` is treated as statement terminator in relevant contexts.
-- Undefined variables auto-initialize to `0` (numeric) or `""` (string). String variables end in `$`; all others are numeric.
+- Undefined variables auto-initialize to `0` (numeric) or `""` (string). Variables ending in `$` are strings; all others are numeric values, including QBasic numeric suffix variables.
 - Arrays are currently implemented with flattened keys; avoid broad refactors without targeted tests.
-- Not yet implemented: proper array storage, LBOUND/UBOUND (stubs only).
+- Not yet implemented: proper array storage (currently uses flattened key hack).
 
 ## Security
 - Interpreter executes untrusted BASIC source without built-in time/resource limits.

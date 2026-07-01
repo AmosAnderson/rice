@@ -17,7 +17,9 @@ pub enum Dialect {
     QuickBasic,
 }
 
-pub fn detect_dialect(source: &str) -> Dialect {
+pub const DEFAULT_DIALECT: Dialect = Dialect::QuickBasic;
+
+pub fn detect_dialect(source: &str) -> Option<Dialect> {
     for line in source.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -49,13 +51,18 @@ pub fn detect_dialect(source: &str) -> Dialect {
 
         let upper_line = clean_line.to_uppercase();
         let normalized: String = upper_line.split_whitespace().collect();
+        if normalized.contains("OPTIONDIALECT\"ANSI\"") {
+            return Some(Dialect::Ansi);
+        }
         if normalized.contains("OPTIONDIALECT\"QB\"")
+            || normalized.contains("OPTIONDIALECT\"QBASIC\"")
+            || normalized.contains("OPTIONDIALECT\"QBASIC1.1\"")
             || normalized.contains("OPTIONDIALECT\"QUICKBASIC\"")
         {
-            return Dialect::QuickBasic;
+            return Some(Dialect::QuickBasic);
         }
     }
-    Dialect::Ansi
+    None
 }
 
 /// Non-blocking read of a single keypress using crossterm.

@@ -57,14 +57,13 @@ cargo run -- myprogram.bas
 
 ### Selecting a Dialect
 
-ANSI mode is the default. To run a QuickBasic-style program, use a flag or put `OPTION DIALECT "QB"` in the source:
+QBasic 1.1 compatibility mode is the default. To run an ANSI-style program, use a flag or put `OPTION DIALECT "ANSI"` in the source:
 
 ```bash
-cargo run -- --dialect qb legacy.bas
-cargo run -- --compat legacy.bas
+cargo run -- --dialect ansi ansi-program.bas
 ```
 
-For interactive QuickBasic syntax in the REPL, start the REPL with `cargo run -- --dialect qb`. See [Dialects](dialects.md) for the exact compatibility rules.
+Use `--dialect qb`, `--dialect qbasic`, or `--compat` only when you want to request the default QBasic-compatible mode explicitly. See [Dialects](dialects.md) for the exact compatibility rules.
 
 ## Your First Program
 
@@ -105,12 +104,12 @@ Variables are auto-initialized (0 for numbers, "" for strings). You can declare 
 
 ```basic
 x = 10                   ' Auto-created as numeric
-name = "Alice"           ' String value
+name$ = "Alice"          ' String value
 DIM count AS NUMERIC     ' Explicit declaration
 CONST PI = 3.14159       ' Constant (cannot be reassigned)
 ```
 
-ANSI BASIC has two types: NUMERIC and STRING. There are no numeric type suffixes in ANSI mode. QuickBasic mode accepts suffixes such as `%`, `!`, `#`, `&`, and `$` in variable names for compatibility.
+RICE BASIC stores two runtime value types: NUMERIC and STRING. QBasic mode accepts suffixes such as `%`, `!`, `#`, `&`, and `$` in variable names for compatibility; ANSI mode rejects numeric suffixes other than `$`.
 
 ### Control Flow
 
@@ -168,7 +167,7 @@ PRINT Square(5)
 
 ### Arrays
 
-Arrays default to base 1 in ANSI BASIC:
+Arrays default to base 1:
 
 ```basic
 DIM scores(10) AS NUMERIC       ' 10 elements (1-10)

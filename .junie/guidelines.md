@@ -21,9 +21,9 @@ Key modules: `token.rs`, `lexer.rs`, `ast.rs`, `parser.rs`, `interpreter.rs`, `e
 - All identifiers stored UPPERCASE internally
 - Hand-written lexer and recursive descent parser (no parser generators)
 - `Rc<RefCell<Environment>>` scope chain for variables
-- `ControlFlow` enum for non-local control flow (GOTO, EXIT, END, etc.). GOSUB/RETURN are not supported.
+- `ControlFlow` enum for non-local control flow (GOTO, GOSUB, EXIT, END, etc.). GOSUB/RETURN are supported in QBasic mode and rejected in ANSI mode.
 - ANSI BASIC-style PRINT formatting (no leading space for positive numbers, 16-char comma zones)
-- Only two types: NUMERIC (f64) and STRING. No type suffixes. Variables ending in `$` are strings; all others are numeric.
+- Only two runtime value types: NUMERIC (f64) and STRING. QBasic mode accepts suffixes (`%`, `!`, `#`, `&`, `$`) in variable names; ANSI mode only supports `$` for strings.
 
 ## Testing
 - Integration tests in `tests/integration.rs` using `run_file()` or `run_bas()` helpers

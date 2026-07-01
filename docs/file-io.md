@@ -45,11 +45,9 @@ When ORGANIZATION is omitted, SEQUENTIAL is assumed.
 
 ### QuickBasic OPEN Syntax
 
-In QuickBasic compatibility mode, `OPEN file$ FOR mode AS #n` is also accepted:
+In the default QBasic compatibility mode, `OPEN file$ FOR mode AS #n` is accepted:
 
 ```basic
-OPTION DIALECT "QB"
-
 OPEN "input.txt" FOR INPUT AS #1
 OPEN "output.txt" FOR OUTPUT AS #2
 OPEN "log.txt" FOR APPEND AS #3
@@ -57,7 +55,7 @@ OPEN "data.bin" FOR BINARY AS #4
 OPEN "records.dat" FOR RANDOM AS #5 LEN = 32
 ```
 
-Supported modes are `INPUT`, `OUTPUT`, `APPEND`, `BINARY`, and `RANDOM`. Optional `ACCESS`, `SHARED`/`LOCK`, and `LEN = n` clauses are parsed for compatibility; record length and locking semantics are not modeled as separate runtime features.
+Supported modes are `INPUT`, `OUTPUT`, `APPEND`, `BINARY`, and `RANDOM`. Optional `ACCESS`, `SHARED`/`LOCK`, and `LEN = n` clauses are parsed for compatibility. `LEN = n` defines the byte size for RANDOM record buffers; locking semantics are accepted but not modeled.
 
 ---
 
@@ -67,9 +65,21 @@ Supported modes are `INPUT`, `OUTPUT`, `APPEND`, `BINARY`, and `RANDOM`. Optiona
 CLOSE #1              ' Close a specific file
 CLOSE #1, #2, #3      ' Close multiple files
 CLOSE                  ' Close all open files
+RESET                  ' Flush and close all open files
 ```
 
 Always close files when done to ensure data is flushed to disk.
+
+---
+
+## File Position
+
+```basic
+SEEK #1, 10           ' Move pointer to byte 10 (1-based)
+p = SEEK(1)           ' Next read/write byte position (1-based)
+```
+
+`SEEK` is equivalent to `SET #n: POINTER` for stream files; `SEEK(n)` mirrors `ASK #n: POINTER`.
 
 ---
 
@@ -194,7 +204,25 @@ GET #1, 1, p
 CLOSE #1
 ```
 
-Fixed-length relative files and `SET #n: RECORD` are not currently implemented as distinct ANSI file features.
+### QuickBasic RANDOM Records
+
+In QBasic-compatible mode, `OPEN ... FOR RANDOM ... LEN = n` creates a fixed-length record buffer. `FIELD` maps string variables onto slices of that buffer. `LSET` and `RSET` left-align or right-align values into the mapped slots. `PUT #n, record` writes the whole field buffer and `GET #n, record` reads it back:
+
+```basic
+OPEN "records.dat" FOR RANDOM AS #1 LEN = 12
+FIELD #1, 5 AS name$, 3 AS code$
+LSET name$ = "ALPHA"
+RSET code$ = "7"
+PUT #1, 1
+
+GET #1, 1
+PRINT name$; code$
+CLOSE #1
+```
+
+`MKI$`, `MKL$`, `MKS$`, and `MKD$` create packed binary strings for integer, long, single, and double values. `CVI`, `CVL`, `CVS`, and `CVD` convert those packed strings back to numeric values.
+
+`SET #n: RECORD` is not currently implemented as a distinct ANSI file feature.
 
 ---
 
@@ -214,13 +242,13 @@ OPEN #f2: NAME "file2.txt", ACCESS INPUT
 
 ### EOF
 
-Test for end-of-file. Returns `1` (true) at end of file, `0` (false) otherwise:
+Test for end-of-file. Returns the dialect true value (`-1` in QBasic mode, `1` in ANSI mode) at end of file, `0` otherwise:
 
 ```basic
 OPEN #1: NAME "data.txt", ACCESS INPUT
 DO WHILE NOT EOF(1)
-    LINE INPUT #1, line
-    PRINT line
+    LINE INPUT #1, line$
+    PRINT line$
 LOOP
 CLOSE #1
 ```
@@ -265,6 +293,8 @@ Manage files and directories from your program:
 ```basic
 MKDIR "reports"                    ' Create a directory
 CHDIR "reports"                    ' Change working directory
+CHDRIVE "C"                        ' Change current drive, where available
+FILES "."                          ' List directory entries
 KILL "old_report.txt"              ' Delete a file
 NAME "draft.txt" AS "final.txt"    ' Rename a file
 RMDIR "temp"                       ' Remove an empty directory

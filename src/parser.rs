@@ -13,7 +13,7 @@ impl Parser {
         Self {
             tokens,
             pos: 0,
-            dialect: crate::Dialect::Ansi,
+            dialect: crate::DEFAULT_DIALECT,
         }
     }
 
@@ -171,9 +171,25 @@ impl Parser {
             Token::KwWrite => self.parse_write(),
             Token::KwGet => self.parse_get_put(true),
             Token::KwPut => self.parse_get_put(false),
+            Token::KwSeek => self.parse_seek(),
+            Token::KwReset => {
+                self.advance();
+                Ok(Stmt::Reset)
+            }
             Token::KwOn => {
                 if self.dialect == crate::Dialect::QuickBasic {
                     self.advance(); // consume ON
+                    // ON ERROR GOTO label | ON ERROR GOTO 0
+                    if matches!(self.peek(), Token::KwError) {
+                        self.advance(); // consume ERROR
+                        self.expect(Token::KwGoto)?;
+                        if matches!(self.peek(), Token::NumericLiteral(n) if *n == 0.0) {
+                            self.advance();
+                            return Ok(Stmt::OnError { label: None });
+                        }
+                        let label = self.parse_label()?;
+                        return Ok(Stmt::OnError { label: Some(label) });
+                    }
                     let expr = self.parse_expr()?;
                     let is_gosub = match self.peek() {
                         Token::KwGoto => {
@@ -223,10 +239,38 @@ impl Parser {
                     })
                 }
             }
-            Token::KwResume => Err(ParseError::General {
-                line: self.current_line(),
-                msg: "RESUME is not supported; use WHEN EXCEPTION instead".into(),
-            }),
+            Token::KwResume => {
+                if self.dialect != crate::Dialect::QuickBasic {
+                    return Err(ParseError::General {
+                        line: self.current_line(),
+                        msg: "RESUME is not supported; use WHEN EXCEPTION instead".into(),
+                    });
+                }
+                self.advance(); // consume RESUME
+                if self.at_stmt_end() {
+                    Ok(Stmt::Resume(ResumeKind::Same))
+                } else if matches!(self.peek(), Token::KwNext) {
+                    self.advance();
+                    Ok(Stmt::Resume(ResumeKind::Next))
+                } else if matches!(self.peek(), Token::NumericLiteral(n) if *n == 0.0) {
+                    self.advance();
+                    Ok(Stmt::Resume(ResumeKind::Same))
+                } else {
+                    let label = self.parse_label()?;
+                    Ok(Stmt::Resume(ResumeKind::Label(label)))
+                }
+            }
+            Token::KwError => {
+                if self.dialect != crate::Dialect::QuickBasic {
+                    return Err(ParseError::General {
+                        line: self.current_line(),
+                        msg: "ERROR is not supported; use WHEN EXCEPTION instead".into(),
+                    });
+                }
+                self.advance(); // consume ERROR
+                let code = self.parse_expr()?;
+                Ok(Stmt::ErrorStmt(code))
+            }
             Token::KwRandomize => {
                 self.advance();
                 if self.at_stmt_end() {
@@ -276,6 +320,18 @@ impl Parser {
                 self.advance();
                 Ok(Stmt::Chdir(self.parse_expr()?))
             }
+            Token::KwChdrive => {
+                self.advance();
+                Ok(Stmt::Chdrive(self.parse_expr()?))
+            }
+            Token::KwFiles => {
+                self.advance();
+                if self.at_stmt_end() {
+                    Ok(Stmt::Files(None))
+                } else {
+                    Ok(Stmt::Files(Some(self.parse_expr()?)))
+                }
+            }
             Token::KwShell => {
                 self.advance();
                 if self.at_stmt_end() {
@@ -284,28 +340,33 @@ impl Parser {
                     Ok(Stmt::Shell(Some(self.parse_expr()?)))
                 }
             }
-            Token::KwLset => Err(ParseError::General {
-                line: self.current_line(),
-                msg: "LSET is not supported in ANSI BASIC".into(),
-            }),
-            Token::KwRset => Err(ParseError::General {
-                line: self.current_line(),
-                msg: "RSET is not supported in ANSI BASIC".into(),
-            }),
+            Token::KwLset => self.parse_lset_rset(false),
+            Token::KwRset => self.parse_lset_rset(true),
             Token::KwShared => self.parse_shared(),
             Token::KwStatic => self.parse_static(),
             Token::KwDefInt
             | Token::KwDefLng
             | Token::KwDefSng
             | Token::KwDefDbl
-            | Token::KwDefStr => Err(ParseError::General {
-                line: self.current_line(),
-                msg: "DEFtype is not supported in ANSI BASIC".into(),
-            }),
-            Token::KwDef => Err(ParseError::General {
-                line: self.current_line(),
-                msg: "DEF FN is not supported; use FUNCTION instead".into(),
-            }),
+            | Token::KwDefStr => {
+                if self.dialect != crate::Dialect::QuickBasic {
+                    return Err(ParseError::General {
+                        line: self.current_line(),
+                        msg: "DEFINT/DEFLNG/DEFSNG/DEFDBL/DEFSTR are not supported in ANSI BASIC"
+                            .into(),
+                    });
+                }
+                self.parse_def_type()
+            }
+            Token::KwDef => {
+                if self.dialect != crate::Dialect::QuickBasic {
+                    return Err(ParseError::General {
+                        line: self.current_line(),
+                        msg: "DEF FN is not supported in ANSI BASIC".into(),
+                    });
+                }
+                self.parse_def_fn()
+            }
             Token::KwType => self.parse_type_def(),
             // CHAIN/COMMON
             Token::KwChain => Err(ParseError::General {
@@ -316,11 +377,7 @@ impl Parser {
                 line: self.current_line(),
                 msg: "COMMON is not supported in ANSI BASIC".into(),
             }),
-            // FIELD (unsupported)
-            Token::KwField => Err(ParseError::General {
-                line: self.current_line(),
-                msg: "FIELD is not supported in ANSI BASIC".into(),
-            }),
+            Token::KwField => self.parse_field(),
             // SET #n: POINTER expr
             Token::KwSet => self.parse_set_pointer(),
             // ASK #n: POINTER var
@@ -357,7 +414,7 @@ impl Parser {
             }
             Token::KwWend => Err(ParseError::General {
                 line: self.current_line(),
-                msg: "WEND is not supported; use END WHILE instead".into(),
+                msg: "WEND without WHILE".into(),
             }),
             Token::KwMat => self.parse_mat(),
             Token::Identifier(ref id) if id == "OPTION" => {
@@ -586,12 +643,33 @@ impl Parser {
             return Ok(Stmt::ExprStmt(expr));
         };
 
-        // MID$ assignment is not supported in ANSI BASIC
+        // MID$ statement assignment: MID$(s$, start[, len]) = expr$
         if name == "MID$" && self.peek_at(1) == Some(&Token::LeftParen) {
-            return Err(ParseError::General {
-                line: self.current_line(),
-                msg: "MID$ assignment is not supported in ANSI BASIC; use string slicing instead"
-                    .into(),
+            if self.dialect != crate::Dialect::QuickBasic {
+                return Err(ParseError::General {
+                    line: self.current_line(),
+                    msg: "MID$ assignment is not supported in ANSI BASIC".into(),
+                });
+            }
+            self.advance(); // consume MID$
+            self.advance(); // consume (
+            let target = self.expect_identifier()?;
+            self.expect(Token::Comma)?;
+            let start = self.parse_expr()?;
+            let len = if matches!(self.peek(), Token::Comma) {
+                self.advance();
+                Some(self.parse_expr()?)
+            } else {
+                None
+            };
+            self.expect(Token::RightParen)?;
+            self.expect(Token::Equal)?;
+            let expr = self.parse_expr()?;
+            return Ok(Stmt::MidAssign {
+                name: target,
+                start,
+                len,
+                expr,
             });
         }
 
@@ -958,8 +1036,13 @@ impl Parser {
         self.advance(); // consume WHILE
         let condition = self.parse_expr()?;
         self.skip_newlines();
-        let body = self.parse_body_until(&[Token::KwEndWhile])?;
-        self.expect(Token::KwEndWhile)?;
+        // Accept both ANSI `END WHILE` and classic QBasic `WEND` terminators.
+        let body = self.parse_body_until(&[Token::KwEndWhile, Token::KwWend])?;
+        if matches!(self.peek(), Token::KwWend) {
+            self.advance();
+        } else {
+            self.expect(Token::KwEndWhile)?;
+        }
         Ok(Stmt::WhileWend { condition, body })
     }
 
@@ -1191,6 +1274,90 @@ impl Parser {
             body,
             is_static,
         }))
+    }
+
+    fn parse_def_fn(&mut self) -> Result<Stmt, ParseError> {
+        self.advance(); // consume DEF
+        // Function name (typically FN-prefixed, e.g. FNsquare)
+        let name = self.expect_identifier()?;
+        let params = if matches!(self.peek(), Token::LeftParen) {
+            self.advance();
+            let p = self.parse_param_list()?;
+            self.expect(Token::RightParen)?;
+            p
+        } else {
+            Vec::new()
+        };
+
+        // Single-line form: DEF FNname(args) = expr
+        if matches!(self.peek(), Token::Equal) {
+            self.advance(); // consume =
+            let expr = self.parse_expr()?;
+            let line = self.current_line();
+            let body = vec![LabeledStmt {
+                label: None,
+                stmt: Stmt::Let {
+                    var: Variable { name: name.clone() },
+                    expr,
+                },
+                line,
+            }];
+            return Ok(Stmt::FunctionDef(FunctionDef {
+                name,
+                params,
+                as_type: None,
+                body,
+                is_static: false,
+            }));
+        }
+
+        // Multi-line form: DEF FNname ... END DEF
+        self.skip_newlines();
+        let body = self.parse_body_until(&[Token::KwEndDef])?;
+        self.expect(Token::KwEndDef)?;
+        Ok(Stmt::FunctionDef(FunctionDef {
+            name,
+            params,
+            as_type: None,
+            body,
+            is_static: false,
+        }))
+    }
+
+    fn parse_def_type(&mut self) -> Result<Stmt, ParseError> {
+        let is_string = matches!(self.peek(), Token::KwDefStr);
+        self.advance(); // consume DEFxxx
+        let mut ranges = Vec::new();
+        loop {
+            let start = self.expect_letter()?;
+            let end = if matches!(self.peek(), Token::Minus) {
+                self.advance();
+                self.expect_letter()?
+            } else {
+                start
+            };
+            ranges.push((start, end));
+            if matches!(self.peek(), Token::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        Ok(Stmt::DefType { is_string, ranges })
+    }
+
+    fn expect_letter(&mut self) -> Result<char, ParseError> {
+        match self.peek().clone() {
+            Token::Identifier(name) if name.len() == 1 => {
+                self.advance();
+                Ok(name.chars().next().unwrap().to_ascii_uppercase())
+            }
+            _ => Err(ParseError::Expected {
+                line: self.current_line(),
+                expected: "single letter (e.g. A or A-C)".into(),
+                found: format!("{:?}", self.peek()),
+            }),
+        }
     }
 
     fn parse_param_list(&mut self) -> Result<Vec<Param>, ParseError> {
@@ -1527,6 +1694,7 @@ impl Parser {
                 name,
                 access,
                 organization,
+                record_len: None,
             }))
         } else {
             // QuickBASIC style: name_expr FOR mode ...
@@ -1626,12 +1794,13 @@ impl Parser {
 
             let channel = self.parse_expr()?;
 
+            let mut record_len = None;
+
             // Optional LEN = reclen_expr
             if matches!(self.peek(), Token::KwLen) {
                 self.advance(); // consume LEN
                 self.expect(Token::Equal)?;
-                let _reclen = self.parse_expr()?;
-                // We ignore record length for now since we do simple binary serialization or standard streams
+                record_len = Some(self.parse_expr()?);
             }
 
             Ok(Stmt::Open(OpenStmt {
@@ -1639,6 +1808,7 @@ impl Parser {
                 name,
                 access,
                 organization,
+                record_len,
             }))
         }
     }
@@ -1726,6 +1896,57 @@ impl Parser {
         }))
     }
 
+    fn parse_field(&mut self) -> Result<Stmt, ParseError> {
+        if self.dialect != crate::Dialect::QuickBasic {
+            return Err(ParseError::General {
+                line: self.current_line(),
+                msg: "FIELD is not supported in ANSI BASIC".into(),
+            });
+        }
+        self.advance(); // consume FIELD
+        if matches!(self.peek(), Token::Hash) {
+            self.advance();
+        }
+        let file_num = self.parse_expr()?;
+        self.expect(Token::Comma)?;
+
+        let mut fields = Vec::new();
+        loop {
+            let width = self.parse_expr()?;
+            self.expect(Token::KwAs)?;
+            let var = self.parse_variable()?;
+            fields.push(FieldSpec { width, var });
+            if !matches!(self.peek(), Token::Comma) {
+                break;
+            }
+            self.advance();
+        }
+
+        Ok(Stmt::Field { file_num, fields })
+    }
+
+    fn parse_lset_rset(&mut self, right_align: bool) -> Result<Stmt, ParseError> {
+        if self.dialect != crate::Dialect::QuickBasic {
+            return Err(ParseError::General {
+                line: self.current_line(),
+                msg: if right_align {
+                    "RSET is not supported in ANSI BASIC".into()
+                } else {
+                    "LSET is not supported in ANSI BASIC".into()
+                },
+            });
+        }
+        self.advance(); // consume LSET/RSET
+        let var = self.parse_variable()?;
+        self.expect(Token::Equal)?;
+        let expr = self.parse_expr()?;
+        Ok(Stmt::LSetRSet {
+            var,
+            expr,
+            right_align,
+        })
+    }
+
     // ==================== Phase 1-4 new statement parsers ====================
 
     fn parse_name(&mut self) -> Result<Stmt, ParseError> {
@@ -1734,6 +1955,17 @@ impl Parser {
         self.expect(Token::KwAs)?;
         let new = self.parse_expr()?;
         Ok(Stmt::Name { old, new })
+    }
+
+    fn parse_seek(&mut self) -> Result<Stmt, ParseError> {
+        self.advance(); // consume SEEK
+        if matches!(self.peek(), Token::Hash) {
+            self.advance();
+        }
+        let file_num = self.parse_expr()?;
+        self.expect(Token::Comma)?;
+        let position = self.parse_expr()?;
+        Ok(Stmt::Seek { file_num, position })
     }
 
     fn parse_shared(&mut self) -> Result<Stmt, ParseError> {
@@ -2228,6 +2460,16 @@ impl Parser {
                 Expr::FunctionCall {
                     name: "FREEFILE".into(),
                     args: vec![],
+                }
+            }
+            Token::KwSeek => {
+                self.advance();
+                self.expect(Token::LeftParen)?;
+                let arg = self.parse_expr()?;
+                self.expect(Token::RightParen)?;
+                Expr::FunctionCall {
+                    name: "SEEK".into(),
+                    args: vec![arg],
                 }
             }
             // Keywords that double as built-in functions

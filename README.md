@@ -1,6 +1,6 @@
 # RICE BASIC
 
-An ANSI X3.113-1991 (Full BASIC) interpreter written in Rust, with an optional QuickBasic compatibility mode. Supports an interactive REPL and file execution. No graphics or sound APIs -- pure text-mode BASIC with a terminal bell.
+A BASIC interpreter written in Rust, with QBasic 1.1-compatible defaults and an ANSI X3.113-1991 (Full BASIC) mode. Supports an interactive REPL and file execution. No graphics or sound APIs -- pure text-mode BASIC with a terminal bell.
 
 ## Getting Started
 
@@ -58,12 +58,13 @@ cargo run -- myprogram.bas
 
 ### Dialects
 
-RICE BASIC runs in ANSI mode by default. QuickBasic compatibility mode can be selected with `--dialect qb`, `--compat`, or `OPTION DIALECT "QB"` in a complete source file:
+RICE BASIC runs in QBasic 1.1 compatibility mode by default. ANSI mode can be selected with `--dialect ansi` or `OPTION DIALECT "ANSI"` in a complete source file:
 
 ```bash
-cargo run -- --dialect qb legacy.bas
-cargo run -- --compat legacy.bas
+cargo run -- --dialect ansi ansi-program.bas
 ```
+
+`--dialect qb`, `--dialect qbasic`, `--compat`, `OPTION DIALECT "QB"`, and `OPTION DIALECT "QBasic 1.1"` select the default QBasic-compatible mode explicitly.
 
 See [Dialects](docs/dialects.md) for the exact ANSI and QuickBasic behavior covered by RICE BASIC.
 
@@ -78,7 +79,7 @@ cargo test test_hello          # A single test by name
 
 ## Language Features
 
-RICE BASIC implements ANSI X3.113-1991 Full BASIC semantics by default:
+RICE BASIC implements QBasic 1.1 compatibility semantics by default and also supports ANSI X3.113-1991 Full BASIC mode:
 
 ### Data Types
 
@@ -87,29 +88,29 @@ RICE BASIC implements ANSI X3.113-1991 Full BASIC semantics by default:
 | NUMERIC | Double-precision float (f64)   |
 | STRING  | Text strings ($ suffix)        |
 
-There are no type suffixes for numeric subtypes. All numeric values are double-precision. Variables ending in `$` are strings; all others are numeric.
+QBasic mode accepts type suffixes `%`, `!`, `#`, `&`, and `$` in variable names; numeric values are still stored as double-precision floats. Variables ending in `$` are strings. ANSI mode rejects numeric suffixes other than `$`.
 
 ### Operators
 
 - **Arithmetic**: `+`, `-`, `*`, `/`, `^`, `MOD` (works on reals)
-- **String concatenation**: `&`
+- **String concatenation**: `+` for strings and `&`
 - **Comparison**: `=`, `<>`, `<`, `>`, `<=`, `>=`
-- **Logical**: `AND`, `OR`, `NOT`, `XOR` (logical, not bitwise)
-- **Truth values**: 1 = true, 0 = false
+- **Logical**: `AND`, `OR`, `NOT`, `XOR` (bitwise for numeric values in QBasic mode)
+- **Truth values**: -1 = true, 0 = false in QBasic mode
 
-In QuickBasic compatibility mode, comparisons return `-1` for true, string `+` concatenation is accepted, logical operators are bitwise for numeric values, type suffixes are accepted in variable names, and `GOSUB`/`RETURN` plus `ON ... GOTO`/`ON ... GOSUB` are enabled.
+In ANSI mode, comparisons return `1` for true, string concatenation uses `&`, and logical operators operate on truth values rather than bits.
 
 ### Statements
 
 - **Output**: PRINT, PRINT USING, WRITE
 - **Input**: INPUT, LINE INPUT
 - **Variables**: LET, DIM, CONST, SWAP, OPTION BASE (default 1), REDIM, ERASE, SHARED, STATIC, CLEAR, TYPE...END TYPE (user-defined types)
-- **Control flow**: IF/ELSEIF/ELSE/END IF, FOR/NEXT, WHILE/END WHILE, DO/LOOP, SELECT CASE, GOTO, EXIT FOR/DO/SUB/FUNCTION, RANDOMIZE, END, STOP, SYSTEM, SLEEP
-- **Procedures**: SUB/END SUB, FUNCTION/END FUNCTION, CALL, DECLARE (BYVAL by default in ANSI mode; BYREF by default in QuickBasic mode)
+- **Control flow**: IF/ELSEIF/ELSE/END IF, FOR/NEXT, WHILE/WEND, WHILE/END WHILE, DO/LOOP, SELECT CASE, GOTO, EXIT FOR/DO/SUB/FUNCTION, RANDOMIZE, END, STOP, SYSTEM, SLEEP
+- **Procedures**: SUB/END SUB, FUNCTION/END FUNCTION, CALL, DECLARE (BYREF by default in QBasic mode; BYVAL by default in ANSI mode)
 - **Data**: DATA, READ, RESTORE
-- **Error handling**: WHEN EXCEPTION IN...USE...END WHEN, RETRY, CONTINUE, EXTYPE, EXTEXT$
-- **File I/O**: OPEN (ANSI syntax; QuickBasic syntax in compatibility mode), CLOSE, PRINT#, INPUT#, LINE INPUT#, SET POINTER, ASK POINTER, GET, PUT
-- **File system**: NAME...AS, KILL, MKDIR, RMDIR, CHDIR
+- **Error handling**: WHEN EXCEPTION IN...USE...END WHEN, RETRY, CONTINUE, EXTYPE, EXTEXT$; QBasic-mode ON ERROR GOTO, RESUME, ERROR, ERR, ERL at top level
+- **File I/O**: OPEN (QBasic and ANSI syntax), CLOSE, RESET, PRINT#, INPUT#, LINE INPUT#, SET POINTER, ASK POINTER, SEEK, GET, PUT, FIELD, LSET, RSET
+- **File system**: NAME...AS, KILL, MKDIR, RMDIR, CHDIR, CHDRIVE, FILES
 - **Console**: CLS, LOCATE, COLOR, BEEP, WIDTH, VIEW PRINT
 - **MAT operations**: MAT PRINT, MAT READ, MAT INPUT, MAT arithmetic (+, -, *), scalar multiply, INV, TRN, DET, ZER, CON, IDN
 - **System**: SHELL
@@ -143,15 +144,17 @@ PRINT A$               ! Hello, World!
 
 ### Built-in Functions
 
-- **Math**: ABS, INT, FIX, SGN, SQR, SIN, COS, TAN, ATN, EXP, LOG, ROUND, ASIN, ACOS, COT, CSC, SEC, ANGLE, CEIL, TRUNCATE, REMAINDER, MAXNUM, PI, RND
-- **String**: LEN, INSTR, LEFT$, RIGHT$, MID$, UCASE$, LCASE$, LTRIM$, RTRIM$, SPACE$, STRING$, CHR$, ASC, STR$, VAL, HEX$, OCT$
-- **File**: FREEFILE, EOF, LOF, LOC
+- **Math**: ABS, INT, FIX, SGN, SQR, SIN, COS, TAN, ATN, EXP, LOG, ROUND, ASIN, ACOS, COT, CSC, SEC, ANGLE, CEIL, CINT, CLNG, CSNG, CDBL, TRUNCATE, REMAINDER, MAXNUM, PI, RND
+- **String**: LEN, INSTR, LEFT$, RIGHT$, MID$, UCASE$, LCASE$, LTRIM$, RTRIM$, SPACE$, STRING$, CHR$, ASC, STR$, VAL, HEX$, OCT$, MKI$, MKL$, MKS$, MKD$
+- **Conversion**: CINT, CLNG, CSNG, CDBL, CVI, CVL, CVS, CVD
+- **Array**: LBOUND, UBOUND
+- **File**: FREEFILE, EOF, LOF, LOC, SEEK
 - **Console**: CSRLIN, POS, INKEY$, INPUT$, SCREEN()
-- **System**: ENVIRON$, TIMER, DATE$, TIME$
+- **System**: ENVIRON$, CURDIR$, COMMAND$, TIMER, DATE$, TIME$
 
 ### File I/O
 
-RICE BASIC uses ANSI Full BASIC file I/O syntax:
+RICE BASIC supports ANSI Full BASIC file I/O syntax and QuickBasic-style `OPEN file$ FOR mode AS #n` in the default QBasic-compatible mode:
 
 ```basic
 ! Write to a file
@@ -170,6 +173,18 @@ CLOSE #1
 
 Access modes: INPUT, OUTPUT, OUTIN. Organization: SEQUENTIAL, STREAM.
 
+QuickBasic random-access records support `FIELD`, `LSET`, `RSET`, `GET`, and `PUT`:
+
+```basic
+OPEN "records.dat" FOR RANDOM AS #1 LEN = 12
+FIELD #1, 5 AS name$, 3 AS code$
+LSET name$ = "ALPHA"
+RSET code$ = "7"
+PUT #1, 1
+GET #1, 1
+CLOSE #1
+```
+
 ### Error Handling
 
 ANSI Full BASIC structured exception handling:
@@ -185,6 +200,16 @@ END WHEN
 ```
 
 Use RETRY to re-execute the guarded block, or CONTINUE to resume after the failed statement.
+
+In QBasic-compatible mode, classic top-level handlers are also supported:
+
+```basic
+10 ON ERROR GOTO 100
+20 PRINT 1 / 0
+30 END
+100 PRINT ERR; ERL
+110 RESUME NEXT
+```
 
 ### MAT Operations
 

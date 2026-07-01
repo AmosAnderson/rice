@@ -18,7 +18,7 @@ fn run() {
     let args: Vec<String> = env::args().collect();
 
     let mut source_file: Option<String> = None;
-    let mut dialect = rice::Dialect::Ansi;
+    let mut dialect = rice::DEFAULT_DIALECT;
 
     let mut i = 1;
     while i < args.len() {
@@ -27,13 +27,13 @@ fn run() {
             dialect = rice::Dialect::QuickBasic;
         } else if arg == "--dialect" {
             if i + 1 >= args.len() {
-                eprintln!("error: --dialect requires an argument (ansi or qb)");
+                eprintln!("error: --dialect requires an argument (ansi, qb, or qbasic)");
                 process::exit(1);
             }
             i += 1;
             match args[i].to_lowercase().as_str() {
                 "ansi" => dialect = rice::Dialect::Ansi,
-                "qb" | "quickbasic" => dialect = rice::Dialect::QuickBasic,
+                "qb" | "qbasic" | "quickbasic" => dialect = rice::Dialect::QuickBasic,
                 other => {
                     eprintln!("error: unknown dialect: {other}");
                     process::exit(1);

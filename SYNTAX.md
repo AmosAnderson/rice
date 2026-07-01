@@ -1,6 +1,6 @@
 # RICE BASIC Language Reference
 
-RICE BASIC is a structured BASIC interpreter implementing ANSI X3.113-1991 (Full BASIC), with an optional QuickBasic compatibility mode. This document covers the syntax supported by RICE BASIC.
+RICE BASIC is a structured BASIC interpreter with QBasic 1.1-compatible defaults and an ANSI X3.113-1991 (Full BASIC) mode. This document covers the syntax supported by RICE BASIC.
 
 ## Running Programs
 
@@ -15,20 +15,19 @@ The REPL supports old-school line-number editing: type numbered lines to build a
 
 ## Dialects
 
-ANSI mode is the default. QuickBasic compatibility mode can be selected with:
+QBasic 1.1 compatibility mode is the default. ANSI mode can be selected with:
 
 ```bash
-rice --dialect qb program.bas
-rice --compat program.bas
+rice --dialect ansi program.bas
 ```
 
 or in a complete source file:
 
 ```basic
-OPTION DIALECT "QB"
+OPTION DIALECT "ANSI"
 ```
 
-QuickBasic mode accepts numeric type suffixes in variable names, `-1` true values, string `+` concatenation, bitwise numeric logical operators, `GOSUB`/`RETURN`, `ON ... GOTO`/`ON ... GOSUB`, hex/octal literals, and QuickBasic-style `OPEN file$ FOR mode AS #n` file syntax. See [docs/dialects.md](docs/dialects.md) for the full dialect coverage.
+QBasic mode accepts numeric type suffixes in variable names, `-1` true values, string `+` concatenation, bitwise numeric logical operators, `GOSUB`/`RETURN`, `ON ... GOTO`/`ON ... GOSUB`, hex/octal literals, and QuickBasic-style `OPEN file$ FOR mode AS #n` file syntax. Use `--dialect qb`, `--dialect qbasic`, `--compat`, or `OPTION DIALECT "QB"` to request this mode explicitly. See [docs/dialects.md](docs/dialects.md) for the full dialect coverage.
 
 ---
 
@@ -44,14 +43,14 @@ x = 5  ' Inline comment after a statement
 
 ## Data Types
 
-RICE BASIC follows the ANSI standard by default with two fundamental types:
+RICE BASIC uses QBasic 1.1 compatibility mode by default and has two runtime value types:
 
 | Type    | Description                                       |
 |---------|---------------------------------------------------|
 | NUMERIC | All numbers. Stored as double-precision float (f64). |
 | STRING  | Variable-length text.                             |
 
-In ANSI mode, there are no type suffixes for numeric subtypes. All numeric values are double-precision. Variables ending in `$` are strings; all others are numeric. QuickBasic mode accepts numeric suffixes as part of variable names; see [docs/dialects.md](docs/dialects.md).
+In QBasic mode, suffixes such as `%`, `!`, `#`, `&`, and `$` are accepted as part of variable names; numeric values are still stored as double-precision floats. Variables ending in `$` are strings. ANSI mode rejects numeric suffixes other than `$`; see [docs/dialects.md](docs/dialects.md).
 
 Undeclared variables auto-initialize to `0` (numeric) or `""` (string).
 
@@ -101,15 +100,17 @@ CLEAR
 
 ### String Concatenation
 
-Use `&` for string concatenation (`+` is always arithmetic):
+In QBasic mode, `+` concatenates strings and `&` also concatenates strings:
 
 ```basic
-greeting$ = "Hello, " & "World!"
+greeting$ = "Hello, " + "World!"
 ```
+
+In ANSI mode, use `&`; `+` remains arithmetic.
 
 ### Comparison
 
-All return `1` (true) or `0` (false):
+Comparisons return the dialect true value (`-1` in QBasic mode, `1` in ANSI mode) or `0` for false:
 
 | Operator | Description       |
 |----------|-------------------|
@@ -122,7 +123,7 @@ All return `1` (true) or `0` (false):
 
 ### Logical
 
-These are logical (not bitwise) operators:
+In QBasic mode, these operators perform bitwise operations on numeric values. In ANSI mode, they operate on truth values:
 
 | Operator | Description      |
 |----------|------------------|
@@ -243,6 +244,8 @@ WHILE x <= 10
 END WHILE
 ```
 
+The classic QBasic `WEND` terminator is also accepted in place of `END WHILE`.
+
 ### DO / LOOP
 
 Four forms:
@@ -362,17 +365,17 @@ PRINT Factorial(10)    ' Prints 3628800
 
 Use `EXIT SUB` or `EXIT FUNCTION` to return early.
 
-### Parameters: BYVAL (default in ANSI mode)
+### Parameters: BYREF By Default In QBasic Mode
 
-In ANSI Full BASIC, parameters are passed by value by default. Changes inside the procedure do not affect the original variable:
+In QBasic mode, parameters are passed by reference by default. Changes inside the procedure affect the original variable unless `BYVAL` is explicit:
 
 ```basic
 SUB Test (x AS NUMERIC)
-    x = x + 1        ' Does not affect the caller's variable
+    x = x + 1        ' Affects the caller's variable
 END SUB
 ```
 
-QuickBasic compatibility mode uses `BYREF` by default and supports explicit `BYVAL`/`BYREF`.
+ANSI mode uses `BYVAL` by default. Both modes support explicit `BYVAL`/`BYREF`.
 
 ---
 
@@ -539,12 +542,26 @@ CLOSE #1
 
 ### File Positioning
 
-Use SET POINTER and ASK POINTER for stream I/O positioning:
+Use SET POINTER and ASK POINTER for stream I/O positioning. `SEEK #n, pos` and `SEEK(n)` provide QuickBasic-compatible statement/function forms:
 
 ```basic
 OPEN #1: NAME "data.bin", ORGANIZATION STREAM, ACCESS OUTIN
 SET #1: POINTER 100       ' Move to byte position 100
 ASK #1: POINTER pos       ' Get current position
+SEEK #1, 1                ' Move to byte position 1
+PRINT SEEK(1)             ' Next byte position
+```
+
+### QuickBasic RANDOM Records
+
+```basic
+OPEN "records.dat" FOR RANDOM AS #1 LEN = 12
+FIELD #1, 5 AS name$, 3 AS code$
+LSET name$ = "ALPHA"
+RSET code$ = "7"
+PUT #1, 1
+GET #1, 1
+CLOSE #1
 ```
 
 ### File Functions
@@ -552,9 +569,10 @@ ASK #1: POINTER pos       ' Get current position
 | Function     | Description                                    |
 |--------------|------------------------------------------------|
 | `FREEFILE`   | Returns lowest unused file number (1-255)      |
-| `EOF(n)`     | Returns 1 (true) at end of file, 0 otherwise  |
+| `EOF(n)`     | Returns the dialect true value at end of file, 0 otherwise |
 | `LOF(n)`     | Returns file length in bytes                   |
 | `LOC(n)`     | Returns current byte position in file          |
+| `SEEK(n)`    | Returns next byte position in file             |
 
 ### Complete Example
 
@@ -594,6 +612,14 @@ CLOSE #1
 | `ASC(s$)`                | ASCII code of first character          | `ASC("A")` → `65`            |
 | `STR$(n)`                | Number to string                       | `STR$(42)` → `"42"`          |
 | `VAL(s$)`                | String to number                       | `VAL("3.14")` → `3.14`       |
+| `MKI$(n)`                | Packed 2-byte integer string           | `LEN(MKI$(1))` → `2`          |
+| `MKL$(n)`                | Packed 4-byte long string              | `LEN(MKL$(1))` → `4`          |
+| `MKS$(n)`                | Packed 4-byte single string            | `LEN(MKS$(1))` → `4`          |
+| `MKD$(n)`                | Packed 8-byte double string            | `LEN(MKD$(1))` → `8`          |
+| `CVI(s$)`                | Convert packed integer string          | `CVI(MKI$(1))` → `1`          |
+| `CVL(s$)`                | Convert packed long string             | `CVL(MKL$(1))` → `1`          |
+| `CVS(s$)`                | Convert packed single string           | `CVS(MKS$(1))` → `1`          |
+| `CVD(s$)`                | Convert packed double string           | `CVD(MKD$(1))` → `1`          |
 
 For substring operations, ANSI-style code should prefer colon slicing such as `A$(3:7)`. LEFT$/RIGHT$/MID$ are available for compatibility.
 
@@ -639,10 +665,14 @@ For substring operations, ANSI-style code should prefer colon slicing such as `A
 | Function        | Description                              |
 |-----------------|------------------------------------------|
 | `ENVIRON$(s$)`  | Get environment variable value           |
+| `CURDIR$`       | Current working directory                |
+| `COMMAND$`      | Program command-line tail                |
 | `FREEFILE`      | Next available file number               |
-| `EOF(n)`        | End-of-file test (1 if true, 0 if false) |
+| `EOF(n)`        | End-of-file test (dialect true value if true, 0 if false) |
 | `LOF(n)`        | File length in bytes                     |
 | `LOC(n)`        | Current position in file                 |
+| `ERR`           | Last classic BASIC error code            |
+| `ERL`           | Numbered line of last classic error      |
 
 ---
 
@@ -658,7 +688,7 @@ x = 1 : y = 2 : PRINT x + y
 
 ## Error Handling
 
-RICE BASIC uses ANSI structured exception handling (not ON ERROR GOTO):
+RICE BASIC supports ANSI structured exception handling and classic QBasic-style top-level error handlers in QBasic-compatible mode.
 
 ### WHEN EXCEPTION
 
@@ -707,6 +737,20 @@ USE
     CONTINUE
 END WHEN
 ```
+
+### ON ERROR, ERR, ERL, and RESUME
+
+Classic QuickBasic-style handlers are available in the default QBasic-compatible mode:
+
+```basic
+10 ON ERROR GOTO 100
+20 PRINT 1 / 0
+30 END
+100 PRINT ERR; ERL
+110 RESUME NEXT
+```
+
+`ON ERROR GOTO label` installs a handler and `ON ERROR GOTO 0` disables it. `ERROR n` raises a BASIC error code. `ERR` returns the latest code and `ERL` returns the numbered line that failed, or 0 for unnumbered statements. `RESUME`, `RESUME NEXT`, and `RESUME label` are exact for top-level statements; nested-block resume behavior is limited by the interpreter's current control-flow model.
 
 ---
 
@@ -938,11 +982,11 @@ RICE BASIC intentionally omits or limits:
 - **Graphics modes**: No `SCREEN` (mode switching), `PSET`, `LINE`, `CIRCLE`, `DRAW`, `PAINT`, `PALETTE`, `WINDOW`
 - **Sound**: No `SOUND`, `PLAY`
 - **Memory access**: No `DEF SEG`, `PEEK`, `POKE`
-- **Legacy error handling**: No `ON ERROR GOTO`, `ERR`, `ERL` (use `WHEN EXCEPTION` instead)
-- **Legacy procedures**: `GOSUB`/`RETURN` are QuickBasic-mode only; `DEF FN` is not supported (use `SUB`/`FUNCTION` instead)
+- **Classic error handling**: Top-level `ON ERROR`/`RESUME` is supported; nested-block `RESUME` behavior is limited
+- **Legacy procedures**: `GOSUB`/`RETURN` and `DEF FN` are QuickBasic-mode only
 - **String slicing**: ANSI colon slicing is supported; `LEFT$`, `RIGHT$`, and `MID$` are also available as compatibility functions
 - **Legacy operators**: No `\` (integer division), `IMP`, `EQV`
-- **Proper array storage**: Arrays use a flattened key representation; `LBOUND`/`UBOUND` are stubs only
+- **Proper array storage**: Arrays use a flattened key representation. `LBOUND`/`UBOUND` return bounds for `DIM`med arrays.
 
 RICE BASIC supports text-mode console features including `CLS`, `LOCATE`, `COLOR`, `BEEP`, `WIDTH`, `VIEW PRINT`, `CSRLIN`, `POS`, `INKEY$`, `INPUT$`, and `SCREEN()`.
 

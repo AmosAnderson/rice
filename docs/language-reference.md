@@ -1,26 +1,27 @@
 # RICE BASIC Language Reference
 
-This reference describes ANSI mode unless a section explicitly says otherwise. RICE BASIC also provides QuickBasic compatibility mode for selected QBasic/QuickBasic syntax and semantics; see [Dialects](dialects.md) for the full compatibility table.
+This reference describes shared RICE BASIC syntax and calls out dialect differences where relevant. RICE BASIC uses QBasic 1.1 compatibility mode by default and also provides ANSI X3.113-1991 mode; see [Dialects](dialects.md) for the full compatibility table.
 
 ## Running and Dialect Selection
 
 ```bash
 rice program.bas
+rice --dialect ansi program.bas
 rice --dialect qb program.bas
 rice --compat program.bas
 ```
 
-ANSI mode is the default. QuickBasic compatibility mode can also be requested inside a complete source file:
+QBasic 1.1 compatibility mode is the default. ANSI mode can be requested inside a complete source file:
 
 ```basic
-OPTION DIALECT "QB"
+OPTION DIALECT "ANSI"
 ```
 
-Use `--dialect qb` or `--compat` when starting the REPL if you want interactive one-line QuickBasic syntax.
+`OPTION DIALECT "QB"`, `OPTION DIALECT "QBasic 1.1"`, `--dialect qb`, and `--compat` select the default QBasic-compatible mode explicitly.
 
 ## Data Types
 
-RICE BASIC follows the ANSI X3.113-1991 (Full BASIC) standard by default and provides two fundamental data types:
+RICE BASIC provides two fundamental runtime data types:
 
 | Type    | Description                                              |
 |---------|----------------------------------------------------------|
@@ -135,7 +136,7 @@ All comparisons return `1` (true) or `0` (false):
 
 ### Logical Operators
 
-These are logical (not bitwise) operators, operating on truth values:
+In QBasic mode, these operators perform bitwise operations on numeric values. In ANSI mode, they operate on truth values:
 
 | Operator | Description      | Example                    |
 |----------|------------------|----------------------------|
@@ -144,17 +145,15 @@ These are logical (not bitwise) operators, operating on truth values:
 | `NOT`    | Logical NOT      | `NOT (x = 0)`             |
 | `XOR`    | Exclusive OR     | `(x = 1) XOR (y = 1)`     |
 
-In QuickBasic mode, these operators perform bitwise operations on numeric values.
-
 ### String Concatenation
 
-Use `&` for string concatenation:
+In QBasic mode, `+` concatenates strings and `&` also concatenates strings:
 
 ```basic
-result = "Hello" & ", " & "World!"
+result$ = "Hello" + ", " + "World!"
 ```
 
-In QuickBasic mode, `+` also concatenates strings.
+In ANSI mode, use `&`; `+` remains arithmetic.
 
 ### Operator Precedence
 
@@ -291,10 +290,9 @@ Line numbers are also supported:
 
 ### GOSUB / RETURN
 
-`GOSUB` and `RETURN` are available only in QuickBasic compatibility mode:
+`GOSUB` and `RETURN` are available in the default QBasic compatibility mode and unavailable in ANSI mode:
 
 ```basic
-OPTION DIALECT "QB"
 GOSUB 100
 PRINT "back"
 END
@@ -309,6 +307,20 @@ QuickBasic mode also supports computed jumps:
 ON choice GOTO 100, 200, 300
 ON choice GOSUB 100, 200, 300
 ```
+
+### ON ERROR / RESUME
+
+Classic QuickBasic-style error handlers are available in the default QBasic-compatible mode at top-level scope:
+
+```basic
+10 ON ERROR GOTO 100
+20 PRINT 1 / 0
+30 END
+100 PRINT ERR; ERL
+110 RESUME NEXT
+```
+
+`ERROR n` raises a BASIC error code. `ERR` returns the most recent code, and `ERL` returns the numbered line where the error occurred, or 0 for unnumbered statements. `RESUME`, `RESUME NEXT`, and `RESUME label` are exact for top-level statements; nested-block resume behavior is limited by the interpreter's current control-flow model.
 
 ### END / STOP / SYSTEM
 
@@ -430,6 +442,10 @@ LINE INPUT "Enter text: "; text
 | `ANGLE(x, y)`       | Two-argument arctangent              | `ANGLE(1, 1)` = 0.785... |
 | `ROUND(n[, places])` | Round to nearest                    | `ROUND(3.7)` = 4    |
 | `CEIL(n)`           | Ceiling (smallest integer >= n)      | `CEIL(3.2)` = 4     |
+| `CINT(n)`           | Round to nearest integer (half→even) | `CINT(2.5)` = 2     |
+| `CLNG(n)`           | Round to nearest long (half→even)    | `CLNG(2.5)` = 2     |
+| `CSNG(n)`           | Reduce to single precision           | `CSNG(1.1)`         |
+| `CDBL(n)`           | Double-precision value               | `CDBL(3)` = 3       |
 | `TRUNCATE(n, places)` | Truncate to decimal places         | `TRUNCATE(3.789, 2)` = 3.78 |
 | `REMAINDER(a, b)`   | IEEE remainder                       | `REMAINDER(7, 3)` = 1 |
 | `MAXNUM`            | Largest representable number         | 1.7976...e+308      |
@@ -465,6 +481,14 @@ x = RND            ' Next random number (0 to 1, exclusive)
 | `LCASE$(s)`            | Convert to lowercase                     | `LCASE$("HI")` = "hi"       |
 | `HEX$(n)`              | Hexadecimal representation               | `HEX$(255)` = "FF"          |
 | `OCT$(n)`              | Octal representation                     | `OCT$(8)` = "10"            |
+| `MKI$(n)`              | Packed 2-byte integer string             | `LEN(MKI$(1))` = 2           |
+| `MKL$(n)`              | Packed 4-byte long string                | `LEN(MKL$(1))` = 4           |
+| `MKS$(n)`              | Packed 4-byte single string              | `LEN(MKS$(1))` = 4           |
+| `MKD$(n)`              | Packed 8-byte double string              | `LEN(MKD$(1))` = 8           |
+| `CVI(s)`               | Convert packed integer string            | `CVI(MKI$(1))` = 1           |
+| `CVL(s)`               | Convert packed long string               | `CVL(MKL$(1))` = 1           |
+| `CVS(s)`               | Convert packed single string             | `CVS(MKS$(1))` = 1           |
+| `CVD(s)`               | Convert packed double string             | `CVD(MKD$(1))` = 1           |
 
 ANSI Full BASIC also supports colon slicing as an alternative to LEFT$/MID$/RIGHT$. See [String Slicing](string-slicing.md).
 
@@ -476,10 +500,17 @@ ANSI Full BASIC also supports colon slicing as an alternative to LEFT$/MID$/RIGH
 | `DATE$`        | Current date string (MM-DD-YYYY)     | `"03-08-2026"`           |
 | `TIME$`        | Current time string (HH:MM:SS)      | `"14:30:45"`             |
 | `ENVIRON$(s)`  | Get environment variable             | `ENVIRON$("PATH")`      |
+| `CURDIR$`      | Current working directory            | `CURDIR$`                 |
+| `COMMAND$`     | Command-line tail                    | `COMMAND$`                |
 | `FREEFILE`     | Next available file number           | `1`                      |
-| `EOF(n)`       | End-of-file test (1 if true)         | `EOF(1)`                 |
+| `EOF(n)`       | End-of-file test (dialect true value if true) | `EOF(1)`                 |
 | `LOF(n)`       | File length in bytes                 | `LOF(1)`                 |
 | `LOC(n)`       | Current position in file             | `LOC(1)`                 |
+| `SEEK(n)`      | Next file byte position (1-based)    | `SEEK(1)`                |
+| `ERR`          | Last classic BASIC error code        | `ERR`                    |
+| `ERL`          | Numbered line of last classic error  | `ERL`                    |
+| `LBOUND(a[,d])`| Lower bound of array dimension       | `LBOUND(a)`              |
+| `UBOUND(a[,d])`| Upper bound of array dimension       | `UBOUND(a, 2)`           |
 | `CSRLIN`       | Current cursor row (1-based)         | `CSRLIN`                 |
 | `POS(0)`       | Current cursor column (1-based)      | `POS(0)`                 |
 | `INKEY$`       | Read key without waiting ("" if none)| `INKEY$`                 |
@@ -590,6 +621,8 @@ VIEW PRINT                    ' Reset scrolling region
 MKDIR "newdir"                 ' Create directory
 RMDIR "newdir"                 ' Remove directory
 CHDIR "/path/to/dir"           ' Change directory
+CHDRIVE "C"                    ' Change current drive, where available
+FILES "."                      ' List directory entries
 NAME "old.txt" AS "new.txt"    ' Rename file
 KILL "temp.txt"                ' Delete file
 ```

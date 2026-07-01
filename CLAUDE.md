@@ -35,7 +35,7 @@ All hand-written (no parser generators). Interpreter only -- no compiler backend
 
 ### Module Map
 
-- **`token.rs`** — Token enum, Span. All identifiers stored UPPERCASE. No type suffixes -- ANSI Full BASIC uses only NUMERIC and STRING types.
+- **`token.rs`** — Token enum, Span. All identifiers stored UPPERCASE. QBasic mode accepts suffixes in variable names; runtime values are still NUMERIC or STRING.
 - **`lexer.rs`** — Hand-written tokenizer. Case-insensitive. Detects line numbers at line start. Recognizes compound keywords (`END IF`, `END SUB`, `END FUNCTION`, `END SELECT`, `END TYPE`, `END WHILE`, `END WHEN`, `LINE INPUT`, `SELECT CASE`, `OPTION BASE`).
 - **`ast.rs`** — `Stmt` and `Expr` enums. `LabeledStmt` wraps statements with optional line labels. Key types: `PrintStmt`, `IfStmt`, `ForStmt`, `DoLoopStmt`, `SelectCaseStmt`, `SubDef`, `FunctionDef`, `WhenExceptionStmt`.
 - **`parser.rs`** — Recursive descent. Expression parsing uses precedence climbing (XOR → OR → AND → NOT → comparison → +/-/&(additive+concat) → MOD → */÷ → unary → ^). `at_stmt_end()` also treats `ELSE` as a terminator for single-line IF support.
@@ -53,22 +53,22 @@ All hand-written (no parser generators). Interpreter only -- no compiler backend
 
 ### Key Design Decisions
 
-- **Type system**: Only NUMERIC (f64) and STRING. No type suffixes. Variables ending in `$` are string; all others are numeric.
+- **Type system**: Only NUMERIC (f64) and STRING runtime values. QBasic mode accepts suffixes (`%`, `!`, `#`, `&`, `$`) in variable names; ANSI mode only supports `$` for strings.
 - **`=` disambiguation**: at statement level `=` is assignment; inside expressions `=` is comparison
 - **Single-line vs block IF**: if tokens follow THEN on the same line, it's single-line
 - **Auto-initialization**: undefined variables auto-initialize to 0 or "" (BASIC behavior)
 - **`name(args)` ambiguity**: resolved at runtime -- check builtin registry, then user functions, then arrays
 - **GOTO**: label map built during prescan; ControlFlow::Goto bubbles up to exec_block which resolves it
-- **No GOSUB/RETURN**: not supported; use SUB/FUNCTION instead
-- **Truth values**: true = `1`, false = `0` (ANSI BASIC convention); do not change
-- **Logical operators**: AND, OR, NOT, XOR are logical (not bitwise). No IMP or EQV operators. No `\` integer division.
+- **GOSUB/RETURN**: supported in QBasic mode; not supported in ANSI mode.
+- **Truth values**: QBasic mode true = `-1`, false = `0`; ANSI mode true = `1`, false = `0`.
+- **Logical operators**: QBasic mode AND, OR, NOT, XOR are bitwise on numeric values; ANSI mode uses logical truth values. No IMP or EQV operators. No `\` integer division.
 - **MOD**: works on real numbers (not integer-only)
-- **String concatenation**: `&` operator (not `+`). `+` is always arithmetic.
+- **String concatenation**: QBasic mode accepts string `+` and `&`; ANSI mode uses `&` and keeps `+` arithmetic.
 - **String slicing**: colon syntax `A$(3:7)` instead of MID$/LEFT$/RIGHT$
-- **Error handling**: WHEN EXCEPTION IN...USE...END WHEN with RETRY, CONTINUE, EXTYPE, EXTEXT$. No ON ERROR GOTO.
-- **File I/O**: ANSI OPEN syntax: `OPEN #n: NAME "file", ACCESS INPUT/OUTPUT/OUTIN, ORGANIZATION SEQUENTIAL/STREAM`. SET/ASK POINTER instead of SEEK.
-- **OPTION BASE**: defaults to 1 (ANSI convention), not 0
-- **Parameters**: BYVAL by default (not BYREF)
+- **Error handling**: WHEN EXCEPTION IN...USE...END WHEN with RETRY, CONTINUE, EXTYPE, EXTEXT$. QBasic mode also supports top-level ON ERROR GOTO, RESUME, ERROR, ERR, and ERL.
+- **File I/O**: ANSI OPEN syntax (`OPEN #n: NAME "file", ACCESS INPUT/OUTPUT/OUTIN, ORGANIZATION SEQUENTIAL/STREAM`) and QBasic OPEN syntax are supported, including SEEK and FIELD/LSET/RSET random record buffers.
+- **OPTION BASE**: defaults to 1, not 0
+- **Parameters**: QBasic mode is BYREF by default; ANSI mode is BYVAL by default.
 - **PRINT formatting**: no leading space on positive numbers; 16-character zone width for comma-separated output
 - **Prescan ordering**: `Interpreter::run_source` pre-scans labels, DATA, SUB/FUNCTION definitions before execution; prescan recurses into nested blocks (IF, FOR, WHILE, DO, SELECT CASE); preserve this ordering
 - **Stack size**: `main.rs` spawns an 8MB-stack thread because debug-mode `match` arms in the interpreter create ~100KB frames, exhausting the default Windows 1MB stack
@@ -117,6 +117,6 @@ The interpreter's `SharedOutput` captures PRINT output for assertion.
 
 ## Status of BASIC Features
 
-**Working**: PRINT, PRINT USING, LET, DIM, CONST, INPUT, LINE INPUT, IF/ELSEIF/ELSE/END IF, FOR/NEXT, WHILE/END WHILE, DO/LOOP, SELECT CASE, GOTO, EXIT FOR/DO/SUB/FUNCTION, SUB/END SUB, FUNCTION/END FUNCTION, CALL, DECLARE, DATA/READ/RESTORE, SWAP, OPTION BASE (default 1), REDIM, ERASE, SHARED, STATIC, TYPE/END TYPE (user-defined types with dot notation, arrays of TYPE), RANDOMIZE/RND, WRITE (console), SLEEP, CLEAR, WHEN EXCEPTION IN/USE/END WHEN (with RETRY, CONTINUE, EXTYPE, EXTEXT$), string slicing with colon syntax (A$(3:7)), & string concatenation, MAT operations (MAT PRINT, MAT READ, MAT INPUT, MAT +/-/*, scalar multiply, INV, TRN, DET, ZER, CON, IDN), File I/O (ANSI OPEN with NAME/ACCESS/ORGANIZATION, CLOSE, PRINT#, INPUT#, LINE INPUT#, SET POINTER, ASK POINTER), file functions (FREEFILE, EOF, LOF, LOC), file system operations (NAME...AS, KILL, MKDIR, RMDIR, CHDIR), console features (CLS, LOCATE, COLOR, BEEP, WIDTH, VIEW PRINT, CSRLIN, POS, INKEY$, INPUT$, SCREEN()), SHELL, ENVIRON$, BYVAL parameter semantics, logical AND/OR/NOT/XOR, STOP, SYSTEM, END, QBasic string functions (LEFT$, RIGHT$, MID$, UCASE$, LCASE$, HEX$, OCT$), REPL line-number mode (RUN, LIST, NEW, DELETE).
+**Working**: PRINT, PRINT USING, LET, DIM, CONST, INPUT, LINE INPUT, IF/ELSEIF/ELSE/END IF, FOR/NEXT, WHILE/END WHILE, DO/LOOP, SELECT CASE, GOTO, EXIT FOR/DO/SUB/FUNCTION, SUB/END SUB, FUNCTION/END FUNCTION, CALL, DECLARE, DATA/READ/RESTORE, SWAP, OPTION BASE (default 1), REDIM, ERASE, SHARED, STATIC, TYPE/END TYPE (user-defined types with dot notation, arrays of TYPE), RANDOMIZE/RND, WRITE (console), SLEEP, CLEAR, WHEN EXCEPTION IN/USE/END WHEN (with RETRY, CONTINUE, EXTYPE, EXTEXT$), string slicing with colon syntax (A$(3:7)), string +/& concatenation by dialect, MAT operations (MAT PRINT, MAT READ, MAT INPUT, MAT +/-/*, scalar multiply, INV, TRN, DET, ZER, CON, IDN), File I/O (ANSI OPEN with NAME/ACCESS/ORGANIZATION, QBasic OPEN syntax, CLOSE, PRINT#, INPUT#, LINE INPUT#, SET POINTER, ASK POINTER), file functions (FREEFILE, EOF, LOF, LOC), file system operations (NAME...AS, KILL, MKDIR, RMDIR, CHDIR), console features (CLS, LOCATE, COLOR, BEEP, WIDTH, VIEW PRINT, CSRLIN, POS, INKEY$, INPUT$, SCREEN()), SHELL, ENVIRON$, BYREF/BYVAL parameter semantics by dialect, logical AND/OR/NOT/XOR by dialect, STOP, SYSTEM, END, QBasic string functions (LEFT$, RIGHT$, MID$, UCASE$, LCASE$, HEX$, OCT$), REPL line-number mode (RUN, LIST, NEW, DELETE).
 
-**Not implemented**: proper array storage (currently uses flattened key hack), LBOUND/UBOUND (stubs only).
+**Not implemented**: proper array storage (currently uses flattened key hack).

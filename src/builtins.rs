@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::error::RuntimeError;
-use crate::value::Value;
+use crate::value::{Value, basic_string_to_bytes, bytes_to_basic_string};
 
 pub type BuiltinFn = fn(&[Value]) -> Result<Value, RuntimeError>;
 
@@ -48,6 +48,10 @@ impl BuiltinRegistry {
         reg.register("SEC", builtin_sec, 1);
         reg.register("ANGLE", builtin_angle, 2);
         reg.register("CEIL", builtin_ceil, 1);
+        reg.register("CINT", builtin_cint, 1);
+        reg.register("CLNG", builtin_clng, 1);
+        reg.register("CSNG", builtin_csng, 1);
+        reg.register("CDBL", builtin_cdbl, 1);
         reg.register_variadic("TRUNCATE", builtin_truncate);
         reg.register("REMAINDER", builtin_remainder, 2);
         reg.register("MAXNUM", builtin_maxnum, 0);
@@ -72,18 +76,25 @@ impl BuiltinRegistry {
         reg.register("LCASE$", builtin_lcase, 1);
         reg.register("HEX$", builtin_hex, 1);
         reg.register("OCT$", builtin_oct, 1);
+        reg.register("MKI$", builtin_mki, 1);
+        reg.register("MKL$", builtin_mkl, 1);
+        reg.register("MKS$", builtin_mks, 1);
+        reg.register("MKD$", builtin_mkd, 1);
+        reg.register("CVI", builtin_cvi, 1);
+        reg.register("CVL", builtin_cvl, 1);
+        reg.register("CVS", builtin_cvs, 1);
+        reg.register("CVD", builtin_cvd, 1);
 
         // Misc
-        reg.register_variadic("LBOUND", builtin_stub);
-        reg.register_variadic("UBOUND", builtin_stub);
         reg.register("TIMER", builtin_timer, 0);
         reg.register("DATE$", builtin_date, 0);
         reg.register("TIME$", builtin_time, 0);
         reg.register("ENVIRON$", builtin_environ, 1);
+        reg.register("CURDIR$", builtin_curdir, 0);
+        reg.register("COMMAND$", builtin_command, 0);
 
         reg
     }
-
     fn register(&mut self, name: &str, func: BuiltinFn, args: usize) {
         self.functions
             .insert(name.to_string(), (func, BuiltinArity::Exact(args)));
@@ -136,6 +147,51 @@ fn builtin_int(args: &[Value]) -> Result<Value, RuntimeError> {
 fn builtin_fix(args: &[Value]) -> Result<Value, RuntimeError> {
     let n = args[0].to_f64()?;
     Ok(Value::Numeric(n.trunc()))
+}
+
+/// Round half-to-even (banker's rounding), matching QuickBasic's CINT/CLNG.
+fn round_half_even(n: f64) -> f64 {
+    let rounded = n.round();
+    if (n - n.trunc()).abs() == 0.5 {
+        let floor = n.floor();
+        if (floor as i64) % 2 == 0 {
+            floor
+        } else {
+            floor + 1.0
+        }
+    } else {
+        rounded
+    }
+}
+
+fn builtin_cint(args: &[Value]) -> Result<Value, RuntimeError> {
+    let n = args[0].to_f64()?;
+    if !(-32768.0..=32767.0).contains(&n) {
+        return Err(RuntimeError::IllegalFunctionCall {
+            msg: "CINT: value out of integer range (-32768..32767)".into(),
+        });
+    }
+    Ok(Value::Numeric(round_half_even(n)))
+}
+
+fn builtin_clng(args: &[Value]) -> Result<Value, RuntimeError> {
+    let n = args[0].to_f64()?;
+    if !(-2_147_483_648.0..=2_147_483_647.0).contains(&n) {
+        return Err(RuntimeError::IllegalFunctionCall {
+            msg: "CLNG: value out of long range".into(),
+        });
+    }
+    Ok(Value::Numeric(round_half_even(n)))
+}
+
+fn builtin_csng(args: &[Value]) -> Result<Value, RuntimeError> {
+    let n = args[0].to_f64()?;
+    Ok(Value::Numeric(n as f32 as f64))
+}
+
+fn builtin_cdbl(args: &[Value]) -> Result<Value, RuntimeError> {
+    let n = args[0].to_f64()?;
+    Ok(Value::Numeric(n))
 }
 
 fn builtin_sgn(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -428,6 +484,20 @@ fn builtin_val(args: &[Value]) -> Result<Value, RuntimeError> {
     if s.is_empty() {
         return Ok(Value::Numeric(0.0));
     }
+    // QuickBasic hex (&H) and octal (&O) literals
+    if let Some(rest) = s.strip_prefix("&H").or_else(|| s.strip_prefix("&h")) {
+        let hex: String = rest.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+        let n = i64::from_str_radix(&hex, 16).unwrap_or(0);
+        return Ok(Value::Numeric(n as f64));
+    }
+    if let Some(rest) = s.strip_prefix("&O").or_else(|| s.strip_prefix("&o")) {
+        let oct: String = rest
+            .chars()
+            .take_while(|c| ('0'..='7').contains(c))
+            .collect();
+        let n = i64::from_str_radix(&oct, 8).unwrap_or(0);
+        return Ok(Value::Numeric(n as f64));
+    }
     // Try integer first, then float
     if let Ok(n) = s.parse::<i64>() {
         return Ok(Value::Numeric(n as f64));
@@ -545,6 +615,65 @@ fn builtin_oct(args: &[Value]) -> Result<Value, RuntimeError> {
     } else {
         Ok(Value::Str(format!("{:o}", i)))
     }
+}
+
+fn builtin_mki(args: &[Value]) -> Result<Value, RuntimeError> {
+    let n = args[0].to_f64()? as i16;
+    Ok(Value::Str(bytes_to_basic_string(&n.to_le_bytes())))
+}
+
+fn builtin_mkl(args: &[Value]) -> Result<Value, RuntimeError> {
+    let n = args[0].to_f64()? as i32;
+    Ok(Value::Str(bytes_to_basic_string(&n.to_le_bytes())))
+}
+
+fn builtin_mks(args: &[Value]) -> Result<Value, RuntimeError> {
+    let n = args[0].to_f64()? as f32;
+    Ok(Value::Str(bytes_to_basic_string(&n.to_le_bytes())))
+}
+
+fn builtin_mkd(args: &[Value]) -> Result<Value, RuntimeError> {
+    let n = args[0].to_f64()?;
+    Ok(Value::Str(bytes_to_basic_string(&n.to_le_bytes())))
+}
+
+fn require_packed_bytes(args: &[Value], name: &str, len: usize) -> Result<Vec<u8>, RuntimeError> {
+    let s = args[0].to_string_val()?;
+    let bytes = basic_string_to_bytes(&s);
+    if bytes.len() < len {
+        return Err(RuntimeError::IllegalFunctionCall {
+            msg: format!("{name} requires at least {len} bytes"),
+        });
+    }
+    Ok(bytes)
+}
+
+fn builtin_cvi(args: &[Value]) -> Result<Value, RuntimeError> {
+    let bytes = require_packed_bytes(args, "CVI", 2)?;
+    Ok(Value::Numeric(
+        i16::from_le_bytes([bytes[0], bytes[1]]) as f64
+    ))
+}
+
+fn builtin_cvl(args: &[Value]) -> Result<Value, RuntimeError> {
+    let bytes = require_packed_bytes(args, "CVL", 4)?;
+    Ok(Value::Numeric(
+        i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64,
+    ))
+}
+
+fn builtin_cvs(args: &[Value]) -> Result<Value, RuntimeError> {
+    let bytes = require_packed_bytes(args, "CVS", 4)?;
+    Ok(Value::Numeric(
+        f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64,
+    ))
+}
+
+fn builtin_cvd(args: &[Value]) -> Result<Value, RuntimeError> {
+    let bytes = require_packed_bytes(args, "CVD", 8)?;
+    Ok(Value::Numeric(f64::from_le_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+    ])))
 }
 
 /// Get local time components (hours, minutes, seconds, millis) from system time.
@@ -723,12 +852,21 @@ fn builtin_time(_args: &[Value]) -> Result<Value, RuntimeError> {
     Ok(Value::Str(format!("{:02}:{:02}:{:02}", hours, mins, secs)))
 }
 
-fn builtin_stub(_args: &[Value]) -> Result<Value, RuntimeError> {
-    Ok(Value::Numeric(0.0))
-}
-
 fn builtin_environ(args: &[Value]) -> Result<Value, RuntimeError> {
     let name = args[0].to_string_val()?;
     let val = std::env::var(&name).unwrap_or_default();
     Ok(Value::Str(val))
+}
+
+fn builtin_curdir(_args: &[Value]) -> Result<Value, RuntimeError> {
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    Ok(Value::Str(cwd))
+}
+
+fn builtin_command(_args: &[Value]) -> Result<Value, RuntimeError> {
+    // Program arguments after the source file, joined with spaces.
+    let extra: Vec<String> = std::env::args().skip(2).collect();
+    Ok(Value::Str(extra.join(" ")))
 }

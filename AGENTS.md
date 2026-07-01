@@ -24,7 +24,7 @@
 - `MOD` works on real numbers.
 - PRINT formatting intentionally has no leading space for positive numbers and uses 16-character comma zones.
 - Arrays currently use flattened keys; avoid broad array-storage refactors unless the task and tests are specifically about that.
-- **Dialect Semantics**: Rice BASIC supports both ANSI mode (default) and QuickBasic compatibility mode (activated via `OPTION DIALECT "QB"` or `--dialect qb`/`--compat` flags).
+- **Dialect Semantics**: Rice BASIC supports QBasic 1.1 compatibility mode by default and ANSI mode via `OPTION DIALECT "ANSI"` or `--dialect ansi`. `OPTION DIALECT "QB"`, `OPTION DIALECT "QBasic 1.1"`, `--dialect qb`, and `--compat` explicitly select the default QBasic-compatible mode.
   - **ANSI Mode Semantics**:
     - Suffixes other than `$` are not supported.
     - Truth values are `1.0` (true) and `0.0` (false).
@@ -40,7 +40,8 @@
     - Logical `AND`, `OR`, `NOT`, `XOR` perform bitwise operations on numeric values.
     - Subroutine/function parameters are `BYREF` by default. Passing a parenthesized argument (e.g. `MySub (x)`) forces it to be evaluated as an expression, passing it by value (`BYVAL`).
     - `GOSUB`/`RETURN` (using a return address stack) and `ON GOTO/GOSUB` are supported.
-    - Structured binary record I/O (`GET`/`PUT` with recursive UDT field serialization) and `APPEND` file mode are supported.
+    - Classic top-level `ON ERROR GOTO`/`RESUME`, `ERROR`, `ERR`, and `ERL` are supported.
+    - Structured binary record I/O (`GET`/`PUT` with recursive UDT field serialization), `FIELD`/`LSET`/`RSET`, packed MK*/CV* conversion functions, and `APPEND` file mode are supported.
 
 ## Parser And Interpreter Gotchas
 

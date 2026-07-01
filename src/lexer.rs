@@ -18,7 +18,7 @@ impl Lexer {
             line: 1,
             col: 1,
             at_line_start: true,
-            dialect: crate::Dialect::Ansi,
+            dialect: crate::DEFAULT_DIALECT,
         }
     }
 
@@ -411,6 +411,8 @@ impl Lexer {
             "GET" => Token::KwGet,
             "PUT" => Token::KwPut,
             "FREEFILE" => Token::KwFreefile,
+            "SEEK" => Token::KwSeek,
+            "RESET" => Token::KwReset,
             "LPRINT" => Token::KwLPrint,
             "USING" => Token::KwUsing,
             "ON" => Token::KwOn,
@@ -439,6 +441,8 @@ impl Lexer {
             "MKDIR" => Token::KwMkdir,
             "RMDIR" => Token::KwRmdir,
             "CHDIR" => Token::KwChdir,
+            "CHDRIVE" => Token::KwChdrive,
+            "FILES" => Token::KwFiles,
             "SHELL" => Token::KwShell,
             "LSET" => Token::KwLset,
             "RSET" => Token::KwRset,

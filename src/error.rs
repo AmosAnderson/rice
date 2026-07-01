@@ -42,6 +42,8 @@ pub enum RuntimeError {
     ArityMismatch { expected: usize, got: usize },
     #[error("{msg}")]
     General { msg: String },
+    #[error("user error code {code}")]
+    BasicError { code: i32 },
     #[error("illegal function call: {msg}")]
     IllegalFunctionCall { msg: String },
     #[error("duplicate definition: {name}")]
@@ -66,6 +68,23 @@ impl RuntimeError {
                 }
             }
             _ => 9999,
+        }
+    }
+
+    /// Map a RuntimeError to a classic QBasic ERR error code.
+    pub fn basic_err_code(&self) -> i32 {
+        match self {
+            RuntimeError::DivisionByZero => 11,
+            RuntimeError::Overflow { .. } => 6,
+            RuntimeError::SubscriptOutOfRange => 9,
+            RuntimeError::TypeMismatch { .. } => 13,
+            RuntimeError::IllegalFunctionCall { .. } => 5,
+            RuntimeError::UndefinedLabel { .. } => 8,
+            RuntimeError::DuplicateDefinition { .. } => 10,
+            RuntimeError::IoError { code, .. } => *code,
+            RuntimeError::BasicError { code } => *code,
+            RuntimeError::General { .. } => 5,
+            _ => 5,
         }
     }
 

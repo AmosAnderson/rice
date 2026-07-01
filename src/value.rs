@@ -25,6 +25,16 @@ pub enum Value {
     },
 }
 
+/// BASIC binary strings treat each character as one byte. Rust strings are UTF-8,
+/// so packed binary helpers use Latin-1-style chars U+0000..U+00FF.
+pub fn bytes_to_basic_string(bytes: &[u8]) -> String {
+    bytes.iter().map(|&b| b as char).collect()
+}
+
+pub fn basic_string_to_bytes(s: &str) -> Vec<u8> {
+    s.chars().map(|c| (c as u32).min(0xFF) as u8).collect()
+}
+
 impl Value {
     pub fn default_for(ty: BasicType) -> Value {
         match ty {

@@ -647,7 +647,9 @@ impl Repl {
             .join("\n");
 
         // Fresh interpreter for each RUN (classic behavior: RUN clears variables)
+        let dialect = self.interpreter.dialect;
         self.interpreter = Interpreter::new();
+        self.interpreter.dialect = dialect;
 
         match self.interpreter.run_source(&source) {
             Ok(()) => {}

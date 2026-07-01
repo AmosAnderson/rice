@@ -115,6 +115,8 @@ pub enum Token {
     KwGet,
     KwPut,
     KwFreefile,
+    KwSeek,
+    KwReset,
     KwLPrint,
     KwUsing,
     KwOn,
@@ -156,6 +158,8 @@ pub enum Token {
     KwMkdir,
     KwRmdir,
     KwChdir,
+    KwChdrive,
+    KwFiles,
     KwShell,
 
     // String mutation

@@ -66,7 +66,8 @@ impl RiceLspBackend {
 
 fn analyze_source(source: String) -> DocumentState {
     let mut diagnostics = Vec::new();
-    let mut lexer = Lexer::new(&source);
+    let dialect = rice::detect_dialect(&source).unwrap_or(rice::DEFAULT_DIALECT);
+    let mut lexer = Lexer::with_dialect(&source, dialect);
 
     let tokens = match lexer.tokenize() {
         Ok(t) => t,
@@ -93,7 +94,7 @@ fn analyze_source(source: String) -> DocumentState {
         }
     };
 
-    let mut parser = Parser::new(tokens.clone());
+    let mut parser = Parser::with_dialect(tokens.clone(), dialect);
     let program = match parser.parse_program() {
         Ok(p) => Some(p),
         Err(e) => {
@@ -293,7 +294,7 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("CONST", "Declare a constant"),
         ("SWAP", "Swap two variables"),
         ("OPTION BASE", "Set default array lower bound"),
-        ("OPTION DIALECT", "Select QuickBasic compatibility mode"),
+        ("OPTION DIALECT", "Select ANSI or QBasic compatibility mode"),
         ("REDIM", "Redimension an array"),
         ("ERASE", "Erase an array"),
         ("SHARED", "Share variable with main module"),
@@ -310,6 +311,7 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("STEP", "Specify FOR loop increment"),
         ("NEXT", "End of FOR loop"),
         ("WHILE", "Begin a WHILE loop"),
+        ("WEND", "End a classic WHILE loop"),
         ("END WHILE", "End of WHILE loop"),
         ("DO", "Begin a DO loop"),
         ("LOOP", "End of DO loop"),
@@ -322,6 +324,9 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("RETURN", "Return from GOSUB in QuickBasic mode"),
         ("ON GOTO", "Computed GOTO in QuickBasic mode"),
         ("ON GOSUB", "Computed GOSUB in QuickBasic mode"),
+        ("ON ERROR", "Classic error handler in QuickBasic mode"),
+        ("RESUME", "Resume after classic error handler"),
+        ("ERROR", "Raise a classic BASIC error code"),
         ("EXIT FOR", "Exit a FOR loop early"),
         ("EXIT DO", "Exit a DO loop early"),
         ("EXIT SUB", "Exit a SUB early"),
@@ -338,6 +343,12 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("DECLARE", "Forward-declare a SUB or FUNCTION"),
         ("BYVAL", "Pass argument by value"),
         ("BYREF", "Pass argument by reference"),
+        ("DEF FN", "Define a single-line function in QuickBasic mode"),
+        ("DEFINT", "Set default numeric type for variable letters"),
+        ("DEFLNG", "Set default numeric type for variable letters"),
+        ("DEFSNG", "Set default numeric type for variable letters"),
+        ("DEFDBL", "Set default numeric type for variable letters"),
+        ("DEFSTR", "Set default string type for variable letters"),
         // Data
         ("DATA", "Define inline data"),
         ("READ", "Read from DATA"),
@@ -361,12 +372,28 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("ASK POINTER", "Query file position"),
         ("GET", "Read binary record from file"),
         ("PUT", "Write binary record to file"),
+        ("SEEK", "Set file position (SEEK #n, pos)"),
+        ("RESET", "Close all open files"),
+        (
+            "FIELD",
+            "Map string variables to a random-file record buffer",
+        ),
+        (
+            "LSET",
+            "Left-align assignment into a fixed-width string field",
+        ),
+        (
+            "RSET",
+            "Right-align assignment into a fixed-width string field",
+        ),
         // File system
         ("NAME", "Rename a file (NAME old$ AS new$)"),
         ("KILL", "Delete a file"),
         ("MKDIR", "Create a directory"),
         ("RMDIR", "Remove a directory"),
         ("CHDIR", "Change current directory"),
+        ("CHDRIVE", "Change current drive"),
+        ("FILES", "List directory entries"),
         // Console
         ("CLS", "Clear the screen"),
         ("LOCATE", "Move cursor to row, column"),
@@ -454,17 +481,35 @@ static BUILTIN_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("VAL", "VAL(s$) — Convert string to number"),
         ("HEX$", "HEX$(n) — Hexadecimal representation"),
         ("OCT$", "OCT$(n) — Octal representation"),
+        ("MKI$", "MKI$(n) — Packed 2-byte integer string"),
+        ("MKL$", "MKL$(n) — Packed 4-byte long string"),
+        ("MKS$", "MKS$(n) — Packed 4-byte single string"),
+        ("MKD$", "MKD$(n) — Packed 8-byte double string"),
         // File
         ("FREEFILE", "FREEFILE — Next available file number"),
         ("EOF", "EOF(n) — End-of-file check"),
         ("LOF", "LOF(n) — Length of file"),
         ("LOC", "LOC(n) — Current position in file"),
+        ("SEEK", "SEEK(n) — Next file position (1-based)"),
+        ("ERR", "ERR — Last classic BASIC error code"),
+        ("ERL", "ERL — Line number of last classic BASIC error"),
         // System
         ("ENVIRON$", "ENVIRON$(name$) — Get environment variable"),
+        ("CURDIR$", "CURDIR$ — Current directory"),
+        ("COMMAND$", "COMMAND$ — Program command-line tail"),
         ("TIMER", "TIMER — Seconds since midnight"),
         ("DATE$", "DATE$ — Current date"),
         ("TIME$", "TIME$ — Current time"),
-        // Array (stubs)
+        // Conversion
+        ("CINT", "CINT(n) — Round to nearest integer"),
+        ("CLNG", "CLNG(n) — Round to nearest long"),
+        ("CSNG", "CSNG(n) — Single-precision value"),
+        ("CDBL", "CDBL(n) — Double-precision value"),
+        ("CVI", "CVI(s$) — Convert packed integer string"),
+        ("CVL", "CVL(s$) — Convert packed long string"),
+        ("CVS", "CVS(s$) — Convert packed single string"),
+        ("CVD", "CVD(s$) — Convert packed double string"),
+        // Array
         ("LBOUND", "LBOUND(array[, dim]) — Lower bound of array"),
         ("UBOUND", "UBOUND(array[, dim]) — Upper bound of array"),
     ]
@@ -659,6 +704,22 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
             "OCT$",
             "```basic\nOCT$(n)\n```\nReturns the octal string representation of `n`.",
         ),
+        (
+            "MKI$",
+            "```basic\nMKI$(n)\n```\nReturns a 2-byte little-endian packed integer string.",
+        ),
+        (
+            "MKL$",
+            "```basic\nMKL$(n)\n```\nReturns a 4-byte little-endian packed long string.",
+        ),
+        (
+            "MKS$",
+            "```basic\nMKS$(n)\n```\nReturns a 4-byte little-endian packed single-precision string.",
+        ),
+        (
+            "MKD$",
+            "```basic\nMKD$(n)\n```\nReturns an 8-byte little-endian packed double-precision string.",
+        ),
         // File
         (
             "FREEFILE",
@@ -666,7 +727,7 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "EOF",
-            "```basic\nEOF(n)\n```\nReturns 1 (true) if at end of file `n`, 0 otherwise.",
+            "```basic\nEOF(n)\n```\nReturns the dialect true value if at end of file `n`, 0 otherwise.",
         ),
         (
             "LOF",
@@ -682,6 +743,14 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
             "```basic\nENVIRON$(name$)\n```\nReturns the value of the environment variable `name$`.",
         ),
         (
+            "CURDIR$",
+            "```basic\nCURDIR$\n```\nReturns the current working directory.",
+        ),
+        (
+            "COMMAND$",
+            "```basic\nCOMMAND$\n```\nReturns the command-line arguments after the source file, joined with spaces.",
+        ),
+        (
             "TIMER",
             "```basic\nTIMER\n```\nReturns the number of seconds elapsed since midnight.",
         ),
@@ -693,14 +762,58 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
             "TIME$",
             "```basic\nTIME$\n```\nReturns the current time as HH:MM:SS.",
         ),
-        // Array (stubs)
+        // Array
         (
             "LBOUND",
-            "```basic\nLBOUND(array[, dim])\n```\nReturns the lower bound of `array`. *(Stub — not fully implemented.)*",
+            "```basic\nLBOUND(array[, dim])\n```\nReturns the lower bound of `array` for the given dimension (default 1).",
         ),
         (
             "UBOUND",
-            "```basic\nUBOUND(array[, dim])\n```\nReturns the upper bound of `array`. *(Stub — not fully implemented.)*",
+            "```basic\nUBOUND(array[, dim])\n```\nReturns the upper bound of `array` for the given dimension (default 1).",
+        ),
+        (
+            "CINT",
+            "```basic\nCINT(n)\n```\nRounds `n` to the nearest integer (round half to even).",
+        ),
+        (
+            "CLNG",
+            "```basic\nCLNG(n)\n```\nRounds `n` to the nearest long integer (round half to even).",
+        ),
+        (
+            "CSNG",
+            "```basic\nCSNG(n)\n```\nReturns `n` reduced to single precision.",
+        ),
+        (
+            "CDBL",
+            "```basic\nCDBL(n)\n```\nReturns `n` as a double-precision value.",
+        ),
+        (
+            "CVI",
+            "```basic\nCVI(s$)\n```\nConverts a 2-byte packed integer string produced by `MKI$` back to a number.",
+        ),
+        (
+            "CVL",
+            "```basic\nCVL(s$)\n```\nConverts a 4-byte packed long string produced by `MKL$` back to a number.",
+        ),
+        (
+            "CVS",
+            "```basic\nCVS(s$)\n```\nConverts a 4-byte packed single string produced by `MKS$` back to a number.",
+        ),
+        (
+            "CVD",
+            "```basic\nCVD(s$)\n```\nConverts an 8-byte packed double string produced by `MKD$` back to a number.",
+        ),
+        (
+            "ERR",
+            "```basic\nERR\n```\nReturns the most recent classic BASIC error code from an `ON ERROR GOTO` handler.",
+        ),
+        (
+            "ERL",
+            "```basic\nERL\n```\nReturns the numbered BASIC line where the most recent classic error occurred, or 0 for unnumbered statements.",
+        ),
+        (
+            "SEEK",
+            "```basic\nSEEK(n)\nSEEK #n, position\n```\nFunction returns the 1-based byte position of the next read/write; statement moves the file pointer.",
         ),
     ])
 });
@@ -747,11 +860,11 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "OPTION BASE",
-            "```basic\nOPTION BASE {0|1}\n```\nSets the default lower bound for arrays. Default is 1 (ANSI convention).",
+            "```basic\nOPTION BASE {0|1}\n```\nSets the default lower bound for arrays. Default is 1.",
         ),
         (
             "OPTION DIALECT",
-            "```basic\nOPTION DIALECT \"QB\"\n```\nSelects QuickBasic compatibility mode for a complete source file or stored REPL program run with `RUN`.",
+            "```basic\nOPTION DIALECT \"ANSI\"\nOPTION DIALECT \"QB\"\n```\nSelects ANSI mode or the default QBasic-compatible mode for a complete source file or stored REPL program run with `RUN`.",
         ),
         (
             "REDIM",
@@ -784,7 +897,11 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "WHILE",
-            "```basic\nWHILE condition\n  ...\nEND WHILE\n```\nLoop while condition is true.",
+            "```basic\nWHILE condition\n  ...\nWEND\n```\nLoop while condition is true. `END WHILE` is also accepted.",
+        ),
+        (
+            "WEND",
+            "```basic\nWHILE condition\n  ...\nWEND\n```\nEnds a classic QuickBasic-style WHILE loop.",
         ),
         (
             "DO",
@@ -807,12 +924,24 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
             "```basic\nRETURN\n```\nQuickBasic compatibility mode only. Returns to the statement after the most recent GOSUB.",
         ),
         (
+            "ON",
+            "```basic\nON expr GOTO label1, label2\nON expr GOSUB label1, label2\nON ERROR GOTO handler\n```\nQuickBasic compatibility mode only. Performs computed jumps/calls or installs a classic error handler.",
+        ),
+        (
             "ON GOTO",
             "```basic\nON expr GOTO label1, label2[, label3...]\n```\nQuickBasic compatibility mode only. Jumps to the label selected by the 1-based numeric expression.",
         ),
         (
             "ON GOSUB",
             "```basic\nON expr GOSUB label1, label2[, label3...]\n```\nQuickBasic compatibility mode only. Calls the label selected by the 1-based numeric expression.",
+        ),
+        (
+            "ERROR",
+            "```basic\nERROR code\n```\nQuickBasic compatibility mode only. Raises a classic BASIC error code that can be trapped with `ON ERROR GOTO`.",
+        ),
+        (
+            "RESUME",
+            "```basic\nRESUME\nRESUME NEXT\nRESUME label\n```\nQuickBasic compatibility mode only. Resumes execution after a classic `ON ERROR GOTO` handler. Resume is exact at top-level scope.",
         ),
         ("END", "```basic\nEND\n```\nEnds program execution."),
         ("STOP", "```basic\nSTOP\n```\nStops program execution."),
@@ -844,6 +973,30 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         (
             "BYREF",
             "```basic\nSUB name (BYREF x AS NUMERIC)\n```\nPasses a parameter by reference. This is the default in QuickBasic compatibility mode.",
+        ),
+        (
+            "DEF",
+            "```basic\nDEF FNname[(params)] = expression\n```\nQuickBasic compatibility mode only. Defines a single-line user function.",
+        ),
+        (
+            "DEFSTR",
+            "```basic\nDEFSTR A-Z\n```\nQuickBasic compatibility mode only. Variables beginning with the listed letters default to string when no suffix or AS type is present. DEFINT, DEFLNG, DEFSNG, and DEFDBL are accepted for numeric compatibility.",
+        ),
+        (
+            "DEFINT",
+            "```basic\nDEFINT A-Z\n```\nQuickBasic compatibility mode only. Accepted for default numeric type compatibility; numeric values are still stored as doubles internally.",
+        ),
+        (
+            "DEFLNG",
+            "```basic\nDEFLNG A-Z\n```\nQuickBasic compatibility mode only. Accepted for default numeric type compatibility; numeric values are still stored as doubles internally.",
+        ),
+        (
+            "DEFSNG",
+            "```basic\nDEFSNG A-Z\n```\nQuickBasic compatibility mode only. Accepted for default numeric type compatibility; numeric values are still stored as doubles internally.",
+        ),
+        (
+            "DEFDBL",
+            "```basic\nDEFDBL A-Z\n```\nQuickBasic compatibility mode only. Accepted for default numeric type compatibility; numeric values are still stored as doubles internally.",
         ),
         // Data
         (
@@ -890,14 +1043,38 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
             "ASK POINTER",
             "```basic\nASK #n: POINTER var\n```\nQueries the current file position into a variable.",
         ),
+        (
+            "FIELD",
+            "```basic\nFIELD #n, width AS var$[, width AS var$...]\n```\nQuickBasic compatibility mode only. Maps string variables to slices of a RANDOM file record buffer.",
+        ),
+        (
+            "LSET",
+            "```basic\nLSET var$ = expr$\n```\nQuickBasic compatibility mode only. Left-aligns a string into a FIELD slot or existing fixed-width string variable.",
+        ),
+        (
+            "RSET",
+            "```basic\nRSET var$ = expr$\n```\nQuickBasic compatibility mode only. Right-aligns a string into a FIELD slot or existing fixed-width string variable.",
+        ),
         // File system
         ("NAME", "```basic\nNAME old$ AS new$\n```\nRenames a file."),
         ("KILL", "```basic\nKILL file$\n```\nDeletes a file."),
         ("MKDIR", "```basic\nMKDIR dir$\n```\nCreates a directory."),
         ("RMDIR", "```basic\nRMDIR dir$\n```\nRemoves a directory."),
         (
+            "RESET",
+            "```basic\nRESET\n```\nFlushes and closes all open files.",
+        ),
+        (
             "CHDIR",
             "```basic\nCHDIR dir$\n```\nChanges the current working directory.",
+        ),
+        (
+            "CHDRIVE",
+            "```basic\nCHDRIVE drive$\n```\nChanges the current drive on platforms where drive roots are available.",
+        ),
+        (
+            "FILES",
+            "```basic\nFILES [path$]\n```\nLists directory entries to the program output.",
         ),
         // Console
         ("CLS", "```basic\nCLS\n```\nClears the screen."),
@@ -1055,7 +1232,17 @@ fn token_name(tok: &rice::token::Token) -> Option<String> {
         rice::token::Token::KwMkdir => Some("MKDIR".into()),
         rice::token::Token::KwRmdir => Some("RMDIR".into()),
         rice::token::Token::KwChdir => Some("CHDIR".into()),
+        rice::token::Token::KwChdrive => Some("CHDRIVE".into()),
+        rice::token::Token::KwFiles => Some("FILES".into()),
         rice::token::Token::KwShell => Some("SHELL".into()),
+        rice::token::Token::KwLset => Some("LSET".into()),
+        rice::token::Token::KwRset => Some("RSET".into()),
+        rice::token::Token::KwDef => Some("DEF".into()),
+        rice::token::Token::KwDefInt => Some("DEFINT".into()),
+        rice::token::Token::KwDefLng => Some("DEFLNG".into()),
+        rice::token::Token::KwDefSng => Some("DEFSNG".into()),
+        rice::token::Token::KwDefDbl => Some("DEFDBL".into()),
+        rice::token::Token::KwDefStr => Some("DEFSTR".into()),
         rice::token::Token::KwCls => Some("CLS".into()),
         rice::token::Token::KwBeep => Some("BEEP".into()),
         rice::token::Token::KwLocate => Some("LOCATE".into()),
@@ -1069,6 +1256,9 @@ fn token_name(tok: &rice::token::Token) -> Option<String> {
         rice::token::Token::KwType => Some("TYPE".into()),
         rice::token::Token::KwSet => Some("SET POINTER".into()),
         rice::token::Token::KwAsk => Some("ASK POINTER".into()),
+        rice::token::Token::KwSeek => Some("SEEK".into()),
+        rice::token::Token::KwReset => Some("RESET".into()),
+        rice::token::Token::KwField => Some("FIELD".into()),
         _ => None,
     }
 }

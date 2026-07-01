@@ -15,7 +15,6 @@ pub enum Label {
     Number(u32),
     Name(String),
 }
-
 impl std::fmt::Display for Label {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -23,6 +22,13 @@ impl std::fmt::Display for Label {
             Label::Name(s) => write!(f, "{s}"),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResumeKind {
+    Same,
+    Next,
+    Label(Label),
 }
 
 #[derive(Debug, Clone)]
@@ -36,6 +42,12 @@ pub enum Stmt {
         name: String,
         start: Expr,
         end: Expr,
+        expr: Expr,
+    },
+    MidAssign {
+        name: String,
+        start: Expr,
+        len: Option<Expr>,
         expr: Expr,
     },
     Dim(Vec<DimDecl>),
@@ -66,6 +78,11 @@ pub enum Stmt {
         labels: Vec<Label>,
         is_gosub: bool,
     },
+    OnError {
+        label: Option<Label>,
+    },
+    Resume(ResumeKind),
+    ErrorStmt(Expr),
     ExitFor,
     ExitDo,
 
@@ -108,6 +125,27 @@ pub enum Stmt {
         var: Variable,
     },
     GetPut(GetPutStmt),
+    Field {
+        file_num: Expr,
+        fields: Vec<FieldSpec>,
+    },
+    LSetRSet {
+        var: Variable,
+        expr: Expr,
+        right_align: bool,
+    },
+
+    // SEEK #n, position — move file pointer; RESET — close all open files
+    Seek {
+        file_num: Expr,
+        position: Expr,
+    },
+    Reset,
+    /// DEFINT/DEFLNG/DEFSNG/DEFDBL/DEFSTR letter ranges. is_string is true for DEFSTR.
+    DefType {
+        is_string: bool,
+        ranges: Vec<(char, char)>,
+    },
 
     // Random
     Randomize(Option<Expr>),
@@ -124,6 +162,8 @@ pub enum Stmt {
     Mkdir(Expr),
     Rmdir(Expr),
     Chdir(Expr),
+    Chdrive(Expr),
+    Files(Option<Expr>),
     Shell(Option<Expr>),
 
     // Scope
@@ -319,6 +359,7 @@ pub struct OpenStmt {
     pub name: Expr,                    // filename expression
     pub access: FileAccess,            // ACCESS mode
     pub organization: Option<FileOrg>, // ORGANIZATION (optional)
+    pub record_len: Option<Expr>,      // QuickBASIC LEN = record length
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -361,6 +402,12 @@ pub struct GetPutStmt {
     pub file_num: Expr,
     pub record: Option<Expr>,
     pub var: Option<Variable>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FieldSpec {
+    pub width: Expr,
+    pub var: Variable,
 }
 
 // Expressions
