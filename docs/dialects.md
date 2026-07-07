@@ -75,6 +75,8 @@ QBasic/QuickBasic mode is intended for compatibility with common QuickBasic/QBas
 
 QuickBasic mode also supports `GET` and `PUT` for structured binary record I/O, including recursive serialization of user-defined type fields. `FIELD`, `LSET`, and `RSET` support classic random-access record buffers. `MKI$`/`MKL$`/`MKS$`/`MKD$` and `CVI`/`CVL`/`CVS`/`CVD` convert between numbers and packed binary strings.
 
+`COMMON` is supported as a single-source shared-variable declaration. `CHAIN` is not supported.
+
 Classic `ON ERROR` handling is exact for top-level statements. Errors that escape from deeply nested blocks can transfer to the handler, but `RESUME` targets are limited by the interpreter's current block-level control-flow model.
 
 ## Shared Semantics
@@ -93,7 +95,7 @@ These behaviors are the same in both modes unless noted above:
 
 The following common BASIC-family features are not currently implemented or are intentionally limited:
 
-- `CHAIN` and `COMMON`.
+- `CHAIN`.
 - `TIMER ON`/`OFF`/`STOP` and `KEY ON`/`OFF`/`STOP`.
 - Full QuickBasic integer, long, single, and double storage semantics; suffixes distinguish variables but numeric values are stored as `f64`.
 - Nested-block `RESUME` behavior for classic `ON ERROR` handlers is limited; top-level handlers are supported.

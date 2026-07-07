@@ -127,6 +127,13 @@ pub struct Interpreter {
     array_dim_info: HashMap<String, Vec<(i64, i64)>>,
     /// DEFSTR letters: untyped variables starting with these default to STRING.
     def_str_letters: [bool; 26],
+    /// Letters covered by any DEFtype statement (numeric or string). Used for OPTION EXPLICIT.
+    def_typed_letters: [bool; 26],
+    /// True when OPTION EXPLICIT has been executed; undeclared variable references become errors.
+    option_explicit: bool,
+    /// Overrides for DATE$ and TIME$ pseudo-variables (set by assignment).
+    date_override: Option<String>,
+    time_override: Option<String>,
     /// Classic ON ERROR handler target (None = no handler / disabled).
     on_error_label: Option<Label>,
     /// Most recent BASIC error code (ERR) and line (ERL).
@@ -200,6 +207,10 @@ impl Interpreter {
             last_det: 0.0,
             array_dim_info: HashMap::new(),
             def_str_letters: [false; 26],
+            def_typed_letters: [false; 26],
+            option_explicit: false,
+            date_override: None,
+            time_override: None,
             on_error_label: None,
             err_code: 0,
             err_line: 0,
@@ -493,10 +504,15 @@ impl Interpreter {
                 self.env.borrow_mut().set(name, Value::Str(new_s));
                 Ok(ControlFlow::Normal)
             }
-            Stmt::Dim(decls) => self.exec_dim(decls),
+            Stmt::Dim { decls, shared } => self.exec_dim(decls, *shared),
             Stmt::Const { name, value } => {
+                self.env.borrow_mut().declare_var(name);
                 let val = self.eval_expr(value)?;
                 self.env.borrow_mut().define_const(name, val)?;
+                Ok(ControlFlow::Normal)
+            }
+            Stmt::OptionExplicit => {
+                self.option_explicit = true;
                 Ok(ControlFlow::Normal)
             }
             Stmt::Input(input) => {
@@ -514,6 +530,7 @@ impl Interpreter {
                     .trim_end_matches('\n')
                     .trim_end_matches('\r')
                     .to_string();
+                self.require_declared(&var.name)?;
                 self.env.borrow_mut().set(&var.name, Value::Str(line));
                 Ok(ControlFlow::Normal)
             }
@@ -570,6 +587,8 @@ impl Interpreter {
             }
             Stmt::Call { name, args } => self.exec_sub_call(name, args),
             Stmt::Swap { a, b } => {
+                self.require_declared(&a.name)?;
+                self.require_declared(&b.name)?;
                 let va = self
                     .env
                     .borrow()
@@ -685,6 +704,7 @@ impl Interpreter {
                     for c in s..=e {
                         if c.is_ascii_uppercase() {
                             self.def_str_letters[(c - b'A') as usize] = *is_string;
+                            self.def_typed_letters[(c - b'A') as usize] = true;
                         }
                     }
                 }
@@ -726,6 +746,38 @@ impl Interpreter {
                 let new_path = self.eval_expr(new)?.to_string_val()?;
                 std::fs::rename(&old_path, &new_path)
                     .map_err(|e| RuntimeError::from_io("NAME", e))?;
+                Ok(ControlFlow::Normal)
+            }
+            Stmt::Environ(expr) => {
+                let s = self.eval_expr(expr)?.to_string_val()?;
+                if let Some(pos) = s.find('=') {
+                    let name = &s[..pos];
+                    let value = &s[pos + 1..];
+                    if name.is_empty() {
+                        return Err(RuntimeError::IllegalFunctionCall {
+                            msg: "ENVIRON: empty variable name".into(),
+                        });
+                    }
+                    // SAFETY: env var mutation is unsafe in current Rust; this is the
+                    // intended effect of the ENVIRON statement.
+                    unsafe { std::env::set_var(name, value) };
+                } else {
+                    return Err(RuntimeError::IllegalFunctionCall {
+                        msg: "ENVIRON: expected \"name=value\"".into(),
+                    });
+                }
+                Ok(ControlFlow::Normal)
+            }
+            Stmt::DateAssign(expr) => {
+                let s = self.eval_expr(expr)?.to_string_val()?;
+                Self::validate_date_format(&s)?;
+                self.date_override = Some(s);
+                Ok(ControlFlow::Normal)
+            }
+            Stmt::TimeAssign(expr) => {
+                let s = self.eval_expr(expr)?.to_string_val()?;
+                Self::validate_time_format(&s)?;
+                self.time_override = Some(s);
                 Ok(ControlFlow::Normal)
             }
 
@@ -810,7 +862,19 @@ impl Interpreter {
 
             Stmt::Shared(vars) => {
                 for var in vars {
+                    self.env.borrow_mut().declare_var(&var.name);
                     self.env.borrow_mut().shared_vars.insert(var.name.clone());
+                }
+                Ok(ControlFlow::Normal)
+            }
+            Stmt::Common { names, shared: _ } => {
+                // CHAIN is not supported, so plain COMMON and COMMON SHARED are
+                // treated identically: both declare module-level variables that are
+                // visible inside procedures. The parsed `shared` flag is retained for
+                // syntax fidelity but does not change runtime behavior.
+                for name in names {
+                    self.env.borrow_mut().declare_var(name);
+                    self.env.borrow_mut().shared_vars.insert(name.clone());
                 }
                 Ok(ControlFlow::Normal)
             }
@@ -818,6 +882,7 @@ impl Interpreter {
             Stmt::Static(decls) => {
                 // Mark variables as static and initialize with defaults if not already loaded
                 for decl in decls {
+                    self.env.borrow_mut().declare_var(&decl.name);
                     if self.env.borrow().get(&decl.name).is_none() {
                         let default = Value::default_for(Self::resolve_decl_type(decl));
                         self.env.borrow_mut().set(&decl.name, default);
@@ -973,16 +1038,22 @@ impl Interpreter {
                 .map(|e| self.eval_expr(e).and_then(|v| v.to_i64()))
                 .collect::<Result<Vec<_>, _>>()?;
             let key = Self::array_key(name, &idx_vals);
+            self.require_declared(name)?;
             self.env.borrow_mut().set(&key, val);
             return Ok(ControlFlow::Normal);
         }
+        self.require_declared(&var.name)?;
         let val = self.eval_expr(expr)?;
         self.env.borrow_mut().set(&var.name, val);
         Ok(ControlFlow::Normal)
     }
 
-    fn exec_dim(&mut self, decls: &[DimDecl]) -> Result<ControlFlow, RuntimeError> {
+    fn exec_dim(&mut self, decls: &[DimDecl], shared: bool) -> Result<ControlFlow, RuntimeError> {
         for decl in decls {
+            self.env.borrow_mut().declare_var(&decl.name);
+            if shared {
+                self.env.borrow_mut().shared_vars.insert(decl.name.clone());
+            }
             let resolved = Self::resolve_decl_type(decl);
             // Store dimension metadata for MAT operations
             if let Some(dims) = &decl.dimensions {
@@ -1033,6 +1104,7 @@ impl Interpreter {
                 DataItem::Number(n) => Value::Numeric(*n),
                 DataItem::Str(s) => Value::Str(s.clone()),
             };
+            self.require_declared(&var.name)?;
             self.env.borrow_mut().set(&var.name, val);
         }
         Ok(ControlFlow::Normal)
@@ -1044,6 +1116,7 @@ impl Interpreter {
         preserve: bool,
     ) -> Result<ControlFlow, RuntimeError> {
         for decl in decls {
+            self.env.borrow_mut().declare_var(&decl.name);
             if !preserve {
                 let prefix = format!("{}_", decl.name);
                 let keys: Vec<String> = self
@@ -1236,6 +1309,7 @@ impl Interpreter {
             }
 
             for (var, part) in input.vars.iter().zip(parts.iter()) {
+                self.require_declared(&var.name)?;
                 let val = if var.name.ends_with('$') {
                     Value::Str(part.to_string())
                 } else {
@@ -1306,6 +1380,7 @@ impl Interpreter {
 
         let step_val = step.to_f64()?;
         let end_val = end.to_f64()?;
+        self.env.borrow_mut().declare_var(&for_stmt.var.name);
         self.env.borrow_mut().set(&for_stmt.var.name, start);
 
         loop {
@@ -1541,6 +1616,7 @@ impl Interpreter {
 
             let child_env = Environment::new_child(self.env.clone());
             for (param, val) in sub.params.iter().zip(args.iter()) {
+                child_env.borrow_mut().declare_var(&param.name);
                 child_env.borrow_mut().set(&param.name, val.clone());
             }
 
@@ -1617,6 +1693,45 @@ impl Interpreter {
 
     // ==================== Expression evaluation ====================
 
+    fn require_declared(&self, name: &str) -> Result<(), RuntimeError> {
+        if !self.option_explicit {
+            return Ok(());
+        }
+        if self.is_declared(name) {
+            return Ok(());
+        }
+        Err(RuntimeError::General {
+            msg: format!("Variable '{}' is not declared (OPTION EXPLICIT)", name),
+        })
+    }
+
+    fn is_declared(&self, name: &str) -> bool {
+        {
+            let env = self.env.borrow();
+            // Explicit declarations in the current scope, or a module-level
+            // variable made visible here via SHARED/COMMON, or a constant.
+            if env.is_declared(name) || env.is_shared(name) || env.is_const(name) {
+                return true;
+            }
+        }
+        // Type suffix declares the variable by use.
+        if Self::has_type_suffix(name) {
+            return true;
+        }
+        // DEFtype letter range declares variables starting with that letter.
+        if let Some(first) = name.chars().next() {
+            let up = first.to_ascii_uppercase();
+            if up.is_ascii_alphabetic() && self.def_typed_letters[(up as u8 - b'A') as usize] {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn has_type_suffix(name: &str) -> bool {
+        name.ends_with(['$', '%', '!', '#', '&'])
+    }
+
     pub fn eval_expr(&mut self, expr: &Expr) -> Result<Value, RuntimeError> {
         match expr {
             Expr::NumericLit(n) => Ok(Value::Numeric(*n)),
@@ -1626,6 +1741,7 @@ impl Interpreter {
                 if let Some(val) = self.env.borrow().get(&var.name) {
                     Ok(val)
                 } else {
+                    self.require_declared(&var.name)?;
                     // Some 0-arg builtins are commonly used like variables in BASIC (e.g. DATE$, TIME$).
                     // Resolve those before default variable auto-initialization.
                     let builtin_name = &var.name;
@@ -1659,12 +1775,39 @@ impl Interpreter {
                         ));
                     }
 
-                    let is_implicit_builtin =
-                        matches!(builtin_name.as_str(), "DATE$" | "TIME$" | "TIMER");
+                    if builtin_name == "DATE$" {
+                        return Ok(Value::Str(self.date_override.clone().unwrap_or_else(
+                            || {
+                                crate::builtins::builtin_date(&[])
+                                    .unwrap()
+                                    .to_string_val()
+                                    .unwrap()
+                            },
+                        )));
+                    }
+                    if builtin_name == "TIME$" {
+                        return Ok(Value::Str(self.time_override.clone().unwrap_or_else(
+                            || {
+                                crate::builtins::builtin_time(&[])
+                                    .unwrap()
+                                    .to_string_val()
+                                    .unwrap()
+                            },
+                        )));
+                    }
+
+                    let is_implicit_builtin = matches!(builtin_name.as_str(), "TIMER");
                     if is_implicit_builtin
                         && let Some(result) = self.builtins.call(builtin_name, &[])?
                     {
                         return Ok(result);
+                    }
+
+                    // A 0-argument user-defined function may be referenced without parentheses.
+                    if let Some(func) = self.functions.get(builtin_name).cloned() {
+                        if func.params.is_empty() {
+                            return self.call_user_function(&func, &[], &[]);
+                        }
                     }
 
                     let default = self.default_for_var(&var.name);
@@ -2068,6 +2211,7 @@ impl Interpreter {
 
         // Bind parameters
         for (param, val) in func.params.iter().zip(args.iter()) {
+            child_env.borrow_mut().declare_var(&param.name);
             child_env.borrow_mut().set(&param.name, val.clone());
         }
 
@@ -2083,6 +2227,7 @@ impl Interpreter {
         }
 
         // Initialize function return variable
+        child_env.borrow_mut().declare_var(&func.name);
         let return_default = if func.name.ends_with('$') {
             Value::Str(String::new())
         } else {
@@ -2289,6 +2434,91 @@ impl Interpreter {
         !name.ends_with(['$', '%', '!', '#', '&'])
     }
 
+    fn validate_date_format(s: &str) -> Result<(), RuntimeError> {
+        // Accept MM-DD-YYYY or MM/DD/YYYY (QBasic allows both separators).
+        let s = s.trim();
+        if s.len() != 10 {
+            return Err(RuntimeError::IllegalFunctionCall {
+                msg: format!("DATE$: invalid date format '{}'", s),
+            });
+        }
+        let sep1 = s.chars().nth(2);
+        let sep2 = s.chars().nth(5);
+        if sep1 != sep2 || !matches!(sep1, Some('-') | Some('/')) {
+            return Err(RuntimeError::IllegalFunctionCall {
+                msg: format!("DATE$: invalid date format '{}'", s),
+            });
+        }
+        let parts: Vec<&str> = s.split(|c: char| c == '-' || c == '/').collect();
+        if parts.len() != 3 {
+            return Err(RuntimeError::IllegalFunctionCall {
+                msg: format!("DATE$: invalid date format '{}'", s),
+            });
+        }
+        let month: u32 = parts[0]
+            .parse()
+            .map_err(|_| RuntimeError::IllegalFunctionCall {
+                msg: format!("DATE$: invalid month '{}'", parts[0]),
+            })?;
+        let day: u32 = parts[1]
+            .parse()
+            .map_err(|_| RuntimeError::IllegalFunctionCall {
+                msg: format!("DATE$: invalid day '{}'", parts[1]),
+            })?;
+        let year: u32 = parts[2]
+            .parse()
+            .map_err(|_| RuntimeError::IllegalFunctionCall {
+                msg: format!("DATE$: invalid year '{}'", parts[2]),
+            })?;
+        if !(1..=12).contains(&month) || !(1..=31).contains(&day) || !(0..=9999).contains(&year) {
+            return Err(RuntimeError::IllegalFunctionCall {
+                msg: format!("DATE$: invalid date '{}'", s),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_time_format(s: &str) -> Result<(), RuntimeError> {
+        let s = s.trim();
+        if s.len() != 8 {
+            return Err(RuntimeError::IllegalFunctionCall {
+                msg: format!("TIME$: invalid time format '{}'", s),
+            });
+        }
+        if s.chars().nth(2) != Some(':') || s.chars().nth(5) != Some(':') {
+            return Err(RuntimeError::IllegalFunctionCall {
+                msg: format!("TIME$: invalid time format '{}'", s),
+            });
+        }
+        let parts: Vec<&str> = s.split(':').collect();
+        if parts.len() != 3 {
+            return Err(RuntimeError::IllegalFunctionCall {
+                msg: format!("TIME$: invalid time format '{}'", s),
+            });
+        }
+        let hour: u32 = parts[0]
+            .parse()
+            .map_err(|_| RuntimeError::IllegalFunctionCall {
+                msg: format!("TIME$: invalid hour '{}'", parts[0]),
+            })?;
+        let minute: u32 = parts[1]
+            .parse()
+            .map_err(|_| RuntimeError::IllegalFunctionCall {
+                msg: format!("TIME$: invalid minute '{}'", parts[1]),
+            })?;
+        let second: u32 = parts[2]
+            .parse()
+            .map_err(|_| RuntimeError::IllegalFunctionCall {
+                msg: format!("TIME$: invalid second '{}'", parts[2]),
+            })?;
+        if hour >= 24 || minute >= 60 || second >= 60 {
+            return Err(RuntimeError::IllegalFunctionCall {
+                msg: format!("TIME$: invalid time '{}'", s),
+            });
+        }
+        Ok(())
+    }
+
     /// Build a flattened key for array element access (temporary hack until
     /// proper array storage is implemented).
     fn array_key(name: &str, indices: &[i64]) -> String {
@@ -2303,6 +2533,12 @@ impl Interpreter {
     fn get_or_init_array_element(&mut self, name: &str, key: &str) -> Result<Value, RuntimeError> {
         if let Some(v) = self.env.borrow().get(key) {
             return Ok(v);
+        }
+        // Under OPTION EXPLICIT, arrays must be dimensioned before use.
+        if self.option_explicit && !self.is_declared(name) {
+            return Err(RuntimeError::General {
+                msg: format!("Array '{}' is not declared (OPTION EXPLICIT)", name),
+            });
         }
         if let Some(type_name) = self.array_type_map.get(name).cloned() {
             let record = self.create_default_record(&type_name)?;
@@ -3361,6 +3597,7 @@ impl Interpreter {
         }
 
         for (i, var) in fi.vars.iter().enumerate() {
+            self.require_declared(&var.name)?;
             let field = fields.get(i).cloned().unwrap_or_default();
             let val = if var.name.ends_with('$') {
                 Value::Str(field)

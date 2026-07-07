@@ -59,6 +59,19 @@ count = 0
 total = 0.0
 ```
 
+### OPTION EXPLICIT
+
+Require every variable to be explicitly declared before use. A variable is considered declared when it appears in `DIM`, `REDIM`, `SHARED`, `STATIC`, `COMMON`, `CONST`, a `DEFtype` letter range, a type suffix, a procedure parameter list, or a `FOR` loop variable.
+
+```basic
+OPTION EXPLICIT
+DIM x AS NUMERIC
+x = 10
+' y = 20   ' would raise an error — Y is not declared
+```
+
+`OPTION EXPLICIT` is a global directive; once enabled, it applies to the whole program.
+
 ### DIM
 
 Explicitly declare variables and arrays:
@@ -89,6 +102,22 @@ The `LET` keyword is optional for assignment:
 LET x = 10   ' Explicit LET
 x = 10       ' Same thing
 ```
+
+### COMMON
+
+Declare variables as shared across the module. `COMMON` and `COMMON SHARED` are equivalent in RICE BASIC.
+
+```basic
+COMMON SHARED total, count
+DIM total AS NUMERIC
+DIM count AS NUMERIC
+
+SUB AddToTotal(n AS NUMERIC)
+    total = total + n
+END SUB
+```
+
+`CHAIN` is not supported; `COMMON` is provided for single-source shared-state declarations.
 
 ### SWAP
 
@@ -500,6 +529,16 @@ ANSI Full BASIC also supports colon slicing as an alternative to LEFT$/MID$/RIGH
 | `DATE$`        | Current date string (MM-DD-YYYY)     | `"03-08-2026"`           |
 | `TIME$`        | Current time string (HH:MM:SS)      | `"14:30:45"`             |
 | `ENVIRON$(s)`  | Get environment variable             | `ENVIRON$("PATH")`      |
+
+`DATE$` and `TIME$` can be assigned to override the values returned by subsequent reads (the host clock is not changed):
+
+```basic
+DATE$ = "12-25-2024"
+TIME$ = "14:30:00"
+PRINT DATE$; " "; TIME$
+```
+
+`ENVIRON "name=value"` sets an environment variable.
 | `CURDIR$`      | Current working directory            | `CURDIR$`                 |
 | `COMMAND$`     | Command-line tail                    | `COMMAND$`                |
 | `FREEFILE`     | Next available file number           | `1`                      |

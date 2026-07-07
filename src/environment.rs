@@ -16,6 +16,9 @@ pub struct Environment {
     labels: HashMap<String, usize>,
     pub option_base: i32,
     pub shared_vars: HashSet<String>,
+    // Names explicitly declared in this scope (DIM, SHARED, STATIC, CONST, etc.).
+    // Used when OPTION EXPLICIT is enabled.
+    declared_vars: HashSet<String>,
 }
 
 impl Environment {
@@ -27,6 +30,7 @@ impl Environment {
             labels: HashMap::new(),
             option_base: 1,
             shared_vars: HashSet::new(),
+            declared_vars: HashSet::new(),
         }))
     }
 
@@ -39,6 +43,7 @@ impl Environment {
             labels: HashMap::new(),
             option_base,
             shared_vars: HashSet::new(),
+            declared_vars: HashSet::new(),
         }))
     }
 
@@ -68,8 +73,8 @@ impl Environment {
         if self.constants.contains_key(key) || self.is_const_in_parents(key) {
             return; // Constant cannot be reassigned
         }
-        // If variable is shared, write to root
-        if self.shared_vars.contains(key)
+        // If variable is shared in this scope or any ancestor, write to root
+        if (self.shared_vars.contains(key) || self.is_shared_in_ancestors(key))
             && let Some(parent) = &self.parent
         {
             Self::set_in_root(parent, key, value);
@@ -83,7 +88,27 @@ impl Environment {
             return Err(RuntimeError::DuplicateDefinition { name: name.into() });
         }
         self.constants.insert(name.to_string(), value);
+        self.declared_vars.insert(name.to_string());
         Ok(())
+    }
+
+    pub fn declare_var(&mut self, name: &str) {
+        self.declared_vars.insert(name.to_string());
+    }
+
+    pub fn is_declared(&self, name: &str) -> bool {
+        self.declared_vars.contains(name)
+    }
+
+    /// True if the variable is shared in this scope or any ancestor scope
+    /// (e.g. via SHARED or COMMON), so it resolves to a module-level variable.
+    pub fn is_shared(&self, name: &str) -> bool {
+        self.shared_vars.contains(name) || self.is_shared_in_ancestors(name)
+    }
+
+    /// True if the name is a constant defined in this scope or any ancestor scope.
+    pub fn is_const(&self, name: &str) -> bool {
+        self.constants.contains_key(name) || self.is_const_in_parents(name)
     }
 
     pub fn register_label(&mut self, label: &Label, index: usize) {
@@ -121,6 +146,18 @@ impl Environment {
                 return true;
             }
             p.is_const_in_parents(key)
+        } else {
+            false
+        }
+    }
+
+    fn is_shared_in_ancestors(&self, key: &str) -> bool {
+        if let Some(parent) = &self.parent {
+            let p = parent.borrow();
+            if p.shared_vars.contains(key) {
+                return true;
+            }
+            p.is_shared_in_ancestors(key)
         } else {
             false
         }

@@ -1467,3 +1467,156 @@ CLOSE #1
     );
     assert_eq!(output, "4\n2\n32767\n");
 }
+
+#[test]
+fn test_option_explicit() {
+    let output = run_file("tests/programs/option_explicit.bas");
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines[0], "5");
+    assert_eq!(lines[1], "10");
+    assert_eq!(lines[2], "10");
+    assert_eq!(lines[3], "hello");
+    assert_eq!(lines[4], "6");
+}
+
+#[test]
+fn test_option_explicit_undeclared() {
+    let (_output, result) = run_bas_may_fail(
+        r#"
+OPTION EXPLICIT
+x = 5
+PRINT x
+"#,
+    );
+    assert!(result.is_err(), "undeclared variable should fail");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("Variable 'X' is not declared"),
+        "error should name the variable: {}",
+        err
+    );
+}
+
+#[test]
+fn test_option_explicit_dim_shared_in_sub() {
+    // A module-level DIM SHARED variable must be usable inside a procedure
+    // without a per-procedure SHARED statement, even under OPTION EXPLICIT.
+    let output = run_bas(
+        r#"
+OPTION EXPLICIT
+DIM SHARED x AS INTEGER
+x = 5
+CALL Foo
+PRINT x
+
+SUB Foo
+    x = x + 10
+END SUB
+"#,
+    );
+    assert_eq!(output, "15\n");
+}
+
+#[test]
+fn test_option_explicit_common_shared_in_sub() {
+    let output = run_bas(
+        r#"
+OPTION EXPLICIT
+COMMON SHARED total
+DIM total AS INTEGER
+total = 1
+CALL Bump
+PRINT total
+
+SUB Bump
+    total = total + 41
+END SUB
+"#,
+    );
+    assert_eq!(output, "42\n");
+}
+
+#[test]
+fn test_environ_statement() {
+    // Use a unique name to avoid pre-existing environment interference.
+    let key = "RICE_ENVIRON_TEST_VAR";
+    let output = run_bas(&format!(
+        r#"
+ENVIRON "{}=hello world"
+PRINT ENVIRON$("{}")
+ENVIRON "{}=goodbye"
+PRINT ENVIRON$("{}")
+"#,
+        key, key, key, key
+    ));
+    assert_eq!(output, "hello world\ngoodbye\n");
+}
+
+#[test]
+fn test_environ_statement_invalid() {
+    let (_output, result) = run_bas_may_fail(r#"ENVIRON "no equals sign""#);
+    assert!(result.is_err(), "ENVIRON without = should fail");
+}
+
+#[test]
+fn test_date_time_assign() {
+    let output = run_bas(
+        r#"
+DATE$ = "12-25-2024"
+TIME$ = "14:30:15"
+PRINT DATE$
+PRINT TIME$
+DATE$ = "01/01/2000"
+PRINT DATE$
+"#,
+    );
+    assert_eq!(output, "12-25-2024\n14:30:15\n01/01/2000\n");
+}
+
+#[test]
+fn test_date_time_assign_invalid() {
+    let (_output, result) = run_bas_may_fail(r#"DATE$ = "not-a-date""#);
+    assert!(result.is_err(), "invalid DATE$ should fail");
+    let (_output, result) = run_bas_may_fail(r#"TIME$ = "25:00:00""#);
+    assert!(result.is_err(), "invalid TIME$ should fail");
+}
+
+#[test]
+fn test_common_shared() {
+    let output = run_bas(
+        r#"
+COMMON SHARED x, y
+DIM x AS INTEGER
+DIM y AS INTEGER
+x = 10
+y = 20
+CALL Modify
+PRINT x
+PRINT y
+
+SUB Modify
+    x = x + 20
+    y = y + 20
+END SUB
+"#,
+    );
+    assert_eq!(output, "30\n40\n");
+}
+
+#[test]
+fn test_common_without_shared() {
+    let output = run_bas(
+        r#"
+COMMON z
+DIM z AS INTEGER
+z = 5
+CALL IncZ
+PRINT z
+
+SUB IncZ
+    z = z + 10
+END SUB
+"#,
+    );
+    assert_eq!(output, "15\n");
+}

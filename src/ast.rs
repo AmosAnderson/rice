@@ -50,7 +50,10 @@ pub enum Stmt {
         len: Option<Expr>,
         expr: Expr,
     },
-    Dim(Vec<DimDecl>),
+    Dim {
+        decls: Vec<DimDecl>,
+        shared: bool,
+    },
     Const {
         name: String,
         value: Expr,
@@ -104,6 +107,7 @@ pub enum Stmt {
     },
     Erase(Vec<String>),
     OptionBase(i32),
+    OptionExplicit,
     Swap {
         a: Variable,
         b: Variable,
@@ -158,6 +162,9 @@ pub enum Stmt {
         old: Expr,
         new: Expr,
     },
+    Environ(Expr),
+    DateAssign(Expr),
+    TimeAssign(Expr),
     Kill(Expr),
     Mkdir(Expr),
     Rmdir(Expr),
@@ -169,6 +176,10 @@ pub enum Stmt {
     // Scope
     Shared(Vec<Variable>),
     Static(Vec<DimDecl>),
+    Common {
+        names: Vec<String>,
+        shared: bool,
+    },
 
     // User-defined types
     TypeDef {

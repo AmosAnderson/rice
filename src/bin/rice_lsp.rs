@@ -189,7 +189,7 @@ fn collect_symbols(
             Stmt::Let { var, .. } => {
                 add_variable(syms, var, ls.line, seen_vars);
             }
-            Stmt::Dim(decls) | Stmt::Redim { decls, .. } => {
+            Stmt::Dim { decls, .. } | Stmt::Redim { decls, .. } => {
                 let tag = if matches!(&ls.stmt, Stmt::Redim { .. }) {
                     "REDIM"
                 } else {
@@ -294,6 +294,7 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("CONST", "Declare a constant"),
         ("SWAP", "Swap two variables"),
         ("OPTION BASE", "Set default array lower bound"),
+        ("OPTION EXPLICIT", "Require variable declarations"),
         ("OPTION DIALECT", "Select ANSI or QBasic compatibility mode"),
         ("REDIM", "Redimension an array"),
         ("ERASE", "Erase an array"),
@@ -394,6 +395,7 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("CHDIR", "Change current directory"),
         ("CHDRIVE", "Change current drive"),
         ("FILES", "List directory entries"),
+        ("ENVIRON", "Set an environment variable"),
         // Console
         ("CLS", "Clear the screen"),
         ("LOCATE", "Move cursor to row, column"),
@@ -580,8 +582,16 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
             "```basic\nEXP(n)\n```\nReturns e raised to the power `n`.",
         ),
         (
-            "LOG",
-            "```basic\nLOG(n)\n```\nReturns the natural logarithm of `n`.",
+            "TIME$",
+            "```basic\nTIME$\n```\nReturns the current time as HH:MM:SS.",
+        ),
+        (
+            "DATE$ =",
+            "```basic\nDATE$ = \"MM-DD-YYYY\"\n```\nSets the value returned by subsequent DATE$ reads (does not change the host clock).",
+        ),
+        (
+            "TIME$ =",
+            "```basic\nTIME$ = \"HH:MM:SS\"\n```\nSets the value returned by subsequent TIME$ reads (does not change the host clock).",
         ),
         (
             "RND",
@@ -743,6 +753,10 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
             "```basic\nENVIRON$(name$)\n```\nReturns the value of the environment variable `name$`.",
         ),
         (
+            "ENVIRON",
+            "```basic\nENVIRON \"name=value\"\n```\nSets the environment variable `name` to `value`.",
+        ),
+        (
             "CURDIR$",
             "```basic\nCURDIR$\n```\nReturns the current working directory.",
         ),
@@ -861,6 +875,10 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         (
             "OPTION BASE",
             "```basic\nOPTION BASE {0|1}\n```\nSets the default lower bound for arrays. Default is 1.",
+        ),
+        (
+            "OPTION EXPLICIT",
+            "```basic\nOPTION EXPLICIT\n```\nRequires every variable to be declared (DIM, SHARED, STATIC, CONST, type suffix, or DEFtype) before use.",
         ),
         (
             "OPTION DIALECT",
@@ -1207,7 +1225,9 @@ fn token_name(tok: &rice::token::Token) -> Option<String> {
         rice::token::Token::KwRedim => Some("REDIM".into()),
         rice::token::Token::KwErase => Some("ERASE".into()),
         rice::token::Token::KwOption => Some("OPTION".into()),
+        rice::token::Token::KwExplicit => Some("EXPLICIT".into()),
         rice::token::Token::KwRandomize => Some("RANDOMIZE".into()),
+        rice::token::Token::KwTimer => Some("TIMER".into()),
         rice::token::Token::KwSystem => Some("SYSTEM".into()),
         rice::token::Token::KwStop => Some("STOP".into()),
         rice::token::Token::KwAnd => Some("AND".into()),

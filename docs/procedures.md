@@ -211,6 +211,23 @@ CALL AddToTotal(50)
 PRINT total    ' 150
 ```
 
+### COMMON
+
+Declare module-level variables that are automatically accessible inside procedures without needing `SHARED` in each sub or function:
+
+```basic
+COMMON SHARED total, count
+DIM total AS NUMERIC
+DIM count AS NUMERIC
+
+SUB Increment
+    total = total + 1
+    count = count + 1
+END SUB
+```
+
+`CHAIN` is not supported; `COMMON` is provided for single-source shared-state declarations.
+
 ### STATIC Variables
 
 Variables declared `STATIC` retain their values between calls:

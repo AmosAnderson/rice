@@ -277,6 +277,7 @@ fn keyword_name(token: &Token) -> &'static str {
         Token::KwPreserve => "PRESERVE",
         Token::KwOption => "OPTION",
         Token::KwBase => "BASE",
+        Token::KwExplicit => "EXPLICIT",
         Token::KwSwap => "SWAP",
         Token::KwEndSub => "END SUB",
         Token::KwEndFunction => "END FUNCTION",

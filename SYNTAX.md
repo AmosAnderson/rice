@@ -67,6 +67,11 @@ name$ = "Alice"
 DIM count AS NUMERIC
 DIM message AS STRING
 
+' Require explicit declarations
+OPTION EXPLICIT
+DIM x AS NUMERIC
+x = 10
+
 ' Constants (cannot be changed after definition)
 CONST PI = 3.14159
 CONST MAX_SIZE = 100
@@ -319,6 +324,25 @@ Labels can be names (followed by `:`) or line numbers:
 ```
 
 ---
+
+## Scope
+
+### COMMON
+
+Declare module-level variables that are accessible inside procedures without a per-procedure `SHARED` statement:
+
+```basic
+COMMON SHARED total, count
+DIM total AS NUMERIC
+DIM count AS NUMERIC
+
+SUB Increment
+    total = total + 1
+    count = count + 1
+END SUB
+```
+
+`CHAIN` is not supported.
 
 ## Procedures
 
@@ -660,11 +684,20 @@ For substring operations, ANSI-style code should prefer colon slicing such as `A
 | `TIME$`   | Current time as HH:MM:SS                 |
 | `TIMER`   | Seconds elapsed since midnight           |
 
+`DATE$` and `TIME$` can be assigned to override the values returned by subsequent reads (the host clock is unchanged):
+
+```basic
+DATE$ = "12-25-2024"
+TIME$ = "14:30:00"
+PRINT DATE$; " "; TIME$
+```
+
 ### System Functions
 
 | Function        | Description                              |
 |-----------------|------------------------------------------|
 | `ENVIRON$(s$)`  | Get environment variable value           |
+| `ENVIRON s$`    | Set environment variable (e.g. `ENVIRON "PATH=/bin"`) |
 | `CURDIR$`       | Current working directory                |
 | `COMMAND$`      | Program command-line tail                |
 | `FREEFILE`      | Next available file number               |

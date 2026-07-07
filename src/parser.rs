@@ -160,6 +160,9 @@ impl Parser {
                         });
                     }
                 }
+                if let Some(Token::KwExplicit) = self.peek_at(1) {
+                    return self.parse_option_explicit();
+                }
                 self.parse_option_base()
             }
             Token::KwSwap => self.parse_swap(),
@@ -371,12 +374,9 @@ impl Parser {
             // CHAIN/COMMON
             Token::KwChain => Err(ParseError::General {
                 line: self.current_line(),
-                msg: "CHAIN is not supported in ANSI BASIC".into(),
+                msg: "CHAIN is not supported".into(),
             }),
-            Token::KwCommon => Err(ParseError::General {
-                line: self.current_line(),
-                msg: "COMMON is not supported in ANSI BASIC".into(),
-            }),
+            Token::KwCommon => self.parse_common(),
             Token::KwField => self.parse_field(),
             // SET #n: POINTER expr
             Token::KwSet => self.parse_set_pointer(),
@@ -433,6 +433,11 @@ impl Parser {
                             found: format!("{:?}", self.peek()),
                         });
                     }
+                }
+                if let Some(Token::Identifier(id2)) = self.peek_at(1)
+                    && id2 == "EXPLICIT"
+                {
+                    return self.parse_option_explicit();
                 }
                 self.parse_assignment_or_call()
             }
@@ -582,6 +587,17 @@ impl Parser {
     fn parse_assignment(&mut self) -> Result<Stmt, ParseError> {
         let var = self.parse_variable()?;
 
+        // Special QBasic pseudo-variable assignments
+        if var.name == "DATE$" || var.name == "TIME$" {
+            self.expect(Token::Equal)?;
+            let expr = self.parse_expr()?;
+            return if var.name == "DATE$" {
+                Ok(Stmt::DateAssign(expr))
+            } else {
+                Ok(Stmt::TimeAssign(expr))
+            };
+        }
+
         // Check for string slice assignment: LET name$(start:end) = expr
         if matches!(self.peek(), Token::LeftParen) {
             let save = self.pos;
@@ -674,6 +690,23 @@ impl Parser {
         }
 
         self.advance();
+
+        // ENVIRON statement: ENVIRON "name=value" (not a function call)
+        if name == "ENVIRON" && !matches!(self.peek(), Token::LeftParen) {
+            let expr = self.parse_expr()?;
+            return Ok(Stmt::Environ(expr));
+        }
+
+        // Special QBasic pseudo-variable assignments DATE$ = ... / TIME$ = ...
+        if (name == "DATE$" || name == "TIME$") && matches!(self.peek(), Token::Equal) {
+            self.advance(); // consume =
+            let expr = self.parse_expr()?;
+            return if name == "DATE$" {
+                Ok(Stmt::DateAssign(expr))
+            } else {
+                Ok(Stmt::TimeAssign(expr))
+            };
+        }
 
         // Check for array assignment, string slice assignment, or sub call with parens: name(...)
         if matches!(self.peek(), Token::LeftParen) {
@@ -793,14 +826,13 @@ impl Parser {
         } else {
             false
         };
-        let _ = shared; // DIM SHARED parsed but not yet distinguished from DIM
 
         let mut decls = vec![self.parse_dim_decl()?];
         while matches!(self.peek(), Token::Comma) {
             self.advance();
             decls.push(self.parse_dim_decl()?);
         }
-        Ok(Stmt::Dim(decls))
+        Ok(Stmt::Dim { decls, shared })
     }
 
     fn parse_dim_decl(&mut self) -> Result<DimDecl, ParseError> {
@@ -1503,6 +1535,12 @@ impl Parser {
         Ok(Stmt::Erase(names))
     }
 
+    fn parse_option_explicit(&mut self) -> Result<Stmt, ParseError> {
+        self.advance(); // consume OPTION
+        self.expect(Token::KwExplicit)?;
+        Ok(Stmt::OptionExplicit)
+    }
+
     fn parse_option_base(&mut self) -> Result<Stmt, ParseError> {
         self.advance(); // consume OPTION (BASE was consumed by compound keyword)
         if matches!(self.peek(), Token::KwBase) {
@@ -1988,6 +2026,38 @@ impl Parser {
         Ok(Stmt::Static(decls))
     }
 
+    fn parse_common(&mut self) -> Result<Stmt, ParseError> {
+        self.advance(); // consume COMMON
+        let shared = if matches!(self.peek(), Token::KwShared) {
+            self.advance();
+            true
+        } else {
+            false
+        };
+        let mut names = vec![self.parse_common_name()?];
+        while matches!(self.peek(), Token::Comma) {
+            self.advance();
+            names.push(self.parse_common_name()?);
+        }
+        Ok(Stmt::Common { names, shared })
+    }
+
+    fn parse_common_name(&mut self) -> Result<String, ParseError> {
+        let name = self.expect_identifier()?;
+        // Optional array placeholder: name()
+        if matches!(self.peek(), Token::LeftParen) {
+            self.advance();
+            // COMMON only declares bounds via DIM elsewhere, so () must be empty here.
+            self.expect(Token::RightParen)?;
+        }
+        // Optional AS type clause (ignored for runtime type, but parsed for compatibility)
+        if matches!(self.peek(), Token::KwAs) {
+            self.advance();
+            let _ = self.parse_type_keyword()?;
+        }
+        Ok(name)
+    }
+
     fn parse_type_def(&mut self) -> Result<Stmt, ParseError> {
         self.advance(); // consume TYPE
         let name = self.expect_identifier()?;
@@ -2049,6 +2119,7 @@ impl Parser {
             Token::KwShared => "SHARED",
             Token::KwStatic => "STATIC",
             Token::KwBase => "BASE",
+            Token::KwExplicit => "EXPLICIT",
             Token::KwView => "VIEW",
             Token::KwLocate => "LOCATE",
             _ => return None,

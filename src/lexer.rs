@@ -390,6 +390,7 @@ impl Lexer {
             "PRESERVE" => Token::KwPreserve,
             "OPTION" => Token::KwOption,
             "BASE" => Token::KwBase,
+            "EXPLICIT" => Token::KwExplicit,
             "SWAP" => Token::KwSwap,
             "TYPE" => Token::KwType,
             "DATA" => Token::KwData,

@@ -89,6 +89,7 @@ pub enum Token {
     KwPreserve,
     KwOption,
     KwBase,
+    KwExplicit,
     KwSwap,
     KwEndSub,
     KwEndFunction,

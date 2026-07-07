@@ -1,11 +1,22 @@
 # Multi-Module Programming
 
-Multi-module programming (CHAIN, COMMON) is not supported in RICE BASIC.
+`CHAIN` is not supported in RICE BASIC.
 
-The ANSI X3.113-1991 Full BASIC standard does not include the CHAIN and COMMON statements. Programs should be structured using SUB and FUNCTION procedures within a single source file.
+`COMMON` is supported as a single-source shared-variable declaration. `COMMON [SHARED] name[, name...]` declares module-level variables that are visible inside `SUB` and `FUNCTION` procedures without requiring `SHARED` in each procedure.
+
+```basic
+COMMON SHARED total, count
+DIM total AS NUMERIC
+DIM count AS NUMERIC
+
+SUB Increment
+    total = total + 1
+    count = count + 1
+END SUB
+```
 
 For organizing large programs, use:
 
 - **SUB** and **FUNCTION** definitions to modularize code (see [Procedures and Scope](procedures.md))
-- **SHARED** variables for data accessible across procedures
+- **SHARED** or **COMMON** variables for data accessible across procedures
 - **User-defined types** to group related data (see [User-Defined Types](user-defined-types.md))

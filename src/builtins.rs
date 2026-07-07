@@ -842,12 +842,12 @@ fn builtin_timer(_args: &[Value]) -> Result<Value, RuntimeError> {
     Ok(Value::Numeric(secs_today as f64 + ms as f64 / 1000.0))
 }
 
-fn builtin_date(_args: &[Value]) -> Result<Value, RuntimeError> {
+pub(crate) fn builtin_date(_args: &[Value]) -> Result<Value, RuntimeError> {
     let (year, month, day) = local_date_parts();
     Ok(Value::Str(format!("{:02}-{:02}-{:04}", month, day, year)))
 }
 
-fn builtin_time(_args: &[Value]) -> Result<Value, RuntimeError> {
+pub(crate) fn builtin_time(_args: &[Value]) -> Result<Value, RuntimeError> {
     let (hours, mins, secs, _) = local_time_parts();
     Ok(Value::Str(format!("{:02}:{:02}:{:02}", hours, mins, secs)))
 }
