@@ -17,7 +17,7 @@ cargo run
 ```
 
 ```
-RICE BASIC v0.12.0
+RICE BASIC v0.13.0
 Type SYSTEM or press Ctrl+D to exit.
 Commands: RUN, LIST, NEW, DELETE
 

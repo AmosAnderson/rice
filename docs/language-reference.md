@@ -61,7 +61,7 @@ total = 0.0
 
 ### OPTION EXPLICIT
 
-Require every variable to be explicitly declared before use. A variable is considered declared when it appears in `DIM`, `REDIM`, `SHARED`, `STATIC`, `COMMON`, `CONST`, a `DEFtype` letter range, a type suffix, a procedure parameter list, or a `FOR` loop variable.
+Available in the default QBasic compatibility mode and unavailable in ANSI mode. Require every variable to be explicitly declared before use. A variable is considered declared when it appears in `DIM`, `REDIM`, `SHARED`, `STATIC`, `COMMON`, `CONST`, a `DEFtype` letter range, a type suffix, a procedure parameter list, or a `FOR` loop variable.
 
 ```basic
 OPTION EXPLICIT
@@ -105,7 +105,7 @@ x = 10       ' Same thing
 
 ### COMMON
 
-Declare variables as shared across the module. `COMMON` and `COMMON SHARED` are equivalent in RICE BASIC.
+Available in the default QBasic compatibility mode and unavailable in ANSI mode. Declare variables as shared across the module. `COMMON` and `COMMON SHARED` are equivalent in RICE BASIC.
 
 ```basic
 COMMON SHARED total, count
@@ -529,16 +529,6 @@ ANSI Full BASIC also supports colon slicing as an alternative to LEFT$/MID$/RIGH
 | `DATE$`        | Current date string (MM-DD-YYYY)     | `"03-08-2026"`           |
 | `TIME$`        | Current time string (HH:MM:SS)      | `"14:30:45"`             |
 | `ENVIRON$(s)`  | Get environment variable             | `ENVIRON$("PATH")`      |
-
-`DATE$` and `TIME$` can be assigned to override the values returned by subsequent reads (the host clock is not changed):
-
-```basic
-DATE$ = "12-25-2024"
-TIME$ = "14:30:00"
-PRINT DATE$; " "; TIME$
-```
-
-`ENVIRON "name=value"` sets an environment variable.
 | `CURDIR$`      | Current working directory            | `CURDIR$`                 |
 | `COMMAND$`     | Command-line tail                    | `COMMAND$`                |
 | `FREEFILE`     | Next available file number           | `1`                      |
@@ -555,6 +545,16 @@ PRINT DATE$; " "; TIME$
 | `INKEY$`       | Read key without waiting ("" if none)| `INKEY$`                 |
 | `INPUT$(n)`    | Read n characters from keyboard      | `INPUT$(1)`              |
 | `SCREEN(r, c)` | ASCII code of character at position  | `SCREEN(1, 1)`           |
+
+`DATE$` and `TIME$` can be assigned to override the values returned by subsequent reads (the host clock is not changed). Assignment is available in the default QBasic compatibility mode and unavailable in ANSI mode:
+
+```basic
+DATE$ = "12-25-2024"
+TIME$ = "14:30:00"
+PRINT DATE$; " "; TIME$
+```
+
+`ENVIRON "name=value"` sets an environment variable. This statement is available in the default QBasic compatibility mode and unavailable in ANSI mode; `ENVIRON$` reads are available in both modes.
 
 ---
 

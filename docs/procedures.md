@@ -213,7 +213,7 @@ PRINT total    ' 150
 
 ### COMMON
 
-Declare module-level variables that are automatically accessible inside procedures without needing `SHARED` in each sub or function:
+Available in the default QBasic compatibility mode and unavailable in ANSI mode. Declare module-level variables that are automatically accessible inside procedures without needing `SHARED` in each sub or function:
 
 ```basic
 COMMON SHARED total, count

@@ -54,6 +54,9 @@ ANSI mode is opt-in and remains the reference for ANSI-specific behavior.
 | Procedure parameters | Parameters are `BYVAL` by default; `BYREF` can be requested explicitly. |
 | Subroutine jumps | `GOSUB`/`RETURN` and `ON ... GOTO`/`ON ... GOSUB` are not supported. |
 | File I/O | ANSI `OPEN #n: NAME file$, ACCESS mode, ORGANIZATION org` syntax. |
+| Declarations | `OPTION EXPLICIT` is not supported. |
+| Scope | `COMMON` is not supported; use `SUB`/`FUNCTION` with `SHARED` instead. |
+| System | The `ENVIRON` statement and `DATE$ =`/`TIME$ =` assignment are not supported; `ENVIRON$` reads are available. |
 
 ANSI mode supports structured control flow, `SUB` and `FUNCTION`, `WHEN EXCEPTION IN ... USE ... END WHEN`, ANSI string slicing with `s$(start:end)`, MAT operations, text console control, and ANSI file pointer operations.
 
@@ -72,6 +75,9 @@ QBasic/QuickBasic mode is intended for compatibility with common QuickBasic/QBas
 | Subroutine jumps | `GOSUB`/`RETURN`, `ON ... GOTO`, and `ON ... GOSUB` are supported. |
 | Classic error handling | `ON ERROR GOTO`, `RESUME`, `RESUME NEXT`, `RESUME label`, `ERROR`, `ERR`, and `ERL` are supported for top-level handlers. |
 | File I/O | QuickBasic-style `OPEN file$ FOR mode AS #n` is supported for `INPUT`, `OUTPUT`, `APPEND`, `BINARY`, and `RANDOM`. |
+| Declarations | `OPTION EXPLICIT` requires every variable to be declared before use. |
+| Scope | `COMMON [SHARED]` declares module-level shared variables visible inside procedures. |
+| System | `ENVIRON "name=value"` sets an environment variable; `DATE$ = ...` and `TIME$ = ...` override subsequent reads without changing the host clock. |
 
 QuickBasic mode also supports `GET` and `PUT` for structured binary record I/O, including recursive serialization of user-defined type fields. `FIELD`, `LSET`, and `RSET` support classic random-access record buffers. `MKI$`/`MKL$`/`MKS$`/`MKD$` and `CVI`/`CVL`/`CVS`/`CVD` convert between numbers and packed binary strings.
 

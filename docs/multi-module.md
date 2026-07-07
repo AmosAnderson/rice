@@ -2,7 +2,7 @@
 
 `CHAIN` is not supported in RICE BASIC.
 
-`COMMON` is supported as a single-source shared-variable declaration. `COMMON [SHARED] name[, name...]` declares module-level variables that are visible inside `SUB` and `FUNCTION` procedures without requiring `SHARED` in each procedure.
+`COMMON` is supported as a single-source shared-variable declaration, available in the default QBasic compatibility mode and unavailable in ANSI mode. `COMMON [SHARED] name[, name...]` declares module-level variables that are visible inside `SUB` and `FUNCTION` procedures without requiring `SHARED` in each procedure.
 
 ```basic
 COMMON SHARED total, count

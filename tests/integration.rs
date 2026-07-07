@@ -1420,6 +1420,22 @@ fn test_ansi_rejects_qbasic_only_tier2_syntax() {
 }
 
 #[test]
+fn test_ansi_rejects_qbasic_only_business_features() {
+    let cases = [
+        "OPTION DIALECT \"ANSI\"\nOPTION EXPLICIT\n",
+        "OPTION DIALECT \"ANSI\"\nENVIRON \"X=1\"\n",
+        "OPTION DIALECT \"ANSI\"\nDATE$ = \"12-25-2024\"\n",
+        "OPTION DIALECT \"ANSI\"\nTIME$ = \"14:30:00\"\n",
+        "OPTION DIALECT \"ANSI\"\nCOMMON SHARED x\n",
+        "OPTION DIALECT \"ANSI\"\nCOMMON x\n",
+    ];
+    for source in cases {
+        let (_output, result) = run_bas_may_fail(source);
+        assert!(result.is_err(), "source should fail in ANSI mode: {source}");
+    }
+}
+
+#[test]
 fn test_seek_function_prefers_writer_position() {
     let (output, _dir) = run_bas_with_tmpdir(
         r#"

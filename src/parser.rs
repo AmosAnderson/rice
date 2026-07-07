@@ -589,6 +589,12 @@ impl Parser {
 
         // Special QBasic pseudo-variable assignments
         if var.name == "DATE$" || var.name == "TIME$" {
+            if self.dialect != crate::Dialect::QuickBasic {
+                return Err(ParseError::General {
+                    line: self.current_line(),
+                    msg: format!("{} assignment is not supported in ANSI BASIC", var.name),
+                });
+            }
             self.expect(Token::Equal)?;
             let expr = self.parse_expr()?;
             return if var.name == "DATE$" {
@@ -693,12 +699,24 @@ impl Parser {
 
         // ENVIRON statement: ENVIRON "name=value" (not a function call)
         if name == "ENVIRON" && !matches!(self.peek(), Token::LeftParen) {
+            if self.dialect != crate::Dialect::QuickBasic {
+                return Err(ParseError::General {
+                    line: self.current_line(),
+                    msg: "ENVIRON statement is not supported in ANSI BASIC".into(),
+                });
+            }
             let expr = self.parse_expr()?;
             return Ok(Stmt::Environ(expr));
         }
 
         // Special QBasic pseudo-variable assignments DATE$ = ... / TIME$ = ...
         if (name == "DATE$" || name == "TIME$") && matches!(self.peek(), Token::Equal) {
+            if self.dialect != crate::Dialect::QuickBasic {
+                return Err(ParseError::General {
+                    line: self.current_line(),
+                    msg: format!("{} assignment is not supported in ANSI BASIC", name),
+                });
+            }
             self.advance(); // consume =
             let expr = self.parse_expr()?;
             return if name == "DATE$" {
@@ -1536,6 +1554,12 @@ impl Parser {
     }
 
     fn parse_option_explicit(&mut self) -> Result<Stmt, ParseError> {
+        if self.dialect != crate::Dialect::QuickBasic {
+            return Err(ParseError::General {
+                line: self.current_line(),
+                msg: "OPTION EXPLICIT is not supported in ANSI BASIC".into(),
+            });
+        }
         self.advance(); // consume OPTION
         self.expect(Token::KwExplicit)?;
         Ok(Stmt::OptionExplicit)
@@ -2027,6 +2051,12 @@ impl Parser {
     }
 
     fn parse_common(&mut self) -> Result<Stmt, ParseError> {
+        if self.dialect != crate::Dialect::QuickBasic {
+            return Err(ParseError::General {
+                line: self.current_line(),
+                msg: "COMMON is not supported in ANSI BASIC".into(),
+            });
+        }
         self.advance(); // consume COMMON
         let shared = if matches!(self.peek(), Token::KwShared) {
             self.advance();

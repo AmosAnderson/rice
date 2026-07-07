@@ -67,7 +67,7 @@ name$ = "Alice"
 DIM count AS NUMERIC
 DIM message AS STRING
 
-' Require explicit declarations
+' Require explicit declarations (QuickBasic mode only)
 OPTION EXPLICIT
 DIM x AS NUMERIC
 x = 10
@@ -329,7 +329,7 @@ Labels can be names (followed by `:`) or line numbers:
 
 ### COMMON
 
-Declare module-level variables that are accessible inside procedures without a per-procedure `SHARED` statement:
+QuickBasic mode only. Declare module-level variables that are accessible inside procedures without a per-procedure `SHARED` statement:
 
 ```basic
 COMMON SHARED total, count
@@ -684,7 +684,7 @@ For substring operations, ANSI-style code should prefer colon slicing such as `A
 | `TIME$`   | Current time as HH:MM:SS                 |
 | `TIMER`   | Seconds elapsed since midnight           |
 
-`DATE$` and `TIME$` can be assigned to override the values returned by subsequent reads (the host clock is unchanged):
+`DATE$` and `TIME$` can be assigned to override the values returned by subsequent reads (the host clock is unchanged). Assignment is QuickBasic mode only:
 
 ```basic
 DATE$ = "12-25-2024"
@@ -697,7 +697,7 @@ PRINT DATE$; " "; TIME$
 | Function        | Description                              |
 |-----------------|------------------------------------------|
 | `ENVIRON$(s$)`  | Get environment variable value           |
-| `ENVIRON s$`    | Set environment variable (e.g. `ENVIRON "PATH=/bin"`) |
+| `ENVIRON s$`    | Set environment variable, e.g. `ENVIRON "PATH=/bin"` (QuickBasic mode only) |
 | `CURDIR$`       | Current working directory                |
 | `COMMAND$`      | Program command-line tail                |
 | `FREEFILE`      | Next available file number               |
@@ -1017,6 +1017,7 @@ RICE BASIC intentionally omits or limits:
 - **Memory access**: No `DEF SEG`, `PEEK`, `POKE`
 - **Classic error handling**: Top-level `ON ERROR`/`RESUME` is supported; nested-block `RESUME` behavior is limited
 - **Legacy procedures**: `GOSUB`/`RETURN` and `DEF FN` are QuickBasic-mode only
+- **Business/system extensions**: `OPTION EXPLICIT`, `COMMON`, the `ENVIRON` statement, and `DATE$`/`TIME$` assignment are QuickBasic-mode only
 - **String slicing**: ANSI colon slicing is supported; `LEFT$`, `RIGHT$`, and `MID$` are also available as compatibility functions
 - **Legacy operators**: No `\` (integer division), `IMP`, `EQV`
 - **Proper array storage**: Arrays use a flattened key representation. `LBOUND`/`UBOUND` return bounds for `DIM`med arrays.
