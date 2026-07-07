@@ -440,6 +440,7 @@ impl Interpreter {
                 end,
                 expr,
             } => {
+                self.require_declared(name)?;
                 let start_f = self.eval_expr(start)?.to_f64()?;
                 let end_f = self.eval_expr(end)?.to_f64()?;
                 if start_f < 1.0 || end_f < 1.0 {
@@ -467,6 +468,7 @@ impl Interpreter {
                 len,
                 expr,
             } => {
+                self.require_declared(name)?;
                 let start_i = self.eval_expr(start)?.to_i64()?;
                 if start_i < 1 {
                     return Err(RuntimeError::IllegalFunctionCall {
@@ -1171,6 +1173,7 @@ impl Interpreter {
 
     fn exec_erase(&mut self, names: &[String]) -> Result<ControlFlow, RuntimeError> {
         for name in names {
+            self.require_declared(name)?;
             self.env.borrow_mut().set(name, Value::Numeric(0.0));
             let prefix = format!("{name}_");
             let keys: Vec<String> = self
@@ -1732,6 +1735,28 @@ impl Interpreter {
         name.ends_with(['$', '%', '!', '#', '&'])
     }
 
+    fn current_date_value(&self) -> Result<Value, RuntimeError> {
+        Ok(Value::Str(self.date_override.clone().unwrap_or_else(
+            || {
+                crate::builtins::builtin_date(&[])
+                    .unwrap()
+                    .to_string_val()
+                    .unwrap()
+            },
+        )))
+    }
+
+    fn current_time_value(&self) -> Result<Value, RuntimeError> {
+        Ok(Value::Str(self.time_override.clone().unwrap_or_else(
+            || {
+                crate::builtins::builtin_time(&[])
+                    .unwrap()
+                    .to_string_val()
+                    .unwrap()
+            },
+        )))
+    }
+
     pub fn eval_expr(&mut self, expr: &Expr) -> Result<Value, RuntimeError> {
         match expr {
             Expr::NumericLit(n) => Ok(Value::Numeric(*n)),
@@ -1741,7 +1766,6 @@ impl Interpreter {
                 if let Some(val) = self.env.borrow().get(&var.name) {
                     Ok(val)
                 } else {
-                    self.require_declared(&var.name)?;
                     // Some 0-arg builtins are commonly used like variables in BASIC (e.g. DATE$, TIME$).
                     // Resolve those before default variable auto-initialization.
                     let builtin_name = &var.name;
@@ -1776,24 +1800,10 @@ impl Interpreter {
                     }
 
                     if builtin_name == "DATE$" {
-                        return Ok(Value::Str(self.date_override.clone().unwrap_or_else(
-                            || {
-                                crate::builtins::builtin_date(&[])
-                                    .unwrap()
-                                    .to_string_val()
-                                    .unwrap()
-                            },
-                        )));
+                        return self.current_date_value();
                     }
                     if builtin_name == "TIME$" {
-                        return Ok(Value::Str(self.time_override.clone().unwrap_or_else(
-                            || {
-                                crate::builtins::builtin_time(&[])
-                                    .unwrap()
-                                    .to_string_val()
-                                    .unwrap()
-                            },
-                        )));
+                        return self.current_time_value();
                     }
 
                     let is_implicit_builtin = matches!(builtin_name.as_str(), "TIMER");
@@ -1810,6 +1820,7 @@ impl Interpreter {
                         }
                     }
 
+                    self.require_declared(&var.name)?;
                     let default = self.default_for_var(&var.name);
                     self.env.borrow_mut().set(&var.name, default.clone());
                     Ok(default)
@@ -1910,6 +1921,24 @@ impl Interpreter {
                             });
                         }
                         return Ok(Value::Numeric(self.err_line as f64));
+                    }
+                    "DATE$" => {
+                        if !arg_vals.is_empty() {
+                            return Err(RuntimeError::ArityMismatch {
+                                expected: 0,
+                                got: arg_vals.len(),
+                            });
+                        }
+                        return self.current_date_value();
+                    }
+                    "TIME$" => {
+                        if !arg_vals.is_empty() {
+                            return Err(RuntimeError::ArityMismatch {
+                                expected: 0,
+                                got: arg_vals.len(),
+                            });
+                        }
+                        return self.current_time_value();
                     }
                     "EXTYPE" => {
                         return Ok(Value::Numeric(
@@ -2118,6 +2147,7 @@ impl Interpreter {
                 self.get_or_init_array_element(name, &key)
             }
             Expr::StringSlice { name, start, end } => {
+                self.require_declared(name)?;
                 let s = self
                     .env
                     .borrow()
@@ -3423,6 +3453,7 @@ impl Interpreter {
         var: &Variable,
     ) -> Result<(), RuntimeError> {
         let file_num = self.eval_expr(file_num_expr)?.to_i64()?;
+        self.require_declared(&var.name)?;
         let fh = self
             .file_handles
             .get_mut(&file_num)
@@ -3699,6 +3730,7 @@ impl Interpreter {
         var: &Variable,
     ) -> Result<(), RuntimeError> {
         let file_num = self.eval_expr(file_num_expr)?.to_i64()?;
+        self.require_declared(&var.name)?;
 
         let line = {
             let fh = self
@@ -4074,6 +4106,12 @@ impl Interpreter {
         } else {
             None
         };
+
+        if gp.is_get
+            && let Some(var) = &gp.var
+        {
+            self.require_declared(&var.name)?;
+        }
 
         let mut fh = self
             .file_handles

@@ -582,8 +582,8 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
             "```basic\nEXP(n)\n```\nReturns e raised to the power `n`.",
         ),
         (
-            "TIME$",
-            "```basic\nTIME$\n```\nReturns the current time as HH:MM:SS.",
+            "LOG",
+            "```basic\nLOG(n)\n```\nReturns the natural logarithm of `n`.",
         ),
         (
             "DATE$ =",

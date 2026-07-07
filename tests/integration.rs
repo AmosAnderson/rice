@@ -1514,6 +1514,43 @@ PRINT x
 }
 
 #[test]
+fn test_option_explicit_allows_pseudo_values_and_bare_zero_arg_functions() {
+    let output = run_bas(
+        r#"
+OPTION EXPLICIT
+PRINT ERR
+PRINT ERL
+
+FUNCTION FortyTwo
+    FortyTwo = 42
+END FUNCTION
+
+PRINT FortyTwo
+"#,
+    );
+    assert_eq!(output, "0\n0\n42\n");
+}
+
+#[test]
+fn test_option_explicit_rejects_undeclared_write_only_targets() {
+    let cases = [
+        "OPTION EXPLICIT\nASK #1: POINTER p\n",
+        "OPTION EXPLICIT\nLINE INPUT #1, p\n",
+        "OPTION EXPLICIT\nGET #1, , p\n",
+    ];
+    for source in cases {
+        let (_output, result) = run_bas_may_fail(source);
+        assert!(result.is_err(), "source should fail: {source}");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Variable 'P' is not declared"),
+            "error should name the undeclared target: {}",
+            err
+        );
+    }
+}
+
+#[test]
 fn test_option_explicit_dim_shared_in_sub() {
     // A module-level DIM SHARED variable must be usable inside a procedure
     // without a per-procedure SHARED statement, even under OPTION EXPLICIT.
@@ -1582,11 +1619,16 @@ DATE$ = "12-25-2024"
 TIME$ = "14:30:15"
 PRINT DATE$
 PRINT TIME$
+PRINT DATE$()
+PRINT TIME$()
 DATE$ = "01/01/2000"
 PRINT DATE$
 "#,
     );
-    assert_eq!(output, "12-25-2024\n14:30:15\n01/01/2000\n");
+    assert_eq!(
+        output,
+        "12-25-2024\n14:30:15\n12-25-2024\n14:30:15\n01/01/2000\n"
+    );
 }
 
 #[test]
