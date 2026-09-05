@@ -18,13 +18,13 @@
 ## BASIC Semantics To Preserve
 
 - Identifiers are case-insensitive and normalized to UPPERCASE internally.
-- Only two primitive types exist in memory: NUMERIC `f64` and STRING; variables ending in `$` are strings, all others numeric.
-- Undefined variables auto-initialize to `0` or `""`.
+- Only two primitive types exist in memory: NUMERIC `f64` and STRING; records are aggregates. `$` and declarations choose string defaults, while other names default numeric unless DEFSTR applies. Ordinary assignments do not strictly enforce these types; see `docs/language-reference.md`.
+- Undefined variables auto-initialize to `0` or `""` unless `OPTION EXPLICIT` requires a declaration; preserve its documented suffix/declaration exceptions.
 - Statement-level `=` is assignment; inside expressions it is comparison.
 - `MOD` works on real numbers.
 - PRINT formatting intentionally has no leading space for positive numbers and uses 16-character comma zones.
 - Arrays currently use flattened keys; avoid broad array-storage refactors unless the task and tests are specifically about that.
-- **Dialect Semantics**: Rice BASIC supports QBasic 1.1 compatibility mode by default and ANSI mode via `OPTION DIALECT "ANSI"` or `--dialect ansi`. `OPTION DIALECT "QB"`, `OPTION DIALECT "QBasic 1.1"`, `--dialect qb`, and `--compat` explicitly select the default QBasic-compatible mode.
+- **Dialect Semantics**: Rice BASIC provides QBasic 1.1 compatibility mode by default and ANSI-style mode via `OPTION DIALECT "ANSI"` or `--dialect ansi`. `OPTION DIALECT "QB"`, `OPTION DIALECT "QBasic 1.1"`, `--dialect qb`, and `--compat` explicitly select the default QBasic-compatible mode.
   - **ANSI Mode Semantics**:
     - Suffixes other than `$` are not supported.
     - Truth values are `1.0` (true) and `0.0` (false).
@@ -34,6 +34,7 @@
     - Subroutine/function parameters are `BYVAL` by default.
     - `GOSUB`/`RETURN` and `ON GOTO/GOSUB` are not supported.
   - **QuickBasic Mode Semantics**:
+    - `OPTION BASE` currently defaults to 1 in this mode too; this is a documented QBasic compatibility gap.
     - Suffixes (`%`, `!`, `#`, `&`, `$`) are supported in variable names to distinguish different variables (which all hold `f64` or `String` values in memory).
     - Truth values are `-1.0` (true) and `0.0` (false).
     - String concatenation is `+` (for strings) or `&`.
@@ -45,7 +46,7 @@
 
 ## Parser And Interpreter Gotchas
 
-- `Interpreter::run_source` prescans labels, DATA, SUB, and FUNCTION definitions before execution; prescan recurses into nested blocks and ordering matters.
+- `Interpreter::run_source` prescans labels, DATA, SUB, and FUNCTION definitions before execution; prescan recurses into eligible control blocks, not procedure bodies, and ordering matters. TYPE definitions are also collected. Calls do not independently prescan DATA or nested definitions.
 - `GOTO`, `EXIT*`, `END`, `RETRY`, and `CONTINUE` propagate via `ControlFlow` through `exec_block()`.
 - Single-line vs block `IF` depends on tokens after `THEN`; `ELSE` can terminate a single-line statement parse.
 - Function-call syntax is ambiguous at parse time; runtime resolution is builtin, then user-defined function, then array.
@@ -57,3 +58,11 @@
 - Test helpers: `run_file("tests/programs/foo.bas")`, `run_bas("PRINT 42\n")`, `run_bas_with_tmpdir(src)` with `{DIR}`, and `run_bas_may_fail(src)` for expected runtime errors.
 - `SharedOutput` captures PRINT output for assertions.
 - TIMER, DATE$, TIME$, and RND are nondeterministic; assert shape or bounds instead of exact values.
+
+## Documentation
+
+- `docs/README.md` indexes the complete implemented specification for both modes; `SYNTAX.md` is a compact syntax index.
+- `docs/language-reference.md` owns core syntax/semantics; `docs/builtins.md` owns the complete function inventory. Topic guides cover files, errors, console, formatting, procedures, records, MAT, strings, and modules.
+- `docs/dialects.md` records exact mode differences; `docs/compatibility.md` records verified gaps, ignored syntax, and unverified external conformance.
+- `docs/runtime.md` specifies CLI, REPL, host operations, library entry points, and LSP limits.
+- When changing behavior, update its owning reference and relevant LSP hover/completion documentation. Do not describe accepted-but-ignored syntax as fully implemented or claim complete external-standard conformance.

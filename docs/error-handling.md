@@ -1,156 +1,115 @@
-# Error Handling
+# Error handling
 
-RICE BASIC provides structured error handling through the ANSI X3.113-1991 `WHEN EXCEPTION` construct.
+Rice supports structured `WHEN EXCEPTION` handling in **both dialects** and classic `ON ERROR GOTO` handling in **QBasic mode only**. These catch runtime errors during execution, not lexer/parser errors, failures loading the main source, or errors from the definition prescan. An unhandled error ends file execution with a diagnostic and a failing process status; the REPL reports it.
 
-## WHEN EXCEPTION
-
-The `WHEN EXCEPTION` block establishes a protected region of code with an associated exception handler:
+## Structured handlers: both modes
 
 ```basic
 WHEN EXCEPTION IN
-    ' Code that might cause errors
-    OPEN #1: NAME "nonexistent.txt", ACCESS INPUT
-    PRINT "This line runs if no error"
+    value = 1 / 0
+    PRINT "remaining protected statement"
 USE
-    PRINT "Error occurred: "; EXTEXT$
+    PRINT EXTYPE; ": "; EXTEXT$
+END WHEN
+PRINT "after the protected block"
+```
+
+The protected body runs until a runtime error occurs. Control then enters `USE`; if the handler finishes normally, the rest of the protected body is skipped and execution continues after `END WHEN`. If the body succeeds, `USE` is skipped. Errors raised by a handler propagate outward, where an enclosing structured handler or an eligible classic handler may catch them.
+
+`RETRY` restarts the protected body from its beginning. It does not undo assignments, output, consumed input, or other side effects. Fix the cause or bound retries to avoid an endless loop:
+
+```basic
+divisor = 0
+WHEN EXCEPTION IN
+    PRINT 10 / divisor
+USE
+    divisor = 2
+    RETRY
 END WHEN
 ```
 
-If any statement in the `WHEN EXCEPTION IN` block raises an error, control transfers immediately to the `USE` block. If no error occurs, the `USE` block is skipped entirely.
-
----
-
-## Exception Information
-
-### EXTYPE
-
-Returns the numeric exception type code for the most recent exception. Returns `0` when no exception has occurred.
+`CONTINUE` skips the failing **direct statement of the protected body**, then resumes the remainder under the same handler:
 
 ```basic
 WHEN EXCEPTION IN
-    x = 1 / 0
+    PRINT 1 / 0
+    PRINT "continued"
 USE
-    PRINT "Exception type:"; EXTYPE
-END WHEN
-```
-
-### EXTEXT$
-
-Returns a descriptive text string for the most recent exception:
-
-```basic
-WHEN EXCEPTION IN
-    OPEN #1: NAME "missing.txt", ACCESS INPUT
-USE
-    PRINT "Error: "; EXTEXT$
-END WHEN
-```
-
----
-
-## RETRY
-
-Within a `USE` block, `RETRY` re-executes the protected `WHEN EXCEPTION IN` block from the beginning. This is useful when the handler can correct the condition that caused the error:
-
-```basic
-DIM filename AS STRING
-filename = "primary.txt"
-
-WHEN EXCEPTION IN
-    OPEN #1: NAME filename, ACCESS INPUT
-    PRINT "File opened successfully"
-USE
-    IF filename = "primary.txt" THEN
-        filename = "backup.txt"
-        RETRY
-    ELSE
-        PRINT "Could not open any file"
-    END IF
-END WHEN
-```
-
----
-
-## CONTINUE
-
-Within a `USE` block, `CONTINUE` skips the statement that caused the exception and resumes execution with the next statement in the protected block:
-
-```basic
-WHEN EXCEPTION IN
-    x = 1 / 0         ' Division by zero - will be skipped
-    PRINT "Continued"  ' This runs after CONTINUE
-USE
-    PRINT "Skipping error: "; EXTEXT$
+    PRINT EXTEXT$
     CONTINUE
 END WHEN
 ```
 
----
+If the failure occurs inside a loop, `IF`, or procedure call, that entire enclosing direct statement is skipped; Rice does not resume inside the failed nested construct. A normal handler exit similarly discards the rest of the protected body. `RETRY` and `CONTINUE` are control-flow statements for handlers, not general loop controls; using them outside a handler has no useful defined recovery behavior.
 
-## Nested Exception Handling
+### Structured exception information
 
-`WHEN EXCEPTION` blocks can be nested. Each block has its own handler:
+`EXTYPE` (also `EXTYPE()`) returns the current structured exception code; `EXTEXT$` (also `EXTEXT$()`) returns its diagnostic text. Initially and after ordinary completion they are `0` and `""`. They do not form a permanent history of the most recent error. Copy them into variables inside `USE` when the information is needed later.
 
-```basic
-WHEN EXCEPTION IN
-    PRINT "Outer protected block"
-    WHEN EXCEPTION IN
-        x = SQR(-1)
-    USE
-        PRINT "Inner handler caught: "; EXTEXT$
-    END WHEN
-    PRINT "Back in outer block"
-USE
-    PRINT "Outer handler caught: "; EXTEXT$
-END WHEN
-```
+The interpreter has one shared exception-information slot. Nested handlers are supported, but do not save and restore an outer handler's information; a successful inner protected block can clear it. Early control transfers out of a handler can leave information visible until a later clear. Only inspect the registers within the handler currently dealing with the error. The parenthesized `EXTYPE`/`EXTEXT$` implementation currently ignores extra arguments after evaluating them; portable code should pass none.
 
----
+| Runtime error category | `EXTYPE` |
+|---|---:|
+| Division by zero | 3001 |
+| Subscript out of range | 3000 |
+| Numeric overflow reported by Rice | 1000 |
+| Type mismatch | 4001 |
+| Illegal function call | 5000 |
+| File not found (I/O code 53) | 8001 |
+| Other mapped I/O error with code `n` | `8000 + n` |
+| Other runtime error, including `ERROR n` | 9999 |
 
-## Error Handling Patterns
+These are Rice's implemented mappings, not a complete ANSI exception taxonomy. Floating-point operations do not all raise overflow: some can produce infinity or NaN. Only actual runtime errors enter a handler.
 
-### Graceful File Open
+## Classic handlers: QBasic only
 
 ```basic
-WHEN EXCEPTION IN
-    OPEN #1: NAME "config.txt", ACCESS INPUT
-
-    ' Process file...
-    LINE INPUT #1, line
-    CLOSE #1
-USE
-    PRINT "Could not open config.txt, using defaults"
-END WHEN
+10 ON ERROR GOTO 100
+20 PRINT 1 / 0
+30 PRINT "continued"
+40 END
+100 PRINT "Error "; ERR; " at line "; ERL
+110 RESUME NEXT
 ```
 
-### Retry Logic
+This prints error code `11`, line `20`, then `continued`. Numeric and named handler labels are supported. Keep the handler out of the normal execution path with `END` or `GOTO`.
 
-```basic
-DIM attempts AS NUMERIC
-attempts = 0
+| Statement | Meaning |
+|---|---|
+| `ON ERROR GOTO label` | Install or replace the current handler target |
+| `ON ERROR GOTO 0` | Disable handling and clear `ERR`, `ERL`, and pending resume state |
+| `ERROR expression` | Raise a user error code from 1 through 255, after integer conversion |
+| `RESUME` or `RESUME 0` | Retry the recorded statement |
+| `RESUME NEXT` | Continue after the recorded statement |
+| `RESUME label` | Continue at a label in the current statement list |
 
-WHEN EXCEPTION IN
-    attempts = attempts + 1
-    OPEN #1: NAME "data.txt", ACCESS INPUT
-    PRINT "File opened successfully"
-USE
-    IF attempts < 3 THEN
-        PRINT "Attempt"; attempts; "failed, retrying..."
-        RETRY
-    ELSE
-        PRINT "Failed after 3 attempts"
-    END IF
-END WHEN
-```
+`ERR`/`ERR()` returns the classic code, initially zero. `ERL`/`ERL()` returns the numeric BASIC label of the trapped statement, or zero if it has no numeric label; it is not the physical source line number. They remain set after a successful `RESUME` until another trapped error or `ON ERROR GOTO 0`. A `WHEN EXCEPTION` handler does not update `ERR`/`ERL`, and a classic handler does not set `EXTYPE`/`EXTEXT$`.
 
-### Logging Errors
+A handler is marked active until `RESUME` or `ON ERROR GOTO 0`; another error while it is active propagates rather than re-entering it. Falling out of or jumping away from the handler does not automatically clear this state. `RESUME` without a pending error raises an error. `ON ERROR RESUME NEXT`, inline handlers, and procedure-local error stacks are not implemented.
 
-```basic
-WHEN EXCEPTION IN
-    x = SQR(-1)
-    PRINT "After error"
-USE
-    PRINT "Exception type:"; EXTYPE; " - "; EXTEXT$
-    CONTINUE
-END WHEN
-```
+### Classic error codes
+
+| Runtime error category | `ERR` |
+|---|---:|
+| Illegal function call; general runtime error; arity/undefined-variable errors | 5 |
+| Reported overflow | 6 |
+| Explicit allocation failures handled by Rice | 7 |
+| Undefined label | 8 |
+| Subscript out of range | 9 |
+| Duplicate definition | 10 |
+| Division by zero | 11 |
+| Type mismatch | 13 |
+| File not found | 53 |
+| File/directory already exists, if reported by the host | 58 |
+| Input past end of file / unexpected EOF | 62 |
+| Permission denied | 70 |
+| Other mapped host I/O errors | 76 |
+| `ERROR n` | `n` |
+
+Mapping follows the runtime error category: for example, a Rice validation failure such as an unopened channel can report general code 5 rather than a historical QB file error number. Diagnostic wording from host filesystem errors varies by platform.
+
+### Recovery scope and known limits
+
+Top-level handlers and tested `GOSUB` continuations are supported. The saved resume location is an index in the current executing statement list. If an error escapes an `IF`, loop, or procedure, `ERL` and the resume target can refer to the enclosing top-level statement instead of the inner failing operation. Handler lookup also occurs in the current statement list, so a target in an unrelated nested block or procedure is not a general-purpose recovery target.
+
+Use structured handlers close to operations that may fail, or keep classic handler targets and recovery statements at top level. Recovery does not roll back partial file writes, record reads, assignments, or output. Open handles remain available after a `GET`/`PUT` error; failed `CLOSE` flushing keeps handles available for a retry. Neither handler system provides automatic `FINALLY` cleanup.

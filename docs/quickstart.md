@@ -1,89 +1,65 @@
-# Quick Start Guide
+# Quick start
 
-## Installation
+Rice defaults to QBasic compatibility mode. Its ANSI-style mode and shared extensions are documented in the [language reference](language-reference.md). Neither mode implements every feature of its namesake; consult [compatibility notes](compatibility.md) when porting code.
 
-RICE BASIC requires the Rust toolchain. Build from source:
+## Build and run
 
-```bash
-git clone <repository-url>
-cd rice
-cargo build --release
-```
+From this repository, with a Rust toolchain supporting edition 2024:
 
-The binary is located at `target/release/rice`.
-
-## Running Programs
-
-### Interactive REPL
-
-Start the REPL with no arguments:
-
-```bash
+```sh
+cargo build --release --bin rice
 cargo run
+cargo run -- hello.bas
+cargo run -- --dialect ansi hello.bas
 ```
 
-The REPL maintains state between lines, so you can define variables and use them later:
-
-```
-Ok
-DIM x AS NUMERIC
-Ok
-x = 42
-Ok
-PRINT x
-42
-Ok
-```
-
-The REPL also supports old-school line-number editing. Type numbered lines to build a program, then use `RUN` to execute, `LIST` to display, `NEW` to clear, and `DELETE` to remove lines:
-
-```
-Ok
-10 PRINT "Hello, World!"
-20 PRINT "Goodbye!"
-RUN
-Hello, World!
-Goodbye!
-Ok
-```
-
-### Executing Files
-
-Save your program with a `.bas` extension and run it:
-
-```bash
-cargo run -- myprogram.bas
-```
-
-### Selecting a Dialect
-
-QBasic 1.1 compatibility mode is the default. To run an ANSI-style program, use a flag or put `OPTION DIALECT "ANSI"` in the source:
-
-```bash
-cargo run -- --dialect ansi ansi-program.bas
-```
-
-Use `--dialect qb`, `--dialect qbasic`, or `--compat` only when you want to request the default QBasic-compatible mode explicitly. See [Dialects](dialects.md) for the exact compatibility rules.
-
-## Your First Program
-
-Create a file called `hello.bas`:
+The release binary is `target/release/rice` (`rice.exe` on Windows). Save this as `hello.bas`:
 
 ```basic
 PRINT "Hello, World!"
 ```
 
-Run it:
+Relative file paths in a program refer to the process working directory. The CLI takes one source file and no extra program arguments. See [runtime](runtime.md) for all flags and editor setup.
 
-```bash
-cargo run -- hello.bas
-```
+## Choose a dialect
 
-## A More Complete Example
+Put a directive at the start of a program for predictable parsing and editor diagnostics:
 
 ```basic
-' FizzBuzz in RICE BASIC
-FOR i = 1 TO 30
+OPTION DIALECT "QB"
+PRINT 1 = 1                ' -1
+PRINT "Hello" + " world"
+```
+
+```basic
+OPTION DIALECT "ANSI"
+PRINT 1 = 1                ' 1
+PRINT "Hello" & " world"
+```
+
+QB uses bitwise numeric `AND`, `OR`, `NOT`, and `XOR` and defaults procedure parameters to BYREF. ANSI uses logical operators and defaults parameters to BYVAL. **Both currently default array lower bounds to 1.** A source directive applies to the whole source unit, even if placed later. See [dialects](dialects.md) for exact rules.
+
+## Variables, strings, and output
+
+```basic
+DIM count AS NUMERIC
+count = 3
+name$ = "Alice"
+CONST rate = 1.5
+PRINT name$; ": "; count * rate
+PRINT LEFT$(name$, 3)
+PRINT name$(2:4)
+PRINT "Hello" & ", " & name$
+```
+
+Names are case-insensitive. Uninitialized numeric variables read as `0`, `$` names as `""`. Numeric storage is `f64`; QB numeric suffixes distinguish names but do not enforce integer or single-precision storage. `AS` declarations and suffixes mostly establish defaults, not strict assignment types, so use consistent types in your own code.
+
+PRINT semicolons add no spacing; commas advance to 16-character zones; a trailing separator suppresses the newline. Positive numbers have no automatic leading/trailing space. String positions are 1-based Unicode character positions. Quotes are not escaped by doubling them; use `CHR$(34)` to insert a quote.
+
+## Decisions and loops
+
+```basic
+FOR i = 1 TO 15
     IF i MOD 15 = 0 THEN
         PRINT "FizzBuzz"
     ELSEIF i MOD 3 = 0 THEN
@@ -96,68 +72,30 @@ FOR i = 1 TO 30
 NEXT i
 ```
 
-## Basic Concepts
+Both modes also support single-line IF, WHILE/WEND, DO/LOOP, SELECT CASE, and GOTO. Use explicit comparison conditions when sharing code between modes; `NOT` has different numeric behavior in QB. See [control flow](language-reference.md).
 
-### Variables
-
-Variables are auto-initialized (0 for numbers, "" for strings). You can declare them explicitly or just use them:
+## Arrays
 
 ```basic
-x = 10                   ' Auto-created as numeric
-name$ = "Alice"          ' String value
-DIM count AS NUMERIC     ' Explicit declaration
-CONST PI = 3.14159       ' Constant (cannot be reassigned)
-```
-
-RICE BASIC stores two runtime value types: NUMERIC and STRING. QBasic mode accepts suffixes such as `%`, `!`, `#`, `&`, and `$` in variable names for compatibility; ANSI mode rejects numeric suffixes other than `$`.
-
-### Control Flow
-
-```basic
-' IF/ELSEIF/ELSE
-IF score >= 90 THEN
-    PRINT "A"
-ELSEIF score >= 80 THEN
-    PRINT "B"
-ELSE
-    PRINT "C"
-END IF
-
-' FOR loop
-FOR i = 1 TO 10 STEP 2
-    PRINT i
+DIM scores(1 TO 3) AS NUMERIC
+scores(1) = 95
+scores(2) = 82
+scores(3) = 100
+FOR i = LBOUND(scores) TO UBOUND(scores)
+    PRINT scores(i)
 NEXT i
-
-' DO loop
-DO
-    INPUT "Enter a number (0 to quit): ", n
-LOOP UNTIL n = 0
 ```
 
-### String Operations
+Bounds are inclusive. Write explicit lower bounds for portable intent, or set `OPTION BASE 0`/`OPTION BASE 1`. Ordinary array access does not enforce declared bounds or rank. Use `$`-suffixed string-array names so missing elements receive string defaults. See [arrays and limitations](language-reference.md).
 
-ANSI BASIC uses `&` for string concatenation and colon slicing for substrings:
-
-```basic
-greeting = "Hello" & ", " & "World!"
-PRINT greeting
-
-' String slicing (1-based)
-word = "Hello"
-PRINT word(1:3)    ' "Hel" - characters 1 through 3
-PRINT word(3:5)    ' "llo" - characters 3 through 5
-```
-
-See [String Slicing](string-slicing.md) for full details.
-
-### Subroutines and Functions
+## Procedures
 
 ```basic
-SUB Greet (name AS STRING)
-    PRINT "Hello, " & name & "!"
+SUB Greet(BYVAL name$ AS STRING)
+    PRINT "Hello, " & name$ & "!"
 END SUB
 
-FUNCTION Square (x AS NUMERIC) AS NUMERIC
+FUNCTION Square(BYVAL x AS NUMERIC) AS NUMERIC
     Square = x * x
 END FUNCTION
 
@@ -165,78 +103,73 @@ CALL Greet("World")
 PRINT Square(5)
 ```
 
-### Arrays
+A function returns by assigning to its own name. Explicit BYVAL avoids the dialect-dependent default. Rice implements BYREF as copy-in/copy-out for bare variable arguments, with limitations for arrays and fields; read [procedures and scope](procedures.md) before using shared state.
 
-Arrays default to base 1:
+## Text files
 
-```basic
-DIM scores(10) AS NUMERIC       ' 10 elements (1-10)
-DIM grid(3, 3) AS NUMERIC       ' 2D array
-DIM names(1 TO 5) AS STRING     ' Custom bounds
-
-scores(1) = 95
-grid(1, 2) = 3.14
-names(1) = "Alice"
-```
-
-### File I/O
+This example works in either mode and creates `output.txt` in the working directory:
 
 ```basic
-' Write to a file
-OPEN #1: NAME "output.txt", ACCESS OUTPUT
+OPEN "output.txt" FOR OUTPUT AS #1
 PRINT #1, "Hello, file!"
 CLOSE #1
 
-' Read from a file
-OPEN #1: NAME "output.txt", ACCESS INPUT
-LINE INPUT #1, text
-PRINT text
+OPEN "output.txt" FOR INPUT AS #1
+LINE INPUT #1, text$
+PRINT text$
 CLOSE #1
 ```
 
-### Error Handling
+ANSI-style OPEN syntax is also accepted in both modes:
 
-ANSI BASIC uses structured exception handling:
+```basic
+OPEN #1: NAME "output.txt", ACCESS INPUT, ORGANIZATION SEQUENTIAL
+LINE INPUT #1, text$
+PRINT text$
+CLOSE #1
+```
+
+See [file I/O](file-io.md) before using RANDOM/BINARY records: GET/PUT semantics differ substantially by dialect.
+
+## Errors
+
+Structured exceptions work in both modes:
 
 ```basic
 WHEN EXCEPTION IN
-    OPEN #1: NAME "data.txt", ACCESS INPUT
-    INPUT #1, value
-    CLOSE #1
+    PRINT 1 / 0
 USE
-    PRINT "Error: "; EXTEXT$
+    PRINT "Caught: "; EXTYPE; " "; EXTEXT$
 END WHEN
 ```
 
-## Case Insensitivity
-
-RICE BASIC is case-insensitive. All of the following are equivalent:
+QB also supports classic top-level handlers:
 
 ```basic
-PRINT "hello"
-print "hello"
-Print "hello"
+OPTION DIALECT "QB"
+10 ON ERROR GOTO 100
+20 PRINT 1 / 0
+30 END
+100 PRINT ERR; " at line "; ERL
+110 RESUME NEXT
 ```
 
-## Comments
+See [error handling](error-handling.md) for RETRY, CONTINUE, RESUME, codes, and nested-control-flow restrictions.
 
-```basic
-REM This is a comment
-' This is also a comment
-x = 10 ' Inline comment
+## Interactive use
+
+Run `cargo run` and enter statements at the `Ok` prompt. Variables and definitions persist between immediate inputs. Enter a complete block to run it immediately, or use numbered lines to store a program:
+
+```text
+10 PRINT "Hello"
+20 PRINT "Again"
+LIST
+RUN
+DELETE 20
+NEW
+SYSTEM
 ```
 
-## Line Structure
+`RUN` uses a fresh interpreter; `NEW` only clears stored program lines. `SYSTEM` or Ctrl+D exits; Ctrl+C while editing also exits. The [runtime guide](runtime.md) explains range commands, history, and further exit/state quirks.
 
-Multiple statements can appear on one line separated by colons:
-
-```basic
-x = 1 : y = 2 : PRINT x + y
-```
-
-Optional line numbers are supported:
-
-```basic
-10 PRINT "Line 10"
-20 GOTO 10
-```
+Use `REM` or an apostrophe for comments. Colons separate statements, and optional numeric or named labels support branches. Additional examples and complete syntax are in the [documentation index](README.md).

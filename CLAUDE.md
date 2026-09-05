@@ -1,122 +1,72 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for coding assistants working in this repository. Read [AGENTS.md](AGENTS.md) first; its contribution rules apply.
 
 ## Rules
 
-- **Never commit or push code without explicit user approval.** Always ask before running `git commit`, `git push`, or any command that modifies the git history.
+- Do not commit, amend, push, or otherwise change git history without explicit user approval.
+- Preserve existing interpreter semantics unless the requested change explicitly calls for changing them. When behavior changes, update its documentation and appropriate regression coverage.
+- Do not infer full QBasic or ANSI support from a keyword, a code comment, or the dialect name. Check parser and runtime behavior.
 
-## Project Overview
+## Project and commands
 
-RICE BASIC is an ANSI X3.113-1991 (Full BASIC) interpreter written in Rust. No graphics or sound support. Supports interactive REPL and file execution.
+Rice BASIC 0.14.0 is a hand-written tree-walking interpreter with QBasic compatibility defaults and an ANSI-style mode. There is no compiler backend, graphics API, or sound API beyond the terminal bell. See [Cargo.toml](Cargo.toml) for the version, Rust edition 2024, and actual dependencies (`thiserror`, `rustyline`, `crossterm`, `tower-lsp`, `tokio`; dev dependency `tempfile`).
 
-## Build & Test Commands
-
-```bash
-cargo build                    # Build
-cargo run                     # Start REPL
-cargo run -- file.bas          # Execute a .bas file
-cargo test                    # Run all tests (unit + integration)
-cargo test --lib              # Run unit tests only
-cargo test --test integration  # Run integration tests only
-cargo test test_hello          # Run a single test by name
-cargo build --bin rice-lsp     # Build the language server (stdio-based)
+```sh
+cargo build
+cargo run
+cargo run -- program.bas
+cargo run -- --dialect ansi program.bas
+cargo build --bin rice-lsp
+cargo test
+cargo test --lib
+cargo test --test integration
+cargo test --bin rice-lsp
+cargo test test_hello
 ```
 
-Rust edition 2024 (`Cargo.toml`). Uses `thiserror` for error types, `rustyline` for REPL, `crossterm` for terminal manipulation, `pretty_assertions` and `tempfile` for tests, `tower-lsp`/`tokio`/`serde_json` for the LSP server.
+The CLI runs on an 8 MiB stack thread because large debug interpreter frames can exhaust a smaller stack. `Interpreter::run_source` is the shared execution entry point for source strings and REPL submissions. `run_file` reads UTF-8 source and calls it; it does not change the working directory.
 
-REPL and file execution share interpreter code paths; keep behavior parity between them. The REPL features 24-bit ANSI syntax highlighting, automatic multi-line block detection (FOR/NEXT, IF/END IF, SUB/END SUB, etc.), and old-school line number program editing (type numbered lines to build a program, then RUN/LIST/NEW/DELETE).
+## Source navigation
 
-## Architecture
+| File | Responsibility / change point |
+|---|---|
+| `src/lib.rs` | Public modules, default dialect, whole-source directive detection, keyboard and screen helpers. |
+| `src/token.rs`, `src/lexer.rs` | Tokens/spans, uppercase names, comments/literals, suffix rules, compound keywords. |
+| `src/ast.rs`, `src/parser.rs` | Statement/expression AST and recursive-descent grammar; operator precedence is in the [reference](docs/language-reference.md). |
+| `src/interpreter.rs` | Prescan, execution, call frames, control-flow propagation, stateful builtins, files, console, exceptions. |
+| `src/environment.rs` | Parent scope reads, local/shared writes, constants/declarations, labels. Default array base is 1 in both modes. |
+| `src/value.rs` | Two primitive values (`Numeric(f64)`, `Str`) plus aggregate `Record`; type metadata, conversions, formatting, binary byte mapping. |
+| `src/builtins.rs` | Pure builtin registry. Exact and variadic arities use separate registration methods. |
+| `src/mat.rs` | Two-dimensional numeric matrix operations. |
+| `src/format_using.rs` | PRINT USING numeric/string formatting. |
+| `src/repl.rs` | Immediate execution, block-depth heuristic, stored numbered lines, RUN/LIST/NEW/DELETE, highlighting/history. |
+| `src/main.rs` | CLI parsing and interpreter thread. |
+| `src/error.rs` | Lexer/parser/runtime errors and host I/O code mapping. |
+| `src/bin/rice_lsp.rs` | Stdio LSP diagnostics, completions, hover strings, current-document definitions. |
 
-`Source → Lexer → Tokens → Parser → AST → Tree-Walking Interpreter → Output`
+Prefer extending these existing files over introducing new modules. Keep names normalized to uppercase; full QB suffixes are part of storage keys. Arrays use flattened keys: avoid a broad storage refactor without a task and tests specifically requiring it.
 
-All hand-written (no parser generators). Interpreter only -- no compiler backend.
+## Behavioral details to preserve and verify
 
-### Module Map
+- `=` is assignment at statement level and comparison inside expressions. Parentheses remain explicit AST nodes because they suppress BYREF writeback.
+- Function-shaped syntax resolves interpreter functions, registry functions, user-defined functions, then arrays. Bare zero-argument builtin spellings vary; see [builtins](docs/builtins.md).
+- `run_source` detects dialect before lexing, parses, then prescans DATA, labels, types, SUB, and FUNCTION definitions before execution. Prescan recurses eligible control blocks, not into procedure definitions; calls do not independently prescan nested definitions/DATA.
+- Control-flow values propagate through `exec_block`; preserve loop exits, GOTO, GOSUB/RETURN continuations, END, RETRY/CONTINUE, and classic RESUME behavior. Label targets for each procedure are separate from caller targets.
+- QB defaults to BYREF and bitwise numeric logic with true `-1`; ANSI defaults to BYVAL and logical operations with true `1`. Both use array base 1 unless changed. String `+` is QB-only; `&` works in both modes.
+- Only `$` is a string suffix. Numeric suffixes distinguish QB names without enforcing numeric widths in memory. Ordinary assignments are permissive; defaults, OPTION EXPLICIT, UDT metadata, and I/O conversions impose distinct rules. Do not conflate declaration metadata with strict type checking.
+- PRINT has no positive-number padding and uses 16-character comma zones. Console tracking is separate from terminal dimensions; consult [console](docs/console.md).
+- FILE functions including FREEFILE, EOF, LOF, LOC, SEEK and INPUT$ are in `interpreter.rs`. QB and ANSI GET/PUT have different implementations. See [file I/O](docs/file-io.md).
+- REPL immediate state persists; RUN replaces the interpreter while retaining the dialect, and NEW only clears stored program lines. See [runtime](docs/runtime.md).
 
-- **`token.rs`** — Token enum, Span. All identifiers stored UPPERCASE. QBasic mode accepts suffixes in variable names; runtime values are still NUMERIC or STRING.
-- **`lexer.rs`** — Hand-written tokenizer. Case-insensitive. Detects line numbers at line start. Recognizes compound keywords (`END IF`, `END SUB`, `END FUNCTION`, `END SELECT`, `END TYPE`, `END WHILE`, `END WHEN`, `LINE INPUT`, `SELECT CASE`, `OPTION BASE`).
-- **`ast.rs`** — `Stmt` and `Expr` enums. `LabeledStmt` wraps statements with optional line labels. Key types: `PrintStmt`, `IfStmt`, `ForStmt`, `DoLoopStmt`, `SelectCaseStmt`, `SubDef`, `FunctionDef`, `WhenExceptionStmt`.
-- **`parser.rs`** — Recursive descent. Expression parsing uses precedence climbing (XOR → OR → AND → NOT → comparison → +/-/&(additive+concat) → MOD → */÷ → unary → ^). `at_stmt_end()` also treats `ELSE` as a terminator for single-line IF support.
-- **`interpreter.rs`** — Tree-walking evaluator. Uses `ControlFlow` enum (Normal, ExitFor, ExitDo, ExitSub, ExitFunction, Goto, End, Retry, Continue) for control flow. `SharedOutput` wrapper enables testable output capture. `FileHandle` struct manages open files with `BufReader`/`BufWriter` for text and binary I/O. `ExceptionInfo` struct tracks EXTYPE and EXTEXT$ for WHEN EXCEPTION error handling.
-- **`format_using.rs`** — PRINT USING format engine. Supports numeric specifiers (`#`, `.`, `+`, `-`, `$$`, `**`, `**$`, `,`, `^^^^`) and string specifiers (`!`, `\ \`, `&`). Escape with `_`. Overflow prefix `%`.
-- **`environment.rs`** — `Rc<RefCell<Environment>>` scope chain. Variable key = name (no suffixes). Label map stored here. Supports `shared_vars` set for SHARED keyword (reads/writes go to root scope). Constants are checked through the parent chain to prevent reassignment. Default OPTION BASE is 1.
-- **`value.rs`** — `Value` enum (Numeric, Str, Record). Only two primitive types: NUMERIC (f64) and STRING. No leading space on positive numbers in PRINT output. 16-char zone width for comma-separated PRINT.
-- **`mat.rs`** — MAT (matrix) operations. Element-wise arithmetic (add, subtract), matrix multiply, scalar multiply, INV (inverse), TRN (transpose), DET (determinant), ZER (zero matrix), CON (ones matrix), IDN (identity matrix).
-- **`builtins.rs`** — Built-in function registry. Math (ABS, INT, FIX, SGN, SQR, SIN, COS, TAN, ATN, EXP, LOG, ROUND, ASIN, ACOS, COT, CSC, SEC, ANGLE, CEIL, TRUNCATE, REMAINDER, MAXNUM, PI), string (LEN, INSTR, LTRIM$, RTRIM$, SPACE$, STRING$, CHR$, ASC, STR$, VAL, LEFT$, RIGHT$, MID$, UCASE$, LCASE$, HEX$, OCT$), system (ENVIRON$, TIMER, DATE$, TIME$). Note: FREEFILE, EOF, LOF, LOC are implemented directly in `interpreter.rs` (not in the builtin registry).
-- **`repl.rs`** — Interactive REPL using rustyline. Environment persists across immediate-mode lines. Supports old-school line-number program editing: numbered lines are stored in a `BTreeMap<u32, String>`, RUN reconstructs source and executes with a fresh interpreter, LIST/NEW/DELETE manage the stored program. Input classification (`classify_input`) runs before multi-line block accumulation so numbered lines bypass depth tracking.
-- **`error.rs`** — `LexError`, `ParseError`, `RuntimeError` enums via `thiserror`. `RuntimeError::IoError` carries error codes for file/directory operations.
-- **`bin/rice_lsp.rs`** — LSP server binary (stdio transport, `tower-lsp`). Provides diagnostics, completions, hover documentation, and go-to-definition.
-- **`main.rs`** — CLI: no args → REPL, one arg → execute file.
-- **`lib.rs`** — Module declarations. Also provides shared utility functions: `poll_inkey()` for non-blocking key reading via crossterm, `update_screen_buffer()` for tracking printed characters in an 80x25 buffer (used for `SCREEN()` support).
+The authoritative documentation inventory is [docs/README.md](docs/README.md). Check the [compatibility register](docs/compatibility.md) for partial features and known gaps before extending behavior.
 
-### Key Design Decisions
+## Tests and maintenance
 
-- **Type system**: Only NUMERIC (f64) and STRING runtime values. QBasic mode accepts suffixes (`%`, `!`, `#`, `&`, `$`) in variable names; ANSI mode only supports `$` for strings.
-- **`=` disambiguation**: at statement level `=` is assignment; inside expressions `=` is comparison
-- **Single-line vs block IF**: if tokens follow THEN on the same line, it's single-line
-- **Auto-initialization**: undefined variables auto-initialize to 0 or "" (BASIC behavior)
-- **`name(args)` ambiguity**: resolved at runtime -- check builtin registry, then user functions, then arrays
-- **GOTO**: label map built during prescan; ControlFlow::Goto bubbles up to exec_block which resolves it
-- **GOSUB/RETURN**: supported in QBasic mode; not supported in ANSI mode.
-- **Truth values**: QBasic mode true = `-1`, false = `0`; ANSI mode true = `1`, false = `0`.
-- **Logical operators**: QBasic mode AND, OR, NOT, XOR are bitwise on numeric values; ANSI mode uses logical truth values. No IMP or EQV operators. No `\` integer division.
-- **MOD**: works on real numbers (not integer-only)
-- **String concatenation**: QBasic mode accepts string `+` and `&`; ANSI mode uses `&` and keeps `+` arithmetic.
-- **String slicing**: colon syntax `A$(3:7)` instead of MID$/LEFT$/RIGHT$
-- **Error handling**: WHEN EXCEPTION IN...USE...END WHEN with RETRY, CONTINUE, EXTYPE, EXTEXT$. QBasic mode also supports top-level ON ERROR GOTO, RESUME, ERROR, ERR, and ERL.
-- **File I/O**: ANSI OPEN syntax (`OPEN #n: NAME "file", ACCESS INPUT/OUTPUT/OUTIN, ORGANIZATION SEQUENTIAL/STREAM`) and QBasic OPEN syntax are supported, including SEEK and FIELD/LSET/RSET random record buffers.
-- **OPTION BASE**: defaults to 1, not 0
-- **Parameters**: QBasic mode is BYREF by default; ANSI mode is BYVAL by default.
-- **PRINT formatting**: no leading space on positive numbers; 16-character zone width for comma-separated output
-- **Prescan ordering**: `Interpreter::run_source` pre-scans labels, DATA, SUB/FUNCTION definitions before execution; prescan recurses into nested blocks (IF, FOR, WHILE, DO, SELECT CASE); preserve this ordering
-- **Stack size**: `main.rs` spawns an 8MB-stack thread because debug-mode `match` arms in the interpreter create ~100KB frames, exhausting the default Windows 1MB stack
+Integration assertions are in `tests/integration.rs`, with fixtures in `tests/programs/*.bas`. Helpers include `run_file(path)`, `run_bas(source)`, `run_bas_with_tmpdir(source)` (substitutes `{DIR}`), and `run_bas_may_fail(source)`. `SharedOutput` captures PRINT output. Tests that use `Interpreter::with_io` can provide controlled input and noninteractive output.
 
-### Code Conventions
+Use focused tests for the changed behavior, and run required checks. TIMER, DATE$, TIME$, and RND are nondeterministic without overrides/seeding; assert shape, range, or relationships instead of wall-clock values. Unit/integration success is a regression result, not a dialect conformance certificate.
 
-- Follow existing Rust style: `snake_case` for functions/fields, `CamelCase` for types/enums. Use `match` and `Result`-based error propagation.
-- Prefer extending existing files (`parser.rs`, `interpreter.rs`, `value.rs`, `builtins.rs`) over adding new modules/abstractions.
-- Module boundaries are declared in `src/lib.rs`; avoid unnecessary public API churn.
-- All identifiers are normalized to UPPERCASE internally; preserve case-insensitive BASIC behavior.
-- Arrays are currently implemented with flattened keys; avoid broad refactors without targeted tests.
-- Builtins are centralized in `builtins.rs`; function resolution order: builtin → user-defined function → array.
+For a new statement, update token/lexer, AST/parser, execution, any required prescan/control-flow handling, documentation, and useful tests. For a new pure builtin, register exact arity with `register(name, function, count)` or variable arity with `register_variadic`; **arity 0 means exactly zero arguments**, not variadic. Stateful builtins belong in interpreter dispatch and may need parser spelling support. Update LSP documentation strings if the feature is exposed there.
 
-### Test Programs
-
-Integration tests in `tests/programs/*.bas` cover: hello world, arithmetic, variables, FizzBuzz, while loops, do/loops, select case, recursive factorial, string functions, DATA/READ, SUB calls, file I/O (text, append, FREEFILE, EOF, LOF), WRITE (console), SLEEP, CLEAR, file system operations (NAME, KILL, MKDIR, RMDIR, CHDIR), SHELL, ENVIRON$ / ENVIRON, SHARED, COMMON, STATIC, OPTION EXPLICIT, DATE$/TIME$ assignment override, RANDOMIZE/RND, TYPE (user-defined types with dot notation, arrays of TYPE, TYPE in SUB), MAT operations, WHEN EXCEPTION error handling, string slicing.
-
-To add a new integration test: create a `.bas` file in `tests/programs/`, then add a test function in `tests/integration.rs` using one of these helpers:
-- `run_file("tests/programs/foo.bas")` — load and execute a `.bas` file, returns captured output
-- `run_bas("PRINT 42\n")` — parse/execute inline BASIC source
-- `run_bas_with_tmpdir(src)` — execute with a temp directory; use `{DIR}` placeholder in source for paths
-- `run_bas_may_fail(src)` — returns both output and `Result` for testing error conditions
-
-The interpreter's `SharedOutput` captures PRINT output for assertion.
-
-**Note on nondeterministic builtins**: TIMER, DATE$, TIME$, and RND produce varying output. Avoid asserting exact values for these in tests; test structure/format instead.
-
-### Extending the Interpreter
-
-**Adding a new statement:**
-1. Add `Token::Kw*` variant to `token.rs`
-2. Add `"KEYWORD" => Token::KwKeyword` in the lexer's keyword match table in `lexer.rs`
-3. Add `Stmt::*` variant in `ast.rs`
-4. Add `Token::Kw* => self.parse_*()` case in `parse_statement()` in `parser.rs`
-5. Add `Stmt::* => ...` case in `exec_stmt()` in `interpreter.rs` (return `ControlFlow::Normal` for simple statements)
-6. If the statement needs prescan (labels, data, definitions), add handling in the prescan phase
-
-**Adding a builtin function:**
-1. Write `fn builtin_name(args: &[Value]) -> Result<Value, RuntimeError>` in `builtins.rs`
-2. Call `reg.register("NAME", builtin_name, arity)` in `BuiltinRegistry::new()` (use arity `0` for variadic)
-3. Use `args[n].to_f64()?` or `.to_string_val()?` for type coercion; return `Value::Numeric(...)` or `Value::Str(...)`
-
-**Adding a new error:**
-1. Add variant to `LexError`, `ParseError`, or `RuntimeError` in `error.rs` with `#[error(...)]` attribute
-2. For `RuntimeError`: add error code mapping in `io_error_to_basic_code()` if applicable
-
-## Status of BASIC Features
-
-**Working**: PRINT, PRINT USING, LET, DIM, CONST, INPUT, LINE INPUT, IF/ELSEIF/ELSE/END IF, FOR/NEXT, WHILE/END WHILE, DO/LOOP, SELECT CASE, GOTO, EXIT FOR/DO/SUB/FUNCTION, SUB/END SUB, FUNCTION/END FUNCTION, CALL, DECLARE, DATA/READ/RESTORE, SWAP, OPTION BASE (default 1), OPTION EXPLICIT, REDIM, ERASE, SHARED, COMMON, STATIC, TYPE/END TYPE (user-defined types with dot notation, arrays of TYPE), RANDOMIZE/RND, WRITE (console), SLEEP, CLEAR, WHEN EXCEPTION IN/USE/END WHEN (with RETRY, CONTINUE, EXTYPE, EXTEXT$), string slicing with colon syntax (A$(3:7)), string +/& concatenation by dialect, MAT operations (MAT PRINT, MAT READ, MAT INPUT, MAT +/-/*, scalar multiply, INV, TRN, DET, ZER, CON, IDN), File I/O (ANSI OPEN with NAME/ACCESS/ORGANIZATION, QBasic OPEN syntax, CLOSE, PRINT#, INPUT#, LINE INPUT#, SET POINTER, ASK POINTER), file functions (FREEFILE, EOF, LOF, LOC), file system operations (NAME...AS, KILL, MKDIR, RMDIR, CHDIR), console features (CLS, LOCATE, COLOR, BEEP, WIDTH, VIEW PRINT, CSRLIN, POS, INKEY$, INPUT$, SCREEN()), SHELL, ENVIRON$ / ENVIRON, DATE$ / TIME$ read and assignment override, BYREF/BYVAL parameter semantics by dialect, logical AND/OR/NOT/XOR by dialect, STOP, SYSTEM, END, QBasic string functions (LEFT$, RIGHT$, MID$, UCASE$, LCASE$, HEX$, OCT$), REPL line-number mode (RUN, LIST, NEW, DELETE).
-
-**Not implemented**: proper array storage (currently uses flattened key hack).
+When modifying errors, inspect both `error.rs` host mappings and interpreter exception-code handling. When modifying documented behavior, update the owning topic guide and syntax/core/dialect indexes as needed; avoid maintaining contradictory copies of the full specification.

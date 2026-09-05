@@ -335,7 +335,7 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("ERASE", "Erase an array"),
         ("SHARED", "Share variable with main module"),
         ("STATIC", "Preserve local variables between calls"),
-        ("CLEAR", "Reset all variables to defaults"),
+        ("CLEAR", "Clear current variable values and reset DATA cursor"),
         // Control flow
         ("IF", "Conditional statement"),
         ("THEN", "Part of IF statement"),
@@ -378,8 +378,8 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("CALL", "Call a SUB"),
         ("DECLARE", "Forward-declare a SUB or FUNCTION"),
         ("BYVAL", "Pass argument by value"),
-        ("BYREF", "Pass argument by reference"),
-        ("DEF FN", "Define a single-line function in QuickBasic mode"),
+        ("BYREF", "Copy parameter back to a plain variable argument"),
+        ("DEF FN", "Define a single-expression or multiline QBasic function"),
         ("DEFINT", "Set default numeric type for variable letters"),
         ("DEFLNG", "Set default numeric type for variable letters"),
         ("DEFSNG", "Set default numeric type for variable letters"),
@@ -430,7 +430,7 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("CHDIR", "Change current directory"),
         ("CHDRIVE", "Change current drive"),
         ("FILES", "List directory entries"),
-        ("ENVIRON", "Set an environment variable"),
+        ("ENVIRON", "Set a QBasic interpreter-local environment override"),
         // Console
         ("CLS", "Clear the screen"),
         ("LOCATE", "Move cursor to row, column"),
@@ -448,10 +448,10 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("SLEEP", "Pause execution"),
         ("RANDOMIZE", "Seed the random number generator"),
         // Operators
-        ("AND", "Logical AND"),
-        ("OR", "Logical OR"),
-        ("NOT", "Logical NOT"),
-        ("XOR", "Logical exclusive OR"),
+        ("AND", "Bitwise AND in QBasic; logical AND in ANSI"),
+        ("OR", "Bitwise OR in QBasic; logical OR in ANSI"),
+        ("NOT", "Bitwise NOT in QBasic; logical NOT in ANSI"),
+        ("XOR", "Bitwise XOR in QBasic; logical XOR in ANSI"),
         ("MOD", "Modulo operator"),
         // Other
         ("REM", "Comment"),
@@ -481,7 +481,7 @@ static BUILTIN_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("ATN", "ATN(n) — Arctangent (radians)"),
         ("EXP", "EXP(n) — e raised to power n"),
         ("LOG", "LOG(n) — Natural logarithm"),
-        ("RND", "RND — Random number [0,1)"),
+        ("RND", "RND([n]) — Random number [0,1); parentheses required"),
         (
             "ROUND",
             "ROUND(n[, places]) — Round to nearest integer or decimal place",
@@ -495,25 +495,25 @@ static BUILTIN_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("CEIL", "CEIL(n) — Ceiling (smallest integer >= n)"),
         (
             "TRUNCATE",
-            "TRUNCATE(n, places) — Truncate to decimal places",
+            "TRUNCATE(n[, places]) — Truncate to decimal places",
         ),
         ("REMAINDER", "REMAINDER(a, b) — Remainder of a / b"),
-        ("MAXNUM", "MAXNUM — Largest representable number"),
-        ("PI", "PI — Value of pi (3.14159...)"),
+        ("MAXNUM", "MAXNUM() — Largest finite f64 value"),
+        ("PI", "PI() — Value of pi (3.14159...)"),
         // String
-        ("LEN", "LEN(s$) — String length"),
+        ("LEN", "LEN(s$) — Unicode scalar-value count"),
         ("LEFT$", "LEFT$(s$, n) — Left n characters"),
         ("RIGHT$", "RIGHT$(s$, n) — Right n characters"),
         ("MID$", "MID$(s$, start[, len]) — Substring"),
         ("INSTR", "INSTR([start,] s$, search$) — Find substring"),
         ("UCASE$", "UCASE$(s$) — Convert to uppercase"),
         ("LCASE$", "LCASE$(s$) — Convert to lowercase"),
-        ("LTRIM$", "LTRIM$(s$) — Remove leading spaces"),
-        ("RTRIM$", "RTRIM$(s$) — Remove trailing spaces"),
+        ("LTRIM$", "LTRIM$(s$) — Remove leading Unicode whitespace"),
+        ("RTRIM$", "RTRIM$(s$) — Remove trailing Unicode whitespace"),
         ("SPACE$", "SPACE$(n) — String of n spaces"),
         ("STRING$", "STRING$(n, char) — Repeat character n times"),
-        ("CHR$", "CHR$(n) — Character from ASCII code"),
-        ("ASC", "ASC(s$) — ASCII code of first character"),
+        ("CHR$", "CHR$(n) — Character U+0000..U+00FF"),
+        ("ASC", "ASC(s$) — Unicode scalar value of first character"),
         ("STR$", "STR$(n) — Convert number to string"),
         ("VAL", "VAL(s$) — Convert string to number"),
         ("HEX$", "HEX$(n) — Hexadecimal representation"),
@@ -532,8 +532,8 @@ static BUILTIN_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("ERL", "ERL — Line number of last classic BASIC error"),
         // System
         ("ENVIRON$", "ENVIRON$(name$) — Get environment variable"),
-        ("CURDIR$", "CURDIR$ — Current directory"),
-        ("COMMAND$", "COMMAND$ — Program command-line tail"),
+        ("CURDIR$", "CURDIR$() — Current process directory; no drive argument"),
+        ("COMMAND$", "COMMAND$() — Raw host arguments from index 2"),
         ("TIMER", "TIMER — Seconds since midnight"),
         ("DATE$", "DATE$ — Current date"),
         ("TIME$", "TIME$ — Current time"),
@@ -630,11 +630,11 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "RND",
-            "```basic\nRND[(n)]\n```\nReturns a random number in [0, 1).",
+            "```basic\nRND([n])\n```\nNo argument or positive n advances the generator; zero returns its previous value; negative n reseeds it. Results are in [0, 1). Bare RND is a variable. Rice does not reproduce QBasic's sequence.",
         ),
         (
             "ROUND",
-            "```basic\nROUND(n[, places])\n```\nRounds `n` to the nearest integer, or to `places` decimal places.",
+            "```basic\nROUND(n[, places])\n```\nRounds to the nearest value, ties away from zero. Places defaults to zero; an explicit value is truncated and must be 0..308.",
         ),
         (
             "ASIN",
@@ -666,24 +666,24 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "TRUNCATE",
-            "```basic\nTRUNCATE(n, places)\n```\nTruncates `n` to `places` decimal places.",
+            "```basic\nTRUNCATE(n[, places])\n```\nTruncates toward zero. Places defaults to zero; an explicit value is truncated and must be 0..308.",
         ),
         (
             "REMAINDER",
-            "```basic\nREMAINDER(a, b)\n```\nReturns the IEEE remainder of `a` divided by `b`.",
+            "```basic\nREMAINDER(a, b)\n```\nReturns the floating-point remainder using a truncating quotient. Unlike MOD, a nonzero result has the dividend's sign. A zero divisor raises an error.",
         ),
         (
             "MAXNUM",
-            "```basic\nMAXNUM\n```\nReturns the largest representable numeric value.",
+            "```basic\nMAXNUM()\n```\nReturns the largest finite f64 value. Parentheses are required; bare MAXNUM is a variable.",
         ),
         (
             "PI",
-            "```basic\nPI\n```\nReturns the value of pi (3.14159265358979...).",
+            "```basic\nPI()\n```\nReturns the f64 approximation of pi. Parentheses are required; bare PI is a variable.",
         ),
         // String
         (
             "LEN",
-            "```basic\nLEN(s$)\n```\nReturns the length of string `s$`.",
+            "```basic\nLEN(s$)\n```\nCounts Unicode scalar values, not UTF-8 bytes or grapheme clusters. Only string arguments are supported.",
         ),
         (
             "LEFT$",
@@ -711,11 +711,11 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "LTRIM$",
-            "```basic\nLTRIM$(s$)\n```\nRemoves leading spaces from `s$`.",
+            "```basic\nLTRIM$(s$)\n```\nRemoves leading Unicode whitespace, including spaces, tabs, and newlines.",
         ),
         (
             "RTRIM$",
-            "```basic\nRTRIM$(s$)\n```\nRemoves trailing spaces from `s$`.",
+            "```basic\nRTRIM$(s$)\n```\nRemoves trailing Unicode whitespace, including spaces, tabs, and newlines.",
         ),
         (
             "SPACE$",
@@ -727,11 +727,11 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "CHR$",
-            "```basic\nCHR$(n)\n```\nReturns the character with ASCII code `n`.",
+            "```basic\nCHR$(n)\n```\nReturns character U+0000..U+00FF. The numeric argument is truncated and must be 0..255.",
         ),
         (
             "ASC",
-            "```basic\nASC(s$)\n```\nReturns the ASCII code of the first character of `s$`.",
+            "```basic\nASC(s$)\n```\nReturns the first character's Unicode scalar value, which may exceed 255. Empty input raises an error.",
         ),
         (
             "STR$",
@@ -768,7 +768,7 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         // File
         (
             "FREEFILE",
-            "```basic\nFREEFILE\n```\nReturns the next available file number.",
+            "```basic\nFREEFILE\n```\nReturns the lowest unused file number in 1..255, or zero when exhausted. Bare FREEFILE is the supported syntax; FREEFILE() is rejected.",
         ),
         (
             "EOF",
@@ -780,7 +780,7 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "LOC",
-            "```basic\nLOC(n)\n```\nReturns the current byte position in file `n`.",
+            "```basic\nLOC(n)\n```\nReturns the current zero-based byte offset, including for RANDOM files. This is not a QBasic record-count position.",
         ),
         // System
         (
@@ -789,19 +789,19 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "ENVIRON",
-            "```basic\nENVIRON \"name=value\"\n```\nSets the environment variable `name` to `value`.",
+            "```basic\nENVIRON \"name=value\"\n```\nQBasic mode only. Sets an interpreter-local override read by ENVIRON$ and passed to SHELL children; it does not modify the host process environment.",
         ),
         (
             "CURDIR$",
-            "```basic\nCURDIR$\n```\nReturns the current working directory.",
+            "```basic\nCURDIR$()\n```\nReturns the host process working directory. No drive argument is supported. Parentheses are required; bare CURDIR$ is a variable.",
         ),
         (
             "COMMAND$",
-            "```basic\nCOMMAND$\n```\nReturns the command-line arguments after the source file, joined with spaces.",
+            "```basic\nCOMMAND$()\n```\nJoins raw host arguments starting at index 2. The CLI accepts no extra BASIC program arguments, so the result may be empty or contain options/the source path. Parentheses are required.",
         ),
         (
             "TIMER",
-            "```basic\nTIMER\n```\nReturns the number of seconds elapsed since midnight.",
+            "```basic\nTIMER\n```\nReturns local seconds since midnight. Non-Windows resolution is whole seconds; Windows includes milliseconds. Bare TIMER is the supported syntax; TIMER() is rejected.",
         ),
         (
             "DATE$",
@@ -897,7 +897,7 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "DIM",
-            "```basic\nDIM var[(dims)] [AS type]\n```\nDeclares a variable or array with optional type and dimensions.",
+            "```basic\nDIM [SHARED] var[(dims)] [AS type]\n```\nDeclares and initializes values or records array bounds. All numeric kinds use f64; AS types do not enforce assignments. Ordinary array access does not enforce recorded bounds.",
         ),
         (
             "CONST",
@@ -909,11 +909,11 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "OPTION BASE",
-            "```basic\nOPTION BASE {0|1}\n```\nSets the default lower bound for arrays. Default is 1.",
+            "```basic\nOPTION BASE {0|1}\n```\nSets the default lower bound for subsequent array declarations. Rice currently defaults to 1 in both dialects; select 0 explicitly for QBasic code that assumes a zero base.",
         ),
         (
             "OPTION EXPLICIT",
-            "```basic\nOPTION EXPLICIT\n```\nRequires every variable to be declared (DIM, SHARED, STATIC, CONST, type suffix, or DEFtype) before use.",
+            "```basic\nOPTION EXPLICIT\n```\nQBasic mode only. Checks declarations at runtime; DIM, SHARED, STATIC, CONST, parameters, suffixes, and DEFtype can declare names. Existing ancestor values and some statement paths bypass checks.",
         ),
         (
             "OPTION DIALECT",
@@ -921,23 +921,23 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "REDIM",
-            "```basic\nREDIM [PRESERVE] var(dims) [AS type]\n```\nRedimensions an array. Use `PRESERVE` to keep existing contents.",
+            "```basic\nREDIM [PRESERVE] var(dims) [AS type]\n```\nUpdates array bounds. Without PRESERVE, clears local element values. PRESERVE retains even out-of-range elements and does not enforce ordinary access bounds.",
         ),
         (
             "ERASE",
-            "```basic\nERASE array[, array...]\n```\nResets arrays to their default values.",
+            "```basic\nERASE array[, array...]\n```\nClears local flattened array elements and sets each base variable to numeric zero. Bounds and record-array type metadata remain.",
         ),
         (
             "SHARED",
-            "```basic\nSHARED var[, var...]\n```\nMakes variables in a SUB/FUNCTION refer to the main module's variables.",
+            "```basic\nSHARED var[, var...]\n```\nRoutes named scalar/record variables to the root environment. Sharing an array base name does not share its flattened element keys.",
         ),
         (
             "STATIC",
-            "```basic\nSTATIC var[, var...]\n```\nPreserves local variable values between calls to a SUB/FUNCTION.",
+            "```basic\nSTATIC var[, var...]\n```\nPreserves named scalar/record values between procedure calls. STATIC array syntax does not preserve elements or establish bounds; static state survives CLEAR.",
         ),
         (
             "CLEAR",
-            "```basic\nCLEAR\n```\nResets all variables to their default values (0 or \"\").",
+            "```basic\nCLEAR\n```\nClears variable values in the current environment and resets the DATA cursor. Constants, declarations, array metadata, procedures, static storage, and open files remain.",
         ),
         // Control flow
         (
@@ -996,11 +996,11 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
             "RESUME",
             "```basic\nRESUME\nRESUME NEXT\nRESUME label\n```\nQuickBasic compatibility mode only. Resumes execution after a classic `ON ERROR GOTO` handler. Resume is exact at top-level scope.",
         ),
-        ("END", "```basic\nEND\n```\nEnds program execution."),
-        ("STOP", "```basic\nSTOP\n```\nStops program execution."),
+        ("END", "```basic\nEND\n```\nEnds the current program, including when used in a SUB. Function evaluation currently discards this control flow, so END inside a FUNCTION does not stop its caller."),
+        ("STOP", "```basic\nSTOP\n```\nEnds execution like END; no resumable debugger break is implemented. Function evaluation currently discards this control flow."),
         (
             "SYSTEM",
-            "```basic\nSYSTEM\n```\nExits to the operating system.",
+            "```basic\nSYSTEM\n```\nEnds execution like END; QUIT is an alias. A stored REPL RUN returns to the prompt. Function evaluation currently discards this control flow.",
         ),
         // Procedures
         (
@@ -1009,7 +1009,7 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "FUNCTION",
-            "```basic\nFUNCTION name[$] (params)\n  name = return_value\nEND FUNCTION\n```\nDefines a function that returns a value.",
+            "```basic\nFUNCTION name(params) [AS type] [STATIC]\n  name = return_value\nEND FUNCTION\n```\nReturns the value assigned to its exact name. The unassigned default is empty string for a $ name, otherwise zero; AS does not enforce or initialize the result type.",
         ),
         (
             "CALL",
@@ -1017,7 +1017,7 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "DECLARE",
-            "```basic\nDECLARE SUB name (params)\nDECLARE FUNCTION name (params)\n```\nForward-declares a SUB or FUNCTION.",
+            "```basic\nDECLARE SUB name (params)\nDECLARE FUNCTION name (params)\n```\nOptional declaration with no runtime validation or external linking. DECLARE FUNCTION does not accept a return AS clause.",
         ),
         (
             "BYVAL",
@@ -1025,15 +1025,15 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "BYREF",
-            "```basic\nSUB name (BYREF x AS NUMERIC)\n```\nPasses a parameter by reference. This is the default in QuickBasic compatibility mode.",
+            "```basic\nSUB name (BYREF x AS NUMERIC)\n```\nCopies a value in and writes it back on exit only for a plain variable argument. Array elements, fields, parentheses, and other expressions are not written back. Default in QBasic mode; array parameters do not bind arrays.",
         ),
         (
             "DEF",
-            "```basic\nDEF FNname[(params)] = expression\n```\nQuickBasic compatibility mode only. Defines a single-line user function.",
+            "```basic\nDEF FNname[(params)] = expression\n```\nQBasic mode only. Also accepts a multiline body ending in END DEF. FN is a convention, not a required prefix.",
         ),
         (
             "DEFSTR",
-            "```basic\nDEFSTR A-Z\n```\nQuickBasic compatibility mode only. Variables beginning with the listed letters default to string when no suffix or AS type is present. DEFINT, DEFLNG, DEFSNG, and DEFDBL are accepted for numeric compatibility.",
+            "```basic\nDEFSTR A-Z\n```\nQuickBasic compatibility mode only. Subsequently auto-initialized unsuffixed variables beginning with the listed letters default to string. DIM has its own defaults and does not inherit DEFSTR. DEFINT, DEFLNG, DEFSNG, and DEFDBL are accepted for numeric compatibility.",
         ),
         (
             "DEFINT",
@@ -1062,12 +1062,12 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "RESTORE",
-            "```basic\nRESTORE [label]\n```\nResets the DATA pointer to the beginning or to a specific label.",
+            "```basic\nRESTORE [label]\n```\nResets the DATA pointer to the beginning or to a label attached directly to DATA. Unknown DATA labels silently rewind.",
         ),
         // User-defined types
         (
             "TYPE",
-            "```basic\nTYPE name\n  field AS type\n  ...\nEND TYPE\n```\nDefines a user-defined record type with named fields. Access fields with dot notation.",
+            "```basic\nTYPE name\n  field AS type\n  ...\nEND TYPE\n```\nDefines a record in either dialect. Supports nested nonrecursive records and STRING * literal fields. Types supply defaults/QBasic binary layouts; field assignments are not type-checked or fixed-width in memory.",
         ),
         // Error handling
         (
@@ -1080,12 +1080,12 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "CONTINUE",
-            "```basic\nCONTINUE\n```\nResumes execution after the statement that caused the error in a WHEN EXCEPTION handler.",
+            "```basic\nCONTINUE\n```\nResumes the protected body after the failed direct statement, under the same handler. If a nested construct failed, skips that whole direct construct.",
         ),
         // File I/O
         (
             "OPEN",
-            "```basic\nOPEN #n: NAME file$, ACCESS {INPUT|OUTPUT|OUTIN}, ORGANIZATION {SEQUENTIAL|STREAM}\nOPEN file$ FOR {INPUT|OUTPUT|APPEND|BINARY|RANDOM} AS #n\n```\nOpens a file for I/O. The second form is QuickBasic compatibility mode syntax.",
+            "```basic\nOPEN #n: NAME file$, ACCESS {INPUT|OUTPUT|OUTIN}, ORGANIZATION {SEQUENTIAL|STREAM}\nOPEN file$ FOR {INPUT|OUTPUT|APPEND|BINARY|RANDOM} AS #n\n```\nBoth forms are accepted in both dialects. GET/PUT use typed binary records in QBasic mode and a raw-string path in ANSI mode.",
         ),
         ("CLOSE", "```basic\nCLOSE #n\n```\nCloses an open file."),
         (
@@ -1098,15 +1098,15 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "FIELD",
-            "```basic\nFIELD #n, width AS var$[, width AS var$...]\n```\nQuickBasic compatibility mode only. Maps string variables to slices of a RANDOM file record buffer.",
+            "```basic\nFIELD #n, width AS var$[, width AS var$...]\n```\nQuickBasic compatibility mode only. Maps string variables to byte slices of a channel record buffer. RANDOM mode is not enforced; ordinary assignment does not update the buffer.",
         ),
         (
             "LSET",
-            "```basic\nLSET var$ = expr$\n```\nQuickBasic compatibility mode only. Left-aligns a string into a FIELD slot or existing fixed-width string variable.",
+            "```basic\nLSET var$ = expr$\n```\nQuickBasic compatibility mode only. Left-aligns into a FIELD slot or the existing string value's current byte width, padding/truncating as needed. AS STRING * length is not retained for this operation.",
         ),
         (
             "RSET",
-            "```basic\nRSET var$ = expr$\n```\nQuickBasic compatibility mode only. Right-aligns a string into a FIELD slot or existing fixed-width string variable.",
+            "```basic\nRSET var$ = expr$\n```\nQuickBasic compatibility mode only. Right-aligns into a FIELD slot or the existing string value's current byte width, padding/truncating as needed. AS STRING * length is not retained for this operation.",
         ),
         // File system
         ("NAME", "```basic\nNAME old$ AS new$\n```\nRenames a file."),
@@ -1137,12 +1137,12 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "COLOR",
-            "```basic\nCOLOR foreground[, background]\n```\nSets the text foreground and background colors (0-255).",
+            "```basic\nCOLOR foreground[, background]\n```\nSets terminal colors: foreground and background 0..15. Rice does not record attributes for SCREEN queries.",
         ),
         ("BEEP", "```basic\nBEEP\n```\nSounds the terminal bell."),
         (
             "WIDTH",
-            "```basic\nWIDTH columns\n```\nSets the terminal width for PRINT output.",
+            "```basic\nWIDTH columns\n```\nUpdates Rice's logical screen bounds, not the physical terminal size. WIDTH columns[, rows] is accepted; tracked output does not automatically wrap.",
         ),
         (
             "VIEW PRINT",
@@ -1151,7 +1151,7 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         // Matrix
         (
             "MAT",
-            "```basic\nMAT C = A + B\nMAT C = A * B\nMAT B = INV(A)\nMAT B = TRN(A)\nMAT A = ZER / CON / IDN\nMAT PRINT A\n```\nMatrix operations on numeric arrays.",
+            "```basic\nMAT C = A + B\nMAT C = A * B\nMAT B = INV(A)\nMAT B = TRN(A)\nMAT A = ZER\nMAT A = CON\nMAT A = IDN\nMAT PRINT A\n```\nTwo-dimensional numeric matrix operations in both dialects. Declare destination bounds to match the result; MAT does not resize metadata. MAT INPUT/PRINT channel clauses are parsed but ignored.",
         ),
         // System
         (
@@ -1160,7 +1160,7 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "SLEEP",
-            "```basic\nSLEEP [seconds]\n```\nPauses execution. Without an argument, pauses indefinitely.",
+            "```basic\nSLEEP [seconds]\n```\nSleeps for positive whole seconds after truncation. No argument, zero, and negative values are no-ops; this does not wait for a keypress.",
         ),
         (
             "RANDOMIZE",

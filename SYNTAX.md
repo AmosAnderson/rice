@@ -1,1027 +1,320 @@
-# RICE BASIC Language Reference
+# RICE BASIC syntax index
 
-RICE BASIC is a structured BASIC interpreter with QBasic 1.1-compatible defaults and an ANSI X3.113-1991 (Full BASIC) mode. This document covers the syntax supported by RICE BASIC.
+This index covers the implemented statement families and links to their specifications. Read the [language reference](docs/language-reference.md) for semantics, the [dialect table](docs/dialects.md) for mode differences, and [compatibility limits](docs/compatibility.md) for deviations and unknowns. Rice defaults to QBasic 1.1 compatibility mode; its ANSI mode is selected explicitly. Neither mode is a claim of complete historical conformance.
 
-## Running Programs
+In the syntax forms below, `[ ... ]` means optional text, `{ ... }` means alternatives, and `...` means repetition. These markers are not literal BASIC syntax. `name` is a bare identifier, `expr` is an expression, `label` is a named label or literal line number, and `type` is a supported type name. Block bodies and terminators should be on separate physical lines. Forms marked **QB only** are rejected in ANSI mode; other forms are available in both modes, subject to the linked limits.
 
-```bash
-rice                  # Start interactive REPL
-rice myprogram.bas    # Execute a file
+## Running and selecting a dialect
+
+```sh
+cargo build
+cargo run -- program.bas
+cargo run -- --dialect ansi program.bas
+cargo run -- --dialect qb program.bas
+cargo run -- --compat program.bas
+cargo run
 ```
-
-In the REPL, type statements and press Enter to execute them. Type `SYSTEM` or press Ctrl+D to exit.
-
-The REPL supports old-school line-number editing: type numbered lines to build a program, then use `RUN`, `LIST`, `NEW`, and `DELETE` to manage and execute it. Unnumbered lines execute immediately.
-
-## Dialects
-
-QBasic 1.1 compatibility mode is the default. ANSI mode can be selected with:
-
-```bash
-rice --dialect ansi program.bas
-```
-
-or in a complete source file:
 
 ```basic
 OPTION DIALECT "ANSI"
 ```
 
-QBasic mode accepts numeric type suffixes in variable names, `-1` true values, string `+` concatenation, bitwise numeric logical operators, `GOSUB`/`RETURN`, `ON ... GOTO`/`ON ... GOSUB`, hex/octal literals, and QuickBasic-style `OPEN file$ FOR mode AS #n` file syntax. Use `--dialect qb`, `--dialect qbasic`, `--compat`, or `OPTION DIALECT "QB"` to request this mode explicitly. See [docs/dialects.md](docs/dialects.md) for the full dialect coverage.
+Source selectors `QB`, `QBASIC`, `QBASIC 1.1`, `QBASIC1.1`, and `QUICKBASIC` select QB, case-insensitively. The first recognized source directive selects the mode for the whole source and overrides the CLI selection. See [Runtime and tooling](docs/runtime.md) for installed-binary usage, REPL commands, and the LSP.
 
----
-
-## Comments
+## Source structure and expressions
 
 ```basic
-REM This is a comment
-' This is also a comment
-x = 5  ' Inline comment after a statement
+' Comment to end of line
+REM Another comment
+x = 1: y = 2: PRINT x + y
+10 PRINT "numbered statement"
+done:
+PRINT "named label"
 ```
 
----
+Keywords and identifiers are case-insensitive. Identifiers begin with an ASCII letter or `_`, followed by ASCII letters, digits, or `_`. `$` is accepted in both modes; QB additionally accepts `%`, `!`, `#`, and `&`. Suffixes distinguish names but do not enforce primitive assignment types. Use spaces around concatenation `&`, especially after an unsuffixed name in QB.
 
-## Data Types
+Numbers include `12`, `.5`, `1.5E-3`, and `1D3`. QB additionally accepts unsigned hexadecimal `&HFF` and octal `&O77`, with optional trailing `&`. Decimal numeric suffixes are unsupported. Strings use double quotes with no quote/backslash escape syntax; use `CHR$(34)` to include a double quote. There is no line continuation or `?` PRINT abbreviation.
 
-RICE BASIC uses QBasic 1.1 compatibility mode by default and has two runtime value types:
+| Precedence, highest first | Operators |
+|---|---|
+| Primary | Literals, names, `name(args)`, `record.field`, `(expr)` |
+| Power, right associative | `^` |
+| Unary sign | `+`, `-` |
+| Multiplicative | `*`, `/` |
+| Modulus | `MOD` |
+| Additive/concatenation | `+`, `-`, `&` |
+| Comparison | `=`, `<>`, `<`, `>`, `<=`, `>=` |
+| Negation | `NOT` |
+| Conjunction | `AND` |
+| Disjunction | `OR` |
+| Exclusive OR | `XOR` |
 
-| Type    | Description                                       |
-|---------|---------------------------------------------------|
-| NUMERIC | All numbers. Stored as double-precision float (f64). |
-| STRING  | Variable-length text.                             |
+QB comparisons return `-1`/`0`; ANSI comparisons return `1`/`0`. QB logical operators are 64-bit bitwise operations; ANSI uses logical nonzero/zero tests. Both eagerly evaluate operands. MOD uses real-number floor modulus in both modes. `&` concatenates strings in both modes; string `+` is QB-only. There is no integer division `\`, `IMP`, or `EQV`. See [Expressions and operators](docs/language-reference.md#expressions-and-operators).
 
-In QBasic mode, suffixes such as `%`, `!`, `#`, `&`, and `$` are accepted as part of variable names; numeric values are still stored as double-precision floats. Variables ending in `$` are strings. ANSI mode rejects numeric suffixes other than `$`; see [docs/dialects.md](docs/dialects.md).
+## Values, declarations, arrays, and assignment
 
-Undeclared variables auto-initialize to `0` (numeric) or `""` (string).
-
----
-
-## Variables and Constants
-
-```basic
-' Implicit declaration (no DIM needed)
-x = 10
-name$ = "Alice"
-
-' Explicit declaration
-DIM count AS NUMERIC
-DIM message AS STRING
-
-' Require explicit declarations (QuickBasic mode only)
-OPTION EXPLICIT
-DIM x AS NUMERIC
-x = 10
-
-' Constants (cannot be changed after definition)
-CONST PI = 3.14159
-CONST MAX_SIZE = 100
-CONST GREETING$ = "Hello"
-
-' LET is optional
-LET y = 20
-y = 20          ' Same thing
-
-' SWAP two variables
-SWAP a, b
-
-' CLEAR all variables back to defaults
+```text
+[LET] name = expr
+[LET] name(index [, index ...]) = expr
+DIM [SHARED] declaration [, declaration ...]
+CONST name = expr
+OPTION BASE {0 | 1}
+REDIM [PRESERVE] declaration [, declaration ...]
+ERASE name [, name ...]
+SWAP name, name
 CLEAR
 ```
 
----
-
-## Operators
-
-### Arithmetic
-
-| Operator | Description            | Example          |
-|----------|------------------------|------------------|
-| `+`      | Addition               | `5 + 3` → `8`   |
-| `-`      | Subtraction            | `5 - 3` → `2`   |
-| `*`      | Multiplication         | `5 * 3` → `15`  |
-| `/`      | Division (float)       | `7 / 2` → `3.5` |
-| `MOD`    | Modulo (works on reals) | `7 MOD 3` → `1` |
-| `^`      | Exponentiation         | `2 ^ 10` → `1024` |
-
-### String Concatenation
-
-In QBasic mode, `+` concatenates strings and `&` also concatenates strings:
+A `declaration` is `name [(bound [, bound ...])] [AS type]`. A `bound` is `upper` or `lower TO upper`, both inclusive. Types are `NUMERIC`, `INTEGER`, `LONG`, `SINGLE`, `DOUBLE`, `STRING`, `STRING * integer-literal`, or a declared TYPE name. Every number is stored as `f64` regardless of its type spelling.
 
 ```basic
-greeting$ = "Hello, " + "World!"
-```
-
-In ANSI mode, use `&`; `+` remains arithmetic.
-
-### Comparison
-
-Comparisons return the dialect true value (`-1` in QBasic mode, `1` in ANSI mode) or `0` for false:
-
-| Operator | Description       |
-|----------|-------------------|
-| `=`      | Equal             |
-| `<>`     | Not equal         |
-| `<`      | Less than         |
-| `>`      | Greater than      |
-| `<=`     | Less than/equal   |
-| `>=`     | Greater than/equal|
-
-### Logical
-
-In QBasic mode, these operators perform bitwise operations on numeric values. In ANSI mode, they operate on truth values:
-
-| Operator | Description      |
-|----------|------------------|
-| `AND`    | Logical AND      |
-| `OR`     | Logical OR       |
-| `NOT`    | Logical NOT      |
-| `XOR`    | Exclusive OR     |
-
-### Operator Precedence (highest to lowest)
-
-1. `^` (right-associative)
-2. Unary `-`, `+`
-3. `*`, `/`
-4. `MOD`
-5. `+`, `-`
-6. `&` (string concatenation)
-7. `=`, `<>`, `<`, `>`, `<=`, `>=`
-8. `NOT`
-9. `AND`
-10. `OR`
-11. `XOR`
-
----
-
-## Output
-
-### PRINT
-
-```basic
-PRINT "Hello, World!"
-PRINT 42
-PRINT "Value:"; x           ' Semicolon: no gap between items
-PRINT "A", "B", "C"         ' Comma: tab to next 16-column zone
-PRINT x;                    ' Trailing semicolon: suppress newline
-PRINT                       ' Print a blank line
-PRINT TAB(20); "Indented"   ' Move to column 20
-PRINT SPC(5); "Spaced"      ' Insert 5 spaces
-```
-
-**Number formatting**: numbers are printed without leading or trailing spaces. Negative numbers have a leading `-`.
-
-```basic
-PRINT 42          ' Outputs: 42
-PRINT -7          ' Outputs: -7
-PRINT "abc"       ' Outputs: abc
-```
-
----
-
-## Input
-
-### INPUT
-
-```basic
-INPUT x                        ' Prompts: ?
-INPUT "Your name"; name$       ' Prompts: Your name?
-INPUT "Enter two numbers"; a, b  ' Read multiple values (comma-separated)
-```
-
-### LINE INPUT
-
-Reads an entire line, including commas and spaces.
-
-```basic
-LINE INPUT "Enter a sentence: "; s$
-```
-
----
-
-## Control Flow
-
-### IF / THEN / ELSE
-
-**Single-line form:**
-
-```basic
-IF x > 0 THEN PRINT "positive" ELSE PRINT "non-positive"
-```
-
-**Block form:**
-
-```basic
-IF x > 10 THEN
-    PRINT "big"
-ELSEIF x > 5 THEN
-    PRINT "medium"
-ELSE
-    PRINT "small"
-END IF
-```
-
-### FOR / NEXT
-
-```basic
-FOR i = 1 TO 10
-    PRINT i
-NEXT i
-
-' With STEP
-FOR i = 10 TO 1 STEP -1
-    PRINT i
-NEXT i
-
-' EXIT FOR leaves the loop early
-FOR i = 1 TO 100
-    IF i = 5 THEN EXIT FOR
-    PRINT i
-NEXT i
-```
-
-### WHILE / END WHILE
-
-```basic
-x = 1
-WHILE x <= 10
-    PRINT x
-    x = x + 1
-END WHILE
-```
-
-The classic QBasic `WEND` terminator is also accepted in place of `END WHILE`.
-
-### DO / LOOP
-
-Four forms:
-
-```basic
-' Test at top with WHILE
-DO WHILE x < 10
-    x = x + 1
-LOOP
-
-' Test at top with UNTIL
-DO UNTIL x >= 10
-    x = x + 1
-LOOP
-
-' Test at bottom with WHILE (always runs at least once)
-DO
-    x = x + 1
-LOOP WHILE x < 10
-
-' Test at bottom with UNTIL
-DO
-    x = x + 1
-LOOP UNTIL x >= 10
-
-' Infinite loop (use EXIT DO to break out)
-DO
-    x = x + 1
-    IF x = 10 THEN EXIT DO
-LOOP
-```
-
-### SELECT CASE
-
-```basic
-SELECT CASE score
-    CASE 100
-        PRINT "Perfect!"
-    CASE 90 TO 99
-        PRINT "Excellent"
-    CASE 80, 85
-        PRINT "Good"
-    CASE IS >= 70
-        PRINT "Passing"
-    CASE ELSE
-        PRINT "Needs improvement"
-END SELECT
-```
-
-Case tests can be:
-- A single value: `CASE 5`
-- Multiple values: `CASE 1, 2, 3`
-- A range: `CASE 10 TO 20`
-- A comparison: `CASE IS > 100`
-
-### GOTO
-
-```basic
-' Jump to a named label
-GOTO skip
-PRINT "This is skipped"
-skip:
-PRINT "Jumped here"
-```
-
-Labels can be names (followed by `:`) or line numbers:
-
-```basic
-100 PRINT "Line 100"
-200 GOTO 100
-```
-
----
-
-## Scope
-
-### COMMON
-
-QuickBasic mode only. Declare module-level variables that are accessible inside procedures without a per-procedure `SHARED` statement:
-
-```basic
-COMMON SHARED total, count
-DIM total AS NUMERIC
-DIM count AS NUMERIC
-
-SUB Increment
-    total = total + 1
-    count = count + 1
-END SUB
-```
-
-`CHAIN` is not supported.
-
-## Procedures
-
-### SUB (no return value)
-
-```basic
-DECLARE SUB Greet(name AS STRING)
-
-Greet "World"
-CALL Greet("World")    ' Alternative call syntax
-
-SUB Greet(name AS STRING)
-    PRINT "Hello, " & name & "!"
-END SUB
-```
-
-### FUNCTION (returns a value)
-
-Assign to the function name to set the return value.
-
-```basic
-DECLARE FUNCTION Square(n AS NUMERIC)
-
-PRINT Square(5)        ' Prints 25
-
-FUNCTION Square(n AS NUMERIC)
-    Square = n * n
-END FUNCTION
-```
-
-Functions can be recursive:
-
-```basic
-FUNCTION Factorial(n AS NUMERIC)
-    IF n <= 1 THEN
-        Factorial = 1
-    ELSE
-        Factorial = n * Factorial(n - 1)
-    END IF
-END FUNCTION
-
-PRINT Factorial(10)    ' Prints 3628800
-```
-
-Use `EXIT SUB` or `EXIT FUNCTION` to return early.
-
-### Parameters: BYREF By Default In QBasic Mode
-
-In QBasic mode, parameters are passed by reference by default. Changes inside the procedure affect the original variable unless `BYVAL` is explicit:
-
-```basic
-SUB Test (x AS NUMERIC)
-    x = x + 1        ' Affects the caller's variable
-END SUB
-```
-
-ANSI mode uses `BYVAL` by default. Both modes support explicit `BYVAL`/`BYREF`.
-
----
-
-## User-Defined Types
-
-```basic
-TYPE PersonType
-    Name AS STRING
-    Age AS NUMERIC
-    Salary AS NUMERIC
-END TYPE
-
-DIM p AS PersonType
-p.Name = "Alice"
-p.Age = 30
-p.Salary = 65000.50
-PRINT p.Name; p.Age
-```
-
-Arrays of types and passing types to procedures are supported. See the [User-Defined Types guide](docs/user-defined-types.md) for details.
-
----
-
-## Strings
-
-ANSI Full BASIC supports colon slicing; LEFT$/RIGHT$/MID$ are also available as compatibility functions:
-
-```basic
-LET A$ = "Hello, World!"
-PRINT A$(1:5)          ' "Hello"
-PRINT A$(8:12)         ' "World"
-PRINT A$(1:)           ' Entire string from position 1
-```
-
-String concatenation uses `&`:
-
-```basic
-LET A$ = "Hello" & ", " & "World!"
-PRINT A$               ' Hello, World!
-```
-
----
-
-## Arrays
-
-```basic
-DIM scores(10) AS NUMERIC         ' Indices 1 to 10 (OPTION BASE 1 is the default)
-DIM grid(1 TO 5, 1 TO 5) AS NUMERIC   ' 2D array with explicit bounds
-DIM names(20) AS STRING
-
-scores(1) = 95
-scores(2) = 87
-grid(1, 1) = 3.14
-
-' Change default lower bound
 OPTION BASE 0
-
-' Resize a dynamic array
-REDIM arr(50) AS NUMERIC
-REDIM PRESERVE arr(100) AS NUMERIC   ' Keep existing data
-
-' Clear an array
-ERASE scores
+DIM values(10), table(1 TO 3, 1 TO 4)
+DIM message$ AS STRING
+values(0) = 42
+PRINT values(0)
+PRINT LBOUND(table, 1); UBOUND(table, 2)
+REDIM PRESERVE values(20)
 ```
 
----
+Rice's initial OPTION BASE is **1 in both modes**. Ordinary array access does not enforce declared bounds/rank. Arrays use flattened variable keys; AS STRING does not determine untouched primitive element defaults, so use `$` names for string arrays. REDIM/ERASE have prefix-based removal and metadata limitations. SWAP accepts bare names only. See [Arrays](docs/language-reference.md#arrays) and [Values, variables, and assignment](docs/language-reference.md#values-variables-and-assignment).
 
-## DATA / READ / RESTORE
+QB-only declaration forms:
 
-Embed data directly in your program:
-
-```basic
-DATA 10, 20, 30
-DATA "Alice", "Bob", "Carol"
-
-READ a, b, c             ' a=10, b=20, c=30
-READ n1$, n2$, n3$       ' n1$="Alice", etc.
-
-RESTORE                  ' Reset to the beginning of DATA
-READ x                   ' x=10 again
+```text
+OPTION EXPLICIT
+{DEFINT | DEFLNG | DEFSNG | DEFDBL | DEFSTR} letter[-letter] [, letter[-letter] ...]
+COMMON [SHARED] name[()] [AS type] [, name[()] [AS type] ...]
 ```
 
----
+OPTION EXPLICIT becomes active when executed and permits declaration by suffix, DEFtype, loop variable, or declaration statement; it is not static type checking.
+
+## Control flow
+
+```text
+IF expr THEN statement [: statement ...] [ELSE statement [: statement ...]]
+
+IF expr THEN
+    statements
+[ELSEIF expr THEN
+    statements ...]
+[ELSE
+    statements]
+END IF
+
+FOR name = start TO end [STEP expr]
+    statements
+NEXT [name]
+
+WHILE expr
+    statements
+{WEND | END WHILE}
+
+DO [{WHILE | UNTIL} expr]
+    statements
+LOOP
+
+DO
+    statements
+LOOP [{WHILE | UNTIL} expr]
+
+SELECT CASE expr
+CASE test [, test ...]
+    statements
+[CASE test [, test ...]
+    statements ...]
+[CASE ELSE
+    statements]
+END SELECT
+
+GOTO label
+EXIT {FOR | DO | SUB | FUNCTION}
+{END | STOP | SYSTEM | QUIT}
+```
+
+A CASE `test` is `expr`, `lower TO upper`, or `IS comparison-operator expr`. CASE uses the first matching branch. FOR evaluates its limit/step once; STEP 0 skips its body. `NEXT j, i`, `EXIT WHILE`, `EXIT SELECT`, `IF expr THEN line-number`, and loop-continue are unsupported. Both WEND and END WHILE are accepted in both modes.
+
+QB-only legacy jumps:
+
+```text
+GOSUB label
+RETURN
+ON expr {GOTO | GOSUB} label [, label ...]
+```
+
+RETURN takes no target. Computed jumps use 1-based, truncated integer selectors and fall through outside the target list. See [Control flow](docs/language-reference.md#control-flow) for label scope, nested-block jumps, loop variable behavior, and termination.
+
+## Procedures and scope
+
+```text
+SUB name [(parameter [, parameter ...])] [STATIC]
+    statements
+END SUB
+
+FUNCTION name [(parameter [, parameter ...])] [AS type] [STATIC]
+    statements
+END FUNCTION
+
+CALL name [(expr [, expr ...])]
+name [expr [, expr ...]]
+DECLARE SUB name [(parameter [, parameter ...])]
+DECLARE FUNCTION name [(parameter [, parameter ...])]
+SHARED name [, name ...]
+STATIC declaration [, declaration ...]
+```
+
+A `parameter` is `[BYVAL | BYREF] name[()] [AS type]`. QB parameters default to BYREF; ANSI defaults to BYVAL. Assign to the function name to provide its result. Array parameter annotations do not implement whole-array passing, and primitive return/parameter type clauses do not guarantee coercion. Use explicit CALL syntax with parentheses for multiple arguments; QB `name (x)` makes its argument an expression and suppresses BYREF writeback. The [Procedures reference](docs/procedures.md) specifies available call forms, copy-in/copy-out behavior, scope, STATIC, declaration limits, and QB `DEF FN` syntax.
+
+## Records and strings
+
+```text
+TYPE name
+    field AS type
+    ...
+END TYPE
+DIM name AS type-name
+[LET] record.field[.field ...] = expr
+[LET] records(index [, index ...]).field[.field ...] = expr
+
+name$(start:end)
+[LET] name$(start:end) = string-expression
+```
+
+QB substring assignment:
+
+```text
+MID$(name$, start [, length]) = string-expression
+```
+
+Slices use 1-based inclusive endpoints. Slice assignment replaces the selected region and can change the string length; MID$ assignment has different overwrite semantics. See [User-defined types](docs/user-defined-types.md) and [String slicing](docs/string-slicing.md).
+
+## DATA and console I/O
+
+```text
+DATA [literal [, literal ...]]
+READ name [, name ...]
+RESTORE [label]
+
+PRINT [print-items]
+LPRINT [print-items]
+PRINT USING format-expression; value [; value ...]
+WRITE [expr [, expr ...]]
+INPUT ["literal prompt" {; | ,}] name [, name ...]
+LINE INPUT ["literal prompt" {; | ,}] name
+```
+
+PRINT items are expressions, `TAB(expr)`, or `SPC(expr)`, separated by `;` or `,`. A trailing separator suppresses the newline. Commas use 16-column zones; numbers have no automatic leading/trailing spaces in either mode. LPRINT writes to the normal output stream. INPUT prompt commas and semicolons both append `? ` in Rice. READ/INPUT/LINE INPUT targets are bare names, not array elements.
+
+DATA contains literal numbers, negative numbers, strings, or single unquoted identifiers; unquoted text is uppercased. RESTORE labels must be attached directly to DATA; unknown labels silently rewind. See [DATA / READ / RESTORE](docs/language-reference.md#data--read--restore), [Input and output](docs/language-reference.md#input-and-output), and [PRINT USING](docs/print-using.md).
+
+Text-console statements:
+
+```text
+CLS
+BEEP
+LOCATE [row] [, column]
+COLOR [foreground] [, background]
+WIDTH [columns] [, rows]
+VIEW PRINT [top TO bottom]
+```
+
+[Console](docs/console.md) defines omitted arguments, validation, terminal side effects, and `CSRLIN`, `POS`, `SCREEN`, `INKEY$`, and `INPUT$` behavior. There are no graphics SCREEN modes or graphics drawing statements.
 
 ## File I/O
 
-RICE BASIC uses ANSI Full BASIC file I/O syntax.
-
-### Opening and Closing Files
-
-```basic
-' Open for sequential text output (creates/overwrites)
-OPEN #1: NAME "data.txt", ACCESS OUTPUT
-
-' Open for sequential text input (file must exist)
-OPEN #1: NAME "data.txt", ACCESS INPUT
-
-' Open for read/write (OUTIN)
-OPEN #1: NAME "data.txt", ACCESS OUTIN
-
-' Specify organization explicitly
-OPEN #1: NAME "data.bin", ORGANIZATION STREAM, ACCESS OUTIN
-
-' Close a specific file
-CLOSE #1
-
-' Close multiple files
-CLOSE #1, #2, #3
-
-' Close all open files
-CLOSE
+```text
+OPEN filename FOR mode [ACCESS access] [{SHARED | LOCK lock-access}] AS [#]number [LEN = length]
+OPEN #number: NAME filename [, ORGANIZATION organization] [, ACCESS access]
+CLOSE [[#]number [, [#]number ...]]
+RESET
+PRINT #number, [print-items]
+PRINT #number, USING format-expression; value [; value ...]
+WRITE #number, expr [, expr ...]
+INPUT #number, name [, name ...]
+LINE INPUT #number, name
+GET #number [, [position] [, name]]
+PUT #number [, [position] [, name]]
+SEEK [#]number, position
+SET #number: POINTER position
+ASK #number: POINTER name
 ```
 
-File numbers range from 1 to 255. Use `FREEFILE` to get the next available number:
+Both OPEN spellings are accepted in both modes; pointer/record interpretation can depend on the dialect. GET/PUT can omit their target for QB FIELD buffers. QB-only record field declarations/alignment include:
 
-```basic
-f = FREEFILE
-OPEN #f: NAME "myfile.txt", ACCESS OUTPUT
+```text
+FIELD [#]number, width AS name$ [, width AS name$ ...]
+LSET name$ = expr
+RSET name$ = expr
 ```
 
-Access modes: INPUT, OUTPUT, OUTIN. Organization: SEQUENTIAL (default), STREAM.
+The [File I/O specification](docs/file-io.md) is authoritative for exact OPEN clause ordering, optional commas and targets, supported modes, pointer units, binary record types, FIELD, `MK*`/`CV*` functions, UTF-8/byte conversion, and error handling. Do not infer that all syntactic modes implement complete QBasic file semantics.
 
-### Writing to Files
+## Exception handling
 
-**PRINT#** -- writes formatted output (same formatting as PRINT):
-
-```basic
-OPEN #1: NAME "output.txt", ACCESS OUTPUT
-PRINT #1, "Hello, World!"
-PRINT #1, x; y; z
-CLOSE #1
-```
-
-**WRITE#** -- writes comma-separated values with strings in quotes (CSV-style):
-
-```basic
-OPEN #1: NAME "data.csv", ACCESS OUTPUT
-WRITE #1, "Alice", 30, 95.5
-WRITE #1, "Bob", 25, 88.0
-CLOSE #1
-```
-
-### Reading from Files
-
-**LINE INPUT#** -- reads an entire line:
-
-```basic
-OPEN #1: NAME "data.txt", ACCESS INPUT
-DO WHILE NOT EOF(1)
-    LINE INPUT #1, x$
-    PRINT x$
-LOOP
-CLOSE #1
-```
-
-**INPUT#** -- reads comma-delimited fields (pairs with WRITE#):
-
-```basic
-OPEN #1: NAME "data.csv", ACCESS INPUT
-INPUT #1, name$, age, score
-PRINT name$; age; score
-CLOSE #1
-```
-
-### File Positioning
-
-Use SET POINTER and ASK POINTER for stream I/O positioning. `SEEK #n, pos` and `SEEK(n)` provide QuickBasic-compatible statement/function forms:
-
-```basic
-OPEN #1: NAME "data.bin", ORGANIZATION STREAM, ACCESS OUTIN
-SET #1: POINTER 100       ' Move to byte position 100
-ASK #1: POINTER pos       ' Get current position
-SEEK #1, 1                ' Move to byte position 1
-PRINT SEEK(1)             ' Next byte position
-```
-
-### QuickBasic RANDOM Records
-
-```basic
-OPEN "records.dat" FOR RANDOM AS #1 LEN = 12
-FIELD #1, 5 AS name$, 3 AS code$
-LSET name$ = "ALPHA"
-RSET code$ = "7"
-PUT #1, 1
-GET #1, 1
-CLOSE #1
-```
-
-### File Functions
-
-| Function     | Description                                    |
-|--------------|------------------------------------------------|
-| `FREEFILE`   | Returns lowest unused file number (1-255)      |
-| `EOF(n)`     | Returns the dialect true value at end of file, 0 otherwise |
-| `LOF(n)`     | Returns file length in bytes                   |
-| `LOC(n)`     | Returns current byte position in file          |
-| `SEEK(n)`    | Returns next byte position in file             |
-
-### Complete Example
-
-```basic
-' Write records
-OPEN #1: NAME "people.txt", ACCESS OUTPUT
-WRITE #1, "Alice", 30
-WRITE #1, "Bob", 25
-WRITE #1, "Carol", 35
-CLOSE #1
-
-' Read them back
-OPEN #1: NAME "people.txt", ACCESS INPUT
-DO WHILE NOT EOF(1)
-    INPUT #1, name$, age
-    PRINT name$; " is"; age; "years old"
-LOOP
-CLOSE #1
-```
-
----
-
-## Built-in Functions
-
-### String Functions
-
-| Function                 | Description                            | Example                       |
-|--------------------------|----------------------------------------|-------------------------------|
-| `LEN(s$)`               | Length of string                        | `LEN("abc")` → `3`           |
-| `INSTR(s$, find$)`      | Find substring (0 if not found)        | `INSTR("Hello", "ll")` → `3` |
-| `INSTR(start, s$, find$)` | Find from position                   | `INSTR(4, "abcabc", "abc")` → `4` |
-| `LTRIM$(s$)`             | Remove leading spaces                  | `LTRIM$("  hi")` → `"hi"`    |
-| `RTRIM$(s$)`             | Remove trailing spaces                 | `RTRIM$("hi  ")` → `"hi"`    |
-| `SPACE$(n)`              | String of n spaces                     | `SPACE$(3)` → `"   "`        |
-| `STRING$(n, s$)`         | Repeat character n times               | `STRING$(5, "*")` → `"*****"` |
-| `CHR$(n)`                | Character from ASCII code              | `CHR$(65)` → `"A"`           |
-| `ASC(s$)`                | ASCII code of first character          | `ASC("A")` → `65`            |
-| `STR$(n)`                | Number to string                       | `STR$(42)` → `"42"`          |
-| `VAL(s$)`                | String to number                       | `VAL("3.14")` → `3.14`       |
-| `MKI$(n)`                | Packed 2-byte integer string           | `LEN(MKI$(1))` → `2`          |
-| `MKL$(n)`                | Packed 4-byte long string              | `LEN(MKL$(1))` → `4`          |
-| `MKS$(n)`                | Packed 4-byte single string            | `LEN(MKS$(1))` → `4`          |
-| `MKD$(n)`                | Packed 8-byte double string            | `LEN(MKD$(1))` → `8`          |
-| `CVI(s$)`                | Convert packed integer string          | `CVI(MKI$(1))` → `1`          |
-| `CVL(s$)`                | Convert packed long string             | `CVL(MKL$(1))` → `1`          |
-| `CVS(s$)`                | Convert packed single string           | `CVS(MKS$(1))` → `1`          |
-| `CVD(s$)`                | Convert packed double string           | `CVD(MKD$(1))` → `1`          |
-
-For substring operations, ANSI-style code should prefer colon slicing such as `A$(3:7)`. LEFT$/RIGHT$/MID$ are available for compatibility.
-
-### Math Functions
-
-| Function        | Description                    | Example                  |
-|-----------------|--------------------------------|--------------------------|
-| `ABS(n)`        | Absolute value                 | `ABS(-5)` → `5`         |
-| `SGN(n)`        | Sign: -1, 0, or 1             | `SGN(-5)` → `-1`        |
-| `INT(n)`        | Floor (toward negative inf)    | `INT(-2.9)` → `-3`      |
-| `FIX(n)`        | Truncate toward zero           | `FIX(-2.9)` → `-2`      |
-| `SQR(n)`        | Square root                    | `SQR(16)` → `4`         |
-| `EXP(n)`        | e to the power n               | `EXP(1)` → `2.718...`   |
-| `LOG(n)`        | Natural logarithm              | `LOG(2.718...)` → `1`   |
-| `SIN(n)`        | Sine (radians)                 | `SIN(0)` → `0`          |
-| `COS(n)`        | Cosine (radians)               | `COS(0)` → `1`          |
-| `TAN(n)`        | Tangent (radians)              | `TAN(0)` → `0`          |
-| `ATN(n)`        | Arctangent (returns radians)   | `ATN(1)` → `0.7854...`  |
-| `ASIN(n)`       | Arc sine                       | `ASIN(1)` → `1.5708...` |
-| `ACOS(n)`       | Arc cosine                     | `ACOS(0)` → `1.5708...` |
-| `COT(n)`        | Cotangent                      | `COT(1)` → `0.6421...`  |
-| `CSC(n)`        | Cosecant                       | `CSC(1)` → `1.1884...`  |
-| `SEC(n)`        | Secant                         | `SEC(0)` → `1`          |
-| `ANGLE(x, y)`   | Angle of vector (x, y)        | `ANGLE(1, 1)` → `0.785...` |
-| `CEIL(n)`       | Ceiling                        | `CEIL(2.1)` → `3`       |
-| `TRUNCATE(n)`   | Truncate toward zero           | `TRUNCATE(-2.9)` → `-2` |
-| `REMAINDER(a,b)` | IEEE remainder                | `REMAINDER(7, 3)` → `1` |
-| `ROUND(n)`      | Round to nearest integer       | `ROUND(2.5)` → `3`      |
-| `MAXNUM`        | Maximum numeric value          | `MAXNUM` → `1.798e+308` |
-| `PI`            | Pi constant                    | `PI` → `3.14159...`     |
-| `RND`           | Random number in [0, 1)        | `RND` → `0.317...`      |
-
-### Date/Time Functions
-
-| Function  | Description                              |
-|-----------|------------------------------------------|
-| `DATE$`   | Current date as MM-DD-YYYY               |
-| `TIME$`   | Current time as HH:MM:SS                 |
-| `TIMER`   | Seconds elapsed since midnight           |
-
-`DATE$` and `TIME$` can be assigned to override the values returned by subsequent reads (the host clock is unchanged). Assignment is QuickBasic mode only:
-
-```basic
-DATE$ = "12-25-2024"
-TIME$ = "14:30:00"
-PRINT DATE$; " "; TIME$
-```
-
-### System Functions
-
-| Function        | Description                              |
-|-----------------|------------------------------------------|
-| `ENVIRON$(s$)`  | Get environment variable value           |
-| `ENVIRON s$`    | Set environment variable, e.g. `ENVIRON "PATH=/bin"` (QuickBasic mode only) |
-| `CURDIR$`       | Current working directory                |
-| `COMMAND$`      | Program command-line tail                |
-| `FREEFILE`      | Next available file number               |
-| `EOF(n)`        | End-of-file test (dialect true value if true, 0 if false) |
-| `LOF(n)`        | File length in bytes                     |
-| `LOC(n)`        | Current position in file                 |
-| `ERR`           | Last classic BASIC error code            |
-| `ERL`           | Numbered line of last classic error      |
-
----
-
-## Multiple Statements Per Line
-
-Use `:` to put multiple statements on one line:
-
-```basic
-x = 1 : y = 2 : PRINT x + y
-```
-
----
-
-## Error Handling
-
-RICE BASIC supports ANSI structured exception handling and classic QBasic-style top-level error handlers in QBasic-compatible mode.
-
-### WHEN EXCEPTION
-
-```basic
+```text
 WHEN EXCEPTION IN
-    ' Code that might cause errors
-    OPEN #1: NAME "missing.txt", ACCESS INPUT
-    LINE INPUT #1, x$
-    CLOSE #1
+    statements
 USE
-    PRINT "Error:"; EXTYPE; EXTEXT$
+    handler-statements
 END WHEN
+RETRY
+CONTINUE
 ```
 
-### EXTYPE and EXTEXT$
+`IN` is required. EXTYPE and EXTEXT$ expose structured exception information. RETRY repeats the protected block, and CONTINUE exits the handler and continues with the protected statement after the failed direct statement; neither is a generic loop control.
 
-| Function   | Description                                      |
-|------------|--------------------------------------------------|
-| `EXTYPE`   | Numeric exception type code                      |
-| `EXTEXT$`  | Descriptive text for the exception               |
+QB-only classic forms:
 
-### RETRY and CONTINUE
-
-Use `RETRY` in the `USE` block to re-execute the statement that caused the exception:
-
-```basic
-DIM filename AS STRING
-filename = "primary.txt"
-
-WHEN EXCEPTION IN
-    OPEN #1: NAME filename, ACCESS INPUT
-USE
-    filename = "backup.txt"
-    RETRY
-END WHEN
+```text
+ON ERROR GOTO label
+ON ERROR GOTO 0
+ERROR expr
+RESUME
+RESUME NEXT
+RESUME label
 ```
 
-Use `CONTINUE` to skip the failed statement and resume with the next one:
+ERR and ERL expose the classic error code/numbered line. See [Error handling](docs/error-handling.md) for handler state, resume granularity, and the full code mapping.
 
-```basic
-WHEN EXCEPTION IN
-    x = 1 / 0         ' Division by zero - will be skipped
-    PRINT "Continued"  ' This runs after CONTINUE
-USE
-    PRINT "Skipping error: "; EXTEXT$
-    CONTINUE
-END WHEN
+## Matrix statements
+
+```text
+MAT PRINT [#number,] name
+MAT INPUT [#number,] name
+MAT READ name
+MAT target = source
+MAT target = {ZER | CON | IDN}
+MAT target = {INV | TRN}(source)
+MAT target = source {+ | - | *} source
+MAT target = (scalar-expression) * source
 ```
 
-### ON ERROR, ERR, ERL, and RESUME
+DET returns the last inverse operation's determinant; use it as a bare special value as specified in [MAT operations](docs/mat-operations.md). MAT has a restricted expression grammar, not arbitrary nesting or general scalar-array arithmetic. Channel support and dimension/shape behavior are also specified there.
 
-Classic QuickBasic-style handlers are available in the default QBasic-compatible mode:
+## System statements and builtins
 
-```basic
-10 ON ERROR GOTO 100
-20 PRINT 1 / 0
-30 END
-100 PRINT ERR; ERL
-110 RESUME NEXT
+```text
+RANDOMIZE [expr]
+SLEEP [expr]
+NAME old-path AS new-path
+KILL path
+MKDIR path
+RMDIR path
+CHDIR path
+CHDRIVE drive
+FILES [path]
+SHELL [command]
 ```
 
-`ON ERROR GOTO label` installs a handler and `ON ERROR GOTO 0` disables it. `ERROR n` raises a BASIC error code. `ERR` returns the latest code and `ERL` returns the numbered line that failed, or 0 for unnumbered statements. `RESUME`, `RESUME NEXT`, and `RESUME label` are exact for top-level statements; nested-block resume behavior is limited by the interpreter's current control-flow model.
+QB-only system assignments:
 
----
-
-## PRINT USING
-
-Format output using a template string. The format string is followed by a semicolon and then the values to format.
-
-```basic
-PRINT USING "format"; value1; value2; ...
-PRINT #n, USING "format"; value1; value2; ...
+```text
+ENVIRON string-expression
+[LET] DATE$ = string-expression
+[LET] TIME$ = string-expression
 ```
 
-### Numeric Format Specifiers
+See [System and filesystem statements](docs/language-reference.md#system-and-filesystem-statements) for host behavior and no-op cases. ENVIRON and date/time assignments set interpreter-local overrides.
 
-| Specifier | Description                                            | Example                           |
-|-----------|--------------------------------------------------------|-----------------------------------|
-| `#`       | Digit placeholder (space-padded, right-aligned)        | `"###"` with 5 → `"  5"`         |
-| `.`       | Decimal point position                                 | `"##.##"` with 1.5 → `" 1.50"`   |
-| `+`       | Show sign (leading or trailing)                        | `"+##"` with 5 → `"+ 5"`         |
-| `-`       | Trailing minus (negative only)                         | `"##-"` with -5 → `" 5-"`        |
-| `$$`      | Floating dollar sign                                   | `"$$##.##"` with 1.5 → `" $1.50"` |
-| `**`      | Fill leading spaces with asterisks                     | `"**##.##"` with 1 → `"***1.00"` |
-| `**$`     | Asterisk fill with floating dollar                     | `"**$##.##"` with 1 → `"**$1.00"` |
-| `,`       | Thousands separator (before decimal point)             | `"#,###"` with 1234 → `"1,234"`  |
-| `^^^^`    | Scientific notation exponent                           | `"##.##^^^^"` with 1234 → `"12.34E+02"` |
-
-### String Format Specifiers
-
-| Specifier   | Description                             | Example                            |
-|-------------|-----------------------------------------|------------------------------------|
-| `!`         | First character only                    | `"!"` with `"Hello"` → `"H"`      |
-| `\ \`       | Fixed-width field (width = chars between `\`)| `"\   \"` with `"Hi"` → `"Hi   "` |
-| `&`         | Entire string as-is                     | `"&"` with `"Hello"` → `"Hello"`  |
-
-### Special Characters
-
-| Character | Description                 |
-|-----------|-----------------------------|
-| `_`       | Next character is literal   |
-
-### Overflow
-
-If a number is too wide for the format field, the output is prefixed with `%`.
-
-### Format Repetition
-
-If there are more values than format fields, the format string repeats automatically:
-
-```basic
-PRINT USING "###"; 1; 2; 3    ' Prints "  1  2  3"
-```
-
----
-
-## Console Features
-
-### Cursor and Screen
-
-```basic
-CLS                       ' Clear screen
-LOCATE row, col           ' Move cursor to row, col (1-based)
-COLOR foreground, background  ' Set text colors (ANSI codes)
-BEEP                      ' Sound a terminal bell
-WIDTH columns             ' Set terminal width
-VIEW PRINT top TO bottom  ' Set scrolling region
-VIEW PRINT                ' Reset scrolling region
-```
-
-### Console Functions
-
-| Function          | Description                                      |
-|-------------------|--------------------------------------------------|
-| `CSRLIN`          | Returns the current cursor row (1-based)         |
-| `POS(0)`          | Returns the current cursor column (1-based)      |
-| `INKEY$`          | Reads a key without waiting (returns "" if none) |
-| `INPUT$(n)`       | Reads n characters from keyboard                 |
-| `INPUT$(n, #f)`   | Reads n bytes from file #f                       |
-| `SCREEN(r, c)`    | Returns ASCII code of character at row r, col c  |
-
----
-
-## MAT Operations
-
-MAT support for numeric arrays:
-
-```basic
-DIM A(3, 3), B(3, 3), C(3, 3)
-MAT A = ZER
-MAT B = IDN
-MAT C = A + B
-MAT PRINT C
-```
-
-Operations: MAT PRINT, MAT READ, MAT INPUT, MAT arithmetic (+, -, *), scalar multiply, INV (inverse), TRN (transpose), DET (determinant), ZER (zeros), CON (ones), IDN (identity). See the [MAT Operations guide](docs/mat-operations.md) for details.
-
----
-
-## REPL Line-Number Mode
-
-The interactive REPL supports classic BASIC line-number editing:
-
-```
-Ok
-10 PRINT "Hello"
-20 PRINT "World"
-LIST
-10 PRINT "Hello"
-20 PRINT "World"
-RUN
-Hello
-World
-Ok
-```
-
-| Command              | Description                           |
-|----------------------|---------------------------------------|
-| `RUN`                | Execute the stored program            |
-| `LIST`               | Display all stored lines              |
-| `LIST 10`            | Display line 10                       |
-| `LIST 10-50`         | Display lines 10 through 50          |
-| `NEW`                | Clear the stored program              |
-| `DELETE 10`          | Delete line 10                        |
-| `DELETE 10-50`       | Delete lines 10 through 50           |
-
-Typing a line number with a statement stores it. Typing a bare line number deletes that line. Lines without numbers execute immediately.
-
----
-
-## Program Control
-
-```basic
-END     ' Terminate the program
-STOP    ' Halt execution (same as END)
-SYSTEM  ' Exit to system (also exits the REPL)
-```
-
----
-
-## Example Programs
-
-### FizzBuzz
-
-```basic
-FOR i = 1 TO 100
-    IF i MOD 15 = 0 THEN
-        PRINT "FizzBuzz"
-    ELSEIF i MOD 3 = 0 THEN
-        PRINT "Fizz"
-    ELSEIF i MOD 5 = 0 THEN
-        PRINT "Buzz"
-    ELSE
-        PRINT i
-    END IF
-NEXT i
-```
-
-### Number Guessing Game
-
-```basic
-RANDOMIZE TIMER
-secret = INT(RND * 100) + 1
-PRINT "I'm thinking of a number between 1 and 100."
-
-DO
-    INPUT "Your guess"; guess
-    IF guess < secret THEN
-        PRINT "Too low!"
-    ELSEIF guess > secret THEN
-        PRINT "Too high!"
-    ELSE
-        PRINT "You got it!"
-    END IF
-LOOP UNTIL guess = secret
-```
-
-### Bubble Sort
-
-```basic
-CONST N = 10
-DIM a(N) AS NUMERIC
-
-' Fill with random values
-RANDOMIZE TIMER
-FOR i = 1 TO N
-    a(i) = INT(RND * 100)
-NEXT i
-
-' Sort
-FOR i = 1 TO N - 1
-    FOR j = 1 TO N - i
-        IF a(j) > a(j + 1) THEN
-            SWAP a(j), a(j + 1)
-        END IF
-    NEXT j
-NEXT i
-
-' Print sorted array
-FOR i = 1 TO N
-    PRINT a(i);
-NEXT i
-PRINT
-```
-
-### Fibonacci with FUNCTION
-
-```basic
-DECLARE FUNCTION Fib(n AS NUMERIC)
-
-FOR i = 1 TO 15
-    PRINT Fib(i);
-NEXT i
-PRINT
-
-FUNCTION Fib(n AS NUMERIC)
-    IF n <= 2 THEN
-        Fib = 1
-    ELSE
-        Fib = Fib(n - 1) + Fib(n - 2)
-    END IF
-END FUNCTION
-```
-
----
-
-## Limitations
-
-RICE BASIC intentionally omits or limits:
-
-- **Graphics modes**: No `SCREEN` (mode switching), `PSET`, `LINE`, `CIRCLE`, `DRAW`, `PAINT`, `PALETTE`, `WINDOW`
-- **Sound**: No `SOUND`, `PLAY`
-- **Memory access**: No `DEF SEG`, `PEEK`, `POKE`
-- **Classic error handling**: Top-level `ON ERROR`/`RESUME` is supported; nested-block `RESUME` behavior is limited
-- **Legacy procedures**: `GOSUB`/`RETURN` and `DEF FN` are QuickBasic-mode only
-- **Business/system extensions**: `OPTION EXPLICIT`, `COMMON`, the `ENVIRON` statement, and `DATE$`/`TIME$` assignment are QuickBasic-mode only
-- **String slicing**: ANSI colon slicing is supported; `LEFT$`, `RIGHT$`, and `MID$` are also available as compatibility functions
-- **Legacy operators**: No `\` (integer division), `IMP`, `EQV`
-- **Proper array storage**: Arrays use a flattened key representation. `LBOUND`/`UBOUND` return bounds for `DIM`med arrays.
-
-RICE BASIC supports text-mode console features including `CLS`, `LOCATE`, `COLOR`, `BEEP`, `WIDTH`, `VIEW PRINT`, `CSRLIN`, `POS`, `INKEY$`, `INPUT$`, and `SCREEN()`.
-
-All keywords are case-insensitive: `PRINT`, `Print`, and `print` all work.
+The complete [Built-in function reference](docs/builtins.md) lists every implemented function, alias, argument count, type expectation, and known limitation. Call spelling matters: use `RND()`, `PI()`, and `MAXNUM()` with parentheses; use bare `TIMER` and `FREEFILE`. An unknown `name(args)` may resolve as an array element instead of producing an unknown-function error.
