@@ -78,7 +78,15 @@ impl Value {
 
     pub fn to_i64(&self) -> Result<i64, RuntimeError> {
         match self {
-            Value::Numeric(n) => Ok(*n as i64),
+            Value::Numeric(n) => {
+                // i64::MAX rounds up to 2^63 as f64, so the upper bound is exclusive.
+                if !(-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(n) {
+                    return Err(RuntimeError::Overflow {
+                        msg: "number is outside the integer range".into(),
+                    });
+                }
+                Ok(*n as i64)
+            }
             Value::Str(_) => Err(RuntimeError::TypeMismatch {
                 msg: "cannot convert string to integer".into(),
             }),
@@ -207,5 +215,43 @@ impl PartialOrd for Value {
             (Value::Numeric(a), Value::Numeric(b)) => a.partial_cmp(b),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn integer_conversion_rejects_nonfinite_and_out_of_range_values() {
+        for n in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            9_223_372_036_854_775_808.0,
+            -9_223_372_036_854_777_856.0,
+        ] {
+            assert!(matches!(
+                Value::Numeric(n).to_i64(),
+                Err(RuntimeError::Overflow { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn integer_conversion_preserves_truncation_and_valid_boundaries() {
+        assert_eq!(Value::Numeric(1.9).to_i64().unwrap(), 1);
+        assert_eq!(Value::Numeric(-1.9).to_i64().unwrap(), -1);
+        assert_eq!(Value::Numeric(i64::MIN as f64).to_i64().unwrap(), i64::MIN);
+        assert_eq!(
+            Value::Numeric(9_223_372_036_854_774_784.0)
+                .to_i64()
+                .unwrap(),
+            9_223_372_036_854_774_784,
+        );
+        assert!(matches!(
+            Value::Str("1".into()).to_i64(),
+            Err(RuntimeError::TypeMismatch { .. })
+        ));
     }
 }

@@ -1,0 +1,3 @@
+PRINT "A",
+PRINT "B"
+PRINT TAB(5); "C"

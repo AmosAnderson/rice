@@ -259,7 +259,13 @@ fn builtin_round(args: &[Value]) -> Result<Value, RuntimeError> {
         2 => {
             let places = args[1].to_i64()?;
             let factor = decimal_factor(places)?;
-            Ok(Value::Numeric((n * factor).round() / factor))
+            let scaled = n * factor;
+            // Scaling overflow means this precision cannot change the stored value.
+            Ok(Value::Numeric(if scaled.is_finite() {
+                scaled.round() / factor
+            } else {
+                n
+            }))
         }
         _ => Err(RuntimeError::ArityMismatch {
             expected: 2,
@@ -338,7 +344,12 @@ fn builtin_truncate(args: &[Value]) -> Result<Value, RuntimeError> {
         2 => {
             let places = args[1].to_i64()?;
             let factor = decimal_factor(places)?;
-            Ok(Value::Numeric((n * factor).trunc() / factor))
+            let scaled = n * factor;
+            Ok(Value::Numeric(if scaled.is_finite() {
+                scaled.trunc() / factor
+            } else {
+                n
+            }))
         }
         _ => Err(RuntimeError::ArityMismatch {
             expected: 2,
@@ -396,10 +407,19 @@ fn builtin_instr(args: &[Value]) -> Result<Value, RuntimeError> {
             Ok(Value::Numeric(pos as f64))
         }
         3 => {
-            let start = (args[0].to_i64()? - 1).max(0) as usize;
+            let start = args[0].to_i64()?;
+            if start < 1 {
+                return Err(RuntimeError::IllegalFunctionCall {
+                    msg: "INSTR start must be >= 1".into(),
+                });
+            }
+            let start = (start - 1) as usize;
             let haystack = args[1].to_string_val()?;
             let needle = args[2].to_string_val()?;
-            let suffix: String = haystack.chars().skip(start).collect();
+            let Some((byte_start, _)) = haystack.char_indices().nth(start) else {
+                return Ok(Value::Numeric(0.0));
+            };
+            let suffix = &haystack[byte_start..];
             let pos = suffix
                 .find(&needle)
                 .map(|byte_pos| start + suffix[..byte_pos].chars().count() + 1)
@@ -460,12 +480,13 @@ fn builtin_chr(args: &[Value]) -> Result<Value, RuntimeError> {
 
 fn builtin_asc(args: &[Value]) -> Result<Value, RuntimeError> {
     let s = args[0].to_string_val()?;
-    if s.is_empty() {
-        return Err(RuntimeError::IllegalFunctionCall {
+    let first = s
+        .chars()
+        .next()
+        .ok_or_else(|| RuntimeError::IllegalFunctionCall {
             msg: "ASC of empty string".into(),
-        });
-    }
-    Ok(Value::Numeric(s.as_bytes()[0] as f64))
+        })?;
+    Ok(Value::Numeric(first as u32 as f64))
 }
 
 fn builtin_str(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -869,4 +890,75 @@ fn builtin_command(_args: &[Value]) -> Result<Value, RuntimeError> {
     // Program arguments after the source file, joined with spaces.
     let extra: Vec<String> = std::env::args().skip(2).collect();
     Ok(Value::Str(extra.join(" ")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decimal_rounding_does_not_overflow_finite_values() {
+        for function in [builtin_round as BuiltinFn, builtin_truncate] {
+            for n in [f64::MAX, -f64::MAX, 1e200] {
+                assert_eq!(
+                    function(&[Value::Numeric(n), Value::Numeric(308.0)]).unwrap(),
+                    Value::Numeric(n),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn asc_round_trips_every_basic_byte() {
+        let registry = BuiltinRegistry::new();
+        for code in 0..=255 {
+            let character = registry
+                .call("CHR$", &[Value::Numeric(code as f64)])
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                registry.call("ASC", &[character]).unwrap(),
+                Some(Value::Numeric(code as f64)),
+            );
+        }
+        assert!(matches!(
+            registry.call("ASC", &[Value::Str(String::new())]),
+            Err(RuntimeError::IllegalFunctionCall { .. })
+        ));
+    }
+
+    #[test]
+    fn instr_validates_start_before_subtracting() {
+        for start in [i64::MIN as f64, -1.0, 0.0] {
+            assert!(matches!(
+                builtin_instr(&[
+                    Value::Numeric(start),
+                    Value::Str("abc".into()),
+                    Value::Str("a".into()),
+                ]),
+                Err(RuntimeError::IllegalFunctionCall { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn instr_respects_character_positions_and_end_of_string() {
+        for (start, needle, expected) in [
+            (2.0, "abc", 2.0),
+            (3.0, "abc", 5.0),
+            (2.0, "", 2.0),
+            (8.0, "", 0.0),
+            (1e15, "", 0.0),
+        ] {
+            assert_eq!(
+                builtin_instr(&[
+                    Value::Numeric(start),
+                    Value::Str("éabcabc".into()),
+                    Value::Str(needle.into()),
+                ])
+                .unwrap(),
+                Value::Numeric(expected),
+            );
+        }
+    }
 }

@@ -37,7 +37,7 @@ or in a source file:
 OPTION DIALECT "QB"
 ```
 
-`OPTION DIALECT "QBASIC"`, `OPTION DIALECT "QBasic 1.1"`, and `OPTION DIALECT "QUICKBASIC"` are also accepted. Source-level dialect detection is applied when running a complete file or a stored REPL program with `RUN`.
+`OPTION DIALECT "QBASIC"`, `OPTION DIALECT "QBasic 1.1"`, and `OPTION DIALECT "QUICKBASIC"` are also accepted. Source-level dialect detection is applied when running a complete file, a stored REPL program with `RUN`, or immediate REPL input. A directive entered at the REPL also sets the dialect for subsequent input.
 
 ## ANSI Mode
 
@@ -77,7 +77,7 @@ QBasic/QuickBasic mode is intended for compatibility with common QuickBasic/QBas
 | File I/O | QuickBasic-style `OPEN file$ FOR mode AS #n` is supported for `INPUT`, `OUTPUT`, `APPEND`, `BINARY`, and `RANDOM`. |
 | Declarations | `OPTION EXPLICIT` requires every variable to be declared before use. |
 | Scope | `COMMON [SHARED]` declares module-level shared variables visible inside procedures. |
-| System | `ENVIRON "name=value"` sets an environment variable; `DATE$ = ...` and `TIME$ = ...` override subsequent reads without changing the host clock. |
+| System | `ENVIRON "name=value"` sets an interpreter-local environment variable inherited by `SHELL`; `DATE$ = ...` and `TIME$ = ...` override subsequent reads without changing the host clock. |
 
 QuickBasic mode also supports `GET` and `PUT` for structured binary record I/O, including recursive serialization of user-defined type fields. `FIELD`, `LSET`, and `RSET` support classic random-access record buffers. `MKI$`/`MKL$`/`MKS$`/`MKD$` and `CVI`/`CVL`/`CVS`/`CVD` convert between numbers and packed binary strings.
 
@@ -105,4 +105,7 @@ The following common BASIC-family features are not currently implemented or are 
 - `TIMER ON`/`OFF`/`STOP` and `KEY ON`/`OFF`/`STOP`.
 - Full QuickBasic integer, long, single, and double storage semantics; suffixes distinguish variables but numeric values are stored as `f64`.
 - Nested-block `RESUME` behavior for classic `ON ERROR` handlers is limited; top-level handlers are supported.
+- Line numbers on block terminators such as `NEXT` and `END IF` are not currently accepted by the parser; leave those statements unnumbered.
+- Binary scalar widths are selected from variable suffixes. An unsuffixed `DIM n AS INTEGER` still uses the default numeric binary format; use `n%` for a two-byte integer or declare a field inside a `TYPE` record.
+- `END` inside a function evaluated as an expression does not currently stop the caller. Return a value and terminate from the calling statement instead.
 - A graceful REPL break that returns to `Ok` while a program is running. `END` and `STOP` end the BASIC program normally; `Ctrl+D` exits at the REPL prompt; `Ctrl+C` while a program runs may terminate the host process.

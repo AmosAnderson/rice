@@ -133,48 +133,37 @@ impl Lexer {
             '&' => {
                 if self.dialect == crate::Dialect::QuickBasic
                     && let Some(next_c) = self.peek_char()
+                    && matches!(next_c, 'H' | 'h' | 'O' | 'o')
                 {
-                    if next_c == 'H' || next_c == 'h' {
-                        self.advance_char(); // consume 'H'
-                        let start = self.pos;
-                        while let Some(ch) = self.peek_char() {
-                            if ch.is_ascii_hexdigit() {
-                                self.advance_char();
-                            } else {
-                                break;
-                            }
+                    let radix = if next_c.eq_ignore_ascii_case(&'H') {
+                        16
+                    } else {
+                        8
+                    };
+                    self.advance_char(); // consume the radix marker
+                    let start = self.pos;
+                    while let Some(ch) = self.peek_char() {
+                        if ch.is_ascii_alphanumeric() || ch == '_' {
+                            self.advance_char();
+                        } else {
+                            break;
                         }
-                        let hex_str: String = self.source[start..self.pos].iter().collect();
-                        let val = u64::from_str_radix(&hex_str, 16).unwrap_or(0) as f64;
-                        if self.peek_char() == Some('&') {
-                            self.advance_char(); // consume trailing & suffix
-                        }
-                        self.at_line_start = false;
-                        return Ok(SpannedToken {
-                            token: Token::NumericLiteral(val),
-                            span,
-                        });
-                    } else if next_c == 'O' || next_c == 'o' {
-                        self.advance_char(); // consume 'O'
-                        let start = self.pos;
-                        while let Some(ch) = self.peek_char() {
-                            if ('0'..='7').contains(&ch) {
-                                self.advance_char();
-                            } else {
-                                break;
-                            }
-                        }
-                        let oct_str: String = self.source[start..self.pos].iter().collect();
-                        let val = u64::from_str_radix(&oct_str, 8).unwrap_or(0) as f64;
-                        if self.peek_char() == Some('&') {
-                            self.advance_char(); // consume trailing & suffix
-                        }
-                        self.at_line_start = false;
-                        return Ok(SpannedToken {
-                            token: Token::NumericLiteral(val),
-                            span,
-                        });
                     }
+                    let digits: String = self.source[start..self.pos].iter().collect();
+                    let val = u64::from_str_radix(&digits, radix).map_err(|_| {
+                        LexError::InvalidNumber {
+                            line: span.line,
+                            col: span.col,
+                        }
+                    })? as f64;
+                    if self.peek_char() == Some('&') {
+                        self.advance_char(); // consume trailing & suffix
+                    }
+                    self.at_line_start = false;
+                    return Ok(SpannedToken {
+                        token: Token::NumericLiteral(val),
+                        span,
+                    });
                 }
                 Token::Ampersand
             }
@@ -468,22 +457,7 @@ impl Lexer {
             "RETRY" => Token::KwRetry,
             "CONTINUE" => Token::KwContinue,
             "MAT" => Token::KwMat,
-            _ => {
-                // Include trailing $ as part of identifier (string names in ANSI BASIC)
-                if self.peek_char() == Some('$') {
-                    self.advance_char();
-                    Token::Identifier(format!("{}$", word))
-                } else if self.dialect == crate::Dialect::QuickBasic
-                    && self
-                        .peek_char()
-                        .is_some_and(|ch| ch == '%' || ch == '!' || ch == '#' || ch == '&')
-                {
-                    let ch = self.advance_char();
-                    Token::Identifier(format!("{}{}", word, ch))
-                } else {
-                    Token::Identifier(word)
-                }
-            }
+            _ => Token::Identifier(word),
         };
 
         self.at_line_start = false;
@@ -574,7 +548,12 @@ impl Lexer {
 
     fn peek_word(&self) -> Option<String> {
         let mut i = self.pos;
-        while i < self.source.len() && self.source[i].is_ascii_alphabetic() {
+        while i < self.source.len()
+            && (self.source[i].is_ascii_alphanumeric() || self.source[i] == '_')
+        {
+            i += 1;
+        }
+        if i < self.source.len() && matches!(self.source[i], '$' | '%' | '!' | '#' | '&') {
             i += 1;
         }
         if i > self.pos {
@@ -624,8 +603,11 @@ impl Lexer {
     fn advance_char(&mut self) -> char {
         let ch = self.source[self.pos];
         self.pos += 1;
-        if ch == '\n' {
-            self.line += 1;
+        if ch == '\r' || ch == '\n' {
+            // Count CRLF as one newline, and support bare CR files as well.
+            if ch == '\r' || self.pos < 2 || self.source[self.pos - 2] != '\r' {
+                self.line += 1;
+            }
             self.col = 1;
         } else {
             self.col += 1;
@@ -750,5 +732,101 @@ mod tests {
             tokenize("3.14"),
             vec![Token::NumericLiteral(314_f64 / 100.0)]
         );
+    }
+
+    #[test]
+    fn test_radix_literals() {
+        assert_eq!(
+            tokenize("PRINT &Hff&, &o17, &H0, &O0&"),
+            vec![
+                Token::KwPrint,
+                Token::NumericLiteral(255.0),
+                Token::Comma,
+                Token::NumericLiteral(15.0),
+                Token::Comma,
+                Token::NumericLiteral(0.0),
+                Token::Comma,
+                Token::NumericLiteral(0.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_invalid_radix_literals_report_the_literal_span() {
+        for literal in [
+            "&H",
+            "&O",
+            "&HGG",
+            "&O8",
+            "&O78",
+            "&H1G",
+            "&H10000000000000000",
+            "&O2000000000000000000000",
+        ] {
+            assert!(
+                matches!(
+                    Lexer::new(&format!("PRINT {literal}")).tokenize(),
+                    Err(LexError::InvalidNumber { line: 1, col: 7 })
+                ),
+                "{literal} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_compound_keywords_do_not_consume_identifier_prefixes() {
+        for (source, expected) in [
+            (
+                "LINE INPUT1",
+                vec![
+                    Token::Identifier("LINE".into()),
+                    Token::Identifier("INPUT1".into()),
+                ],
+            ),
+            (
+                "END IF_name",
+                vec![Token::KwEnd, Token::Identifier("IF_NAME".into())],
+            ),
+            (
+                "OPTION BASE1",
+                vec![Token::KwOption, Token::Identifier("BASE1".into())],
+            ),
+            (
+                "SELECT CASE$",
+                vec![Token::KwSelect, Token::Identifier("CASE$".into())],
+            ),
+            (
+                "LINE INPUT%",
+                vec![
+                    Token::Identifier("LINE".into()),
+                    Token::Identifier("INPUT%".into()),
+                ],
+            ),
+        ] {
+            assert_eq!(tokenize(source), expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn test_newline_spans_for_lf_crlf_and_cr() {
+        for newline in ["\n", "\r\n", "\r"] {
+            let source = format!("PRINT 1{newline}20 PRINT 2{newline}PRINT 3");
+            let tokens = Lexer::new(&source).tokenize().unwrap();
+            let print_spans: Vec<Span> = tokens
+                .iter()
+                .filter(|t| t.token == Token::KwPrint)
+                .map(|t| t.span)
+                .collect();
+            assert_eq!(
+                print_spans,
+                vec![
+                    Span { line: 1, col: 1 },
+                    Span { line: 2, col: 4 },
+                    Span { line: 3, col: 1 },
+                ],
+                "newline {newline:?}"
+            );
+            assert!(tokens.iter().any(|t| t.token == Token::LineNumber(20)));
+        }
     }
 }

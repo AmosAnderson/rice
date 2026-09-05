@@ -32,6 +32,8 @@ struct DocumentSymbols {
 }
 
 struct DocumentState {
+    source: String,
+    version: i32,
     tokens: Vec<SpannedToken>,
     diagnostics: Vec<Diagnostic>,
     symbols: DocumentSymbols,
@@ -54,17 +56,26 @@ impl RiceLspBackend {
         }
     }
 
-    async fn analyze(&self, uri: Url, source: String) {
-        let state = analyze_source(source);
+    async fn analyze(&self, uri: Url, source: String, version: i32) {
+        let state = analyze_source(source, version);
         let diagnostics = state.diagnostics.clone();
-        self.documents.write().await.insert(uri.clone(), state);
+        {
+            let mut documents = self.documents.write().await;
+            if documents
+                .get(&uri)
+                .is_some_and(|current| current.version > version)
+            {
+                return;
+            }
+            documents.insert(uri.clone(), state);
+        }
         self.client
-            .publish_diagnostics(uri, diagnostics, None)
+            .publish_diagnostics(uri, diagnostics, Some(version))
             .await;
     }
 }
 
-fn analyze_source(source: String) -> DocumentState {
+fn analyze_source(source: String, version: i32) -> DocumentState {
     let mut diagnostics = Vec::new();
     let dialect = rice::detect_dialect(&source).unwrap_or(rice::DEFAULT_DIALECT);
     let mut lexer = Lexer::with_dialect(&source, dialect);
@@ -75,11 +86,8 @@ fn analyze_source(source: String) -> DocumentState {
             let (line, col) = lex_error_pos(&e);
             diagnostics.push(Diagnostic {
                 range: Range {
-                    start: Position::new(
-                        line.saturating_sub(1) as u32,
-                        col.saturating_sub(1) as u32,
-                    ),
-                    end: Position::new(line.saturating_sub(1) as u32, col as u32),
+                    start: source_position(&source, line, col),
+                    end: source_position(&source, line, col.saturating_add(1)),
                 },
                 severity: Some(DiagnosticSeverity::ERROR),
                 source: Some("rice".into()),
@@ -87,6 +95,8 @@ fn analyze_source(source: String) -> DocumentState {
                 ..Default::default()
             });
             return DocumentState {
+                source,
+                version,
                 tokens: vec![],
                 diagnostics,
                 symbols: DocumentSymbols::default(),
@@ -100,10 +110,7 @@ fn analyze_source(source: String) -> DocumentState {
         Err(e) => {
             let line = parse_error_line(&e);
             diagnostics.push(Diagnostic {
-                range: Range {
-                    start: Position::new(line.saturating_sub(1) as u32, 0),
-                    end: Position::new(line.saturating_sub(1) as u32, u32::MAX),
-                },
+                range: source_line_range(&source, line),
                 severity: Some(DiagnosticSeverity::ERROR),
                 source: Some("rice".into()),
                 message: e.to_string(),
@@ -119,9 +126,33 @@ fn analyze_source(source: String) -> DocumentState {
     };
 
     DocumentState {
+        source,
+        version,
         tokens,
         diagnostics,
         symbols,
+    }
+}
+
+/// Convert the lexer's one-based Unicode character columns to LSP UTF-16.
+fn source_position(source: &str, line: usize, col: usize) -> Position {
+    let text = source
+        .split('\n')
+        .nth(line.saturating_sub(1))
+        .unwrap_or("")
+        .trim_end_matches('\r');
+    let character = text
+        .chars()
+        .take(col.saturating_sub(1))
+        .map(char::len_utf16)
+        .sum::<usize>();
+    Position::new(line.saturating_sub(1) as u32, character as u32)
+}
+
+fn source_line_range(source: &str, line: usize) -> Range {
+    Range {
+        start: source_position(source, line, 1),
+        end: source_position(source, line, usize::MAX),
     }
 }
 
@@ -227,6 +258,10 @@ fn collect_symbols(
                 }
             }
             Stmt::WhileWend { body, .. } => collect_symbols(body, syms, seen_vars),
+            Stmt::WhenException { body, handler } => {
+                collect_symbols(body, syms, seen_vars);
+                collect_symbols(handler, syms, seen_vars);
+            }
             Stmt::DoLoop(d) => collect_symbols(&d.body, syms, seen_vars),
             Stmt::SelectCase(s) => {
                 for case in &s.cases {
@@ -882,7 +917,7 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "OPTION DIALECT",
-            "```basic\nOPTION DIALECT \"ANSI\"\nOPTION DIALECT \"QB\"\n```\nSelects ANSI mode or the default QBasic-compatible mode for a complete source file or stored REPL program run with `RUN`.",
+            "```basic\nOPTION DIALECT \"ANSI\"\nOPTION DIALECT \"QB\"\n```\nSelects ANSI mode or the default QBasic-compatible mode for source code and subsequent immediate REPL input.",
         ),
         (
             "REDIM",
@@ -1154,21 +1189,43 @@ fn keyword_hover(name: &str) -> Option<&'static str> {
 // ---------------------------------------------------------------------------
 
 fn resolve_token_name(state: &DocumentState, pos: Position) -> Option<String> {
-    let line_1 = pos.line as usize + 1;
-    let col_1 = pos.character as usize + 1;
+    let line = state.source.split('\n').nth(pos.line as usize)?;
+    let mut utf16_col = 0;
+    let (byte_col, char_col) =
+        line.char_indices()
+            .enumerate()
+            .find_map(|(char_col, (byte_col, ch))| {
+                let at_cursor = utf16_col == pos.character as usize;
+                utf16_col += ch.len_utf16();
+                at_cursor.then_some((byte_col, char_col))
+            })?;
+    let token = state
+        .tokens
+        .iter()
+        .take_while(|token| token.span.line <= pos.line as usize + 1)
+        .filter(|token| token.span.line == pos.line as usize + 1 && token.span.col <= char_col + 1)
+        .last()?;
+    let name = token_name(&token.token)?;
+    let start = line.char_indices().nth(token.span.col.saturating_sub(1))?.0;
+    let text = &line[start..];
 
-    // Find the last token on this line whose column <= cursor column
-    let mut best: Option<&SpannedToken> = None;
-    for t in &state.tokens {
-        if t.span.line == line_1 && t.span.col <= col_1 {
-            best = Some(t);
-        }
-        if t.span.line > line_1 {
+    // A preceding token does not own trailing whitespace or comments. Canonical
+    // names can differ from source spelling (QUIT/SYSTEM, compound keywords).
+    let word_len = |text: &str| {
+        text.bytes()
+            .take_while(|b| b.is_ascii_alphanumeric() || b"_$%!#&.".contains(b))
+            .count()
+    };
+    let mut len = word_len(text);
+    for word in name.split_whitespace().skip(1) {
+        let rest = text[len..].trim_start_matches([' ', '\t']);
+        let next_len = word_len(rest);
+        if !rest[..next_len].eq_ignore_ascii_case(word) {
             break;
         }
+        len = text.len() - rest.len() + next_len;
     }
-
-    token_name(&best?.token)
+    (byte_col < start + len && !line.as_bytes()[byte_col].is_ascii_whitespace()).then_some(name)
 }
 
 fn token_name(tok: &rice::token::Token) -> Option<String> {
@@ -1346,13 +1403,22 @@ impl LanguageServer for RiceLspBackend {
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        self.analyze(params.text_document.uri, params.text_document.text)
-            .await;
+        self.analyze(
+            params.text_document.uri,
+            params.text_document.text,
+            params.text_document.version,
+        )
+        .await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         if let Some(change) = params.content_changes.into_iter().last() {
-            self.analyze(params.text_document.uri, change.text).await;
+            self.analyze(
+                params.text_document.uri,
+                change.text,
+                params.text_document.version,
+            )
+            .await;
         }
     }
 
@@ -1361,6 +1427,9 @@ impl LanguageServer for RiceLspBackend {
             .write()
             .await
             .remove(&params.text_document.uri);
+        self.client
+            .publish_diagnostics(params.text_document.uri, vec![], None)
+            .await;
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
@@ -1476,13 +1545,9 @@ impl LanguageServer for RiceLspBackend {
         let upper = name.to_uppercase();
 
         if let Some(sym) = find_symbol(&state.symbols, &upper) {
-            let def_line = sym.line.saturating_sub(1) as u32;
             return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                 uri: uri.clone(),
-                range: Range {
-                    start: Position::new(def_line, 0),
-                    end: Position::new(def_line, u32::MAX),
-                },
+                range: source_line_range(&state.source, sym.line),
             })));
         }
 
@@ -1501,4 +1566,69 @@ async fn main() {
 
     let (service, socket) = LspService::new(RiceLspBackend::new);
     Server::new(stdin, stdout, socket).serve(service).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cursor_resolution_uses_utf16_and_excludes_comments_and_whitespace() {
+        let state = analyze_source("PRINT \"😀\"; VALUE ' comment\n".into(), 1);
+        assert_eq!(
+            resolve_token_name(&state, Position::new(0, 12)).as_deref(),
+            Some("VALUE")
+        );
+        assert_eq!(
+            resolve_token_name(&state, Position::new(0, 16)).as_deref(),
+            Some("VALUE")
+        );
+        for character in [5, 17, 19, 23, 100] {
+            assert_eq!(
+                resolve_token_name(&state, Position::new(0, character)),
+                None,
+                "{character}"
+            );
+        }
+    }
+
+    #[test]
+    fn cursor_resolution_preserves_compound_and_alias_keywords() {
+        let state = analyze_source("END\tIF\nQUIT\n".into(), 1);
+        assert_eq!(
+            resolve_token_name(&state, Position::new(0, 4)).as_deref(),
+            Some("END IF")
+        );
+        assert_eq!(
+            resolve_token_name(&state, Position::new(1, 3)).as_deref(),
+            Some("SYSTEM")
+        );
+        assert_eq!(resolve_token_name(&state, Position::new(1, 4)), None);
+    }
+
+    #[test]
+    fn diagnostics_and_line_ranges_use_actual_utf16_columns() {
+        let state = analyze_source("PRINT \"😀\"; @".into(), 1);
+        assert_eq!(
+            state.diagnostics[0].range,
+            Range::new(Position::new(0, 12), Position::new(0, 13))
+        );
+        assert_eq!(
+            source_line_range("PRINT \"😀\"\r\n", 1),
+            Range::new(Position::new(0, 0), Position::new(0, 10))
+        );
+        let state = analyze_source("PRINT (".into(), 1);
+        assert_eq!(state.diagnostics[0].range.end, Position::new(0, 7));
+    }
+
+    #[test]
+    fn symbols_include_exception_bodies_and_handlers() {
+        let state = analyze_source(
+            "WHEN EXCEPTION IN\n  inside = 1\nUSE\n  recovered = 1\nEND WHEN\n".into(),
+            1,
+        );
+        assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+        assert!(find_symbol(&state.symbols, "INSIDE").is_some());
+        assert!(find_symbol(&state.symbols, "RECOVERED").is_some());
+    }
 }

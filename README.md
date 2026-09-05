@@ -58,7 +58,7 @@ cargo run -- myprogram.bas
 
 ### Dialects
 
-RICE BASIC runs in QBasic 1.1 compatibility mode by default. ANSI mode can be selected with `--dialect ansi` or `OPTION DIALECT "ANSI"` in a complete source file:
+RICE BASIC runs in QBasic 1.1 compatibility mode by default. ANSI mode can be selected with `--dialect ansi` or `OPTION DIALECT "ANSI"` in source code or at the REPL:
 
 ```bash
 cargo run -- --dialect ansi ansi-program.bas

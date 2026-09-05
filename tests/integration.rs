@@ -1678,3 +1678,273 @@ END SUB
     );
     assert_eq!(output, "15\n");
 }
+
+#[test]
+fn test_unary_plus_passes_argument_by_value() {
+    assert_eq!(run_file("tests/programs/unary_plus_byval.bas"), "7\n");
+    assert!(run_bas_may_fail("PRINT +\"text\"\n").1.is_err());
+}
+
+#[test]
+fn test_static_record_initialization() {
+    assert_eq!(run_file("tests/programs/static_record.bas"), "1\n2\n");
+}
+
+#[test]
+fn test_declared_string_defaults() {
+    assert_eq!(run_file("tests/programs/string_defaults.bas"), "0\n0\n");
+}
+
+#[test]
+fn test_print_column_positions() {
+    assert_eq!(
+        run_file("tests/programs/print_columns.bas"),
+        format!("A{}B\n    C\n", " ".repeat(15))
+    );
+}
+
+#[test]
+fn test_input_eof_returns_error() {
+    for source in ["INPUT a, b\n", "INPUT a\n", "LINE INPUT a$\n"] {
+        let (_, result) = run_bas_may_fail(source);
+        let err = result.unwrap_err();
+        let runtime = err.downcast_ref::<rice::error::RuntimeError>().unwrap();
+        assert_eq!(runtime.basic_err_code(), 62, "{source}");
+    }
+}
+
+#[test]
+fn test_input_retries_invalid_numbers_and_honors_string_declarations() {
+    let output = SharedOutput::new();
+    let input = Cursor::new(b"bad\n 42 \nhello\n".to_vec());
+    let mut interp =
+        rice::interpreter::Interpreter::with_io(Box::new(output.clone()), Box::new(input));
+    interp
+        .run_source("INPUT n\nDIM text AS STRING\nINPUT text\nPRINT n\nPRINT text\n")
+        .unwrap();
+    assert_eq!(output.into_string(), "? ? Redo from start\n? ? 42\nhello\n");
+}
+
+#[test]
+fn test_recursive_types_report_error() {
+    for source in [
+        "TYPE Node\n child AS Node\nEND TYPE\nDIM root AS Node\n",
+        "TYPE A\n child AS B\nEND TYPE\nTYPE B\n child AS A\nEND TYPE\nDIM root AS A\n",
+    ] {
+        let (_, result) = run_bas_may_fail(source);
+        assert!(result.unwrap_err().to_string().contains("recursive TYPE"));
+    }
+    assert_eq!(
+        run_bas(
+            "TYPE Leaf\n n AS INTEGER\nEND TYPE\nTYPE Pair\n a AS Leaf\n b AS Leaf\nEND TYPE\nDIM item AS Pair\nPRINT item.a.n\nPRINT item.b.n\n"
+        ),
+        "0\n0\n"
+    );
+}
+
+#[test]
+fn test_invalid_runtime_dimensions_and_positions() {
+    for source in [
+        "WIDTH -1\n",
+        "WIDTH 0\n",
+        "WIDTH 80, -1\n",
+        "PRINT SCREEN(-1, 1)\n",
+        "PRINT SCREEN(1, -1)\n",
+        "DIM a(10 TO 1, 1 TO 2)\nMAT a = ZER\n",
+        "REDIM a(10 TO 1, 1 TO 2)\nMAT a = ZER\n",
+        "SEEK #1, -9223372036854775808\n",
+    ] {
+        assert!(run_bas_may_fail(source).1.is_err(), "{source}");
+    }
+}
+
+#[test]
+fn test_constant_assignment_reports_error() {
+    for source in [
+        "CONST n = 42\nn = 3\n",
+        "CONST text$ = \"hello\"\nMID$(text$, 1) = \"x\"\n",
+        "CONST n = 42\nSWAP n, m\n",
+    ] {
+        assert!(
+            run_bas_may_fail(source)
+                .1
+                .unwrap_err()
+                .to_string()
+                .contains("cannot assign to constant"),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn test_console_write_errors_are_reported() {
+    struct BrokenOutput;
+    impl std::io::Write for BrokenOutput {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "closed output",
+            ))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut interp = rice::interpreter::Interpreter::with_io(
+        Box::new(BrokenOutput),
+        Box::new(Cursor::new(Vec::new())),
+    );
+    assert!(
+        interp
+            .run_source("PRINT 42\n")
+            .unwrap_err()
+            .to_string()
+            .contains("closed output")
+    );
+}
+
+#[test]
+fn test_environ_rejects_nul_without_panicking() {
+    assert!(
+        run_bas_may_fail("ENVIRON \"RICE_TEST=\" + CHR$(0)\n")
+            .1
+            .is_err()
+    );
+}
+
+#[test]
+fn test_environ_changes_are_local_to_interpreter() {
+    let key = "RICE_ENVIRON_ISOLATION_TEST";
+    let original = std::env::var(key).ok();
+    assert_eq!(
+        run_bas(&format!(
+            "ENVIRON \"{key}=local\"\nPRINT ENVIRON$(\"{key}\")\n"
+        )),
+        "local\n"
+    );
+    assert_eq!(std::env::var(key).ok(), original);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_shell_inherits_interpreter_environment() {
+    let (_, dir) = run_bas_with_tmpdir(
+        r#"ENVIRON "RICE_SHELL_ENVIRON_TEST=hello"
+SHELL "printf '%s' $RICE_SHELL_ENVIRON_TEST > '{DIR}/env.txt'"
+"#,
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("env.txt")).unwrap(),
+        "hello"
+    );
+}
+
+#[test]
+fn test_file_io_regressions() {
+    let (output, _dir) = run_bas_with_tmpdir(include_str!("programs/review_file_io.bas"));
+    assert_eq!(
+        output,
+        "héllo \"世界\"\n42\n62\n    A  B\nx               y\n6\n123\nrice\n3\n"
+    );
+}
+
+#[test]
+fn test_gosub_preserves_nested_loop_continuations() {
+    assert_eq!(
+        run_file("tests/programs/gosub_nested.bas"),
+        "first1\nback1\nloop1\nfirst2\nback2\nloop2\ndone\n"
+    );
+}
+
+#[test]
+fn test_gosub_uses_current_procedure_labels() {
+    assert_eq!(
+        run_file("tests/programs/gosub_procedure_scope.bas"),
+        "local1\nsub1\nlocal2\nsub2\nmain\n3\nmain\n"
+    );
+}
+
+#[test]
+fn test_gosub_end_stops_the_caller() {
+    assert_eq!(run_file("tests/programs/gosub_end.bas"), "finished\n");
+}
+
+#[test]
+fn test_gosub_can_return_from_a_local_block() {
+    assert_eq!(
+        run_bas(
+            "DO\nGOSUB helper\nPRINT \"body\"\nEXIT DO\nhelper:\nPRINT \"local\"\nRETURN\nLOOP\nPRINT \"done\"\n"
+        ),
+        "local\nbody\ndone\n"
+    );
+}
+
+#[test]
+fn test_gosub_cannot_target_another_procedure() {
+    let (_, result) =
+        run_bas_may_fail("CALL Worker\nEND\nhelper:\nRETURN\nSUB Worker\nGOSUB helper\nEND SUB\n");
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("undefined label: HELPER")
+    );
+}
+
+#[test]
+fn test_return_without_gosub_is_an_error() {
+    let (_, result) = run_bas_may_fail("RETURN\n");
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("RETURN without GOSUB")
+    );
+}
+
+#[test]
+fn test_gosub_preserves_on_error_resume_location() {
+    assert_eq!(
+        run_file("tests/programs/gosub_error_resume.bas"),
+        "handler\n5:210\nresumed\nmain\n"
+    );
+}
+
+#[test]
+fn test_file_write_resets_print_column() {
+    let (output, _dir) = run_bas_with_tmpdir(
+        "OPEN \"{DIR}/columns.txt\" FOR OUTPUT AS #1\nPRINT #1, \"prefix\";\nWRITE #1, 1\nPRINT #1, TAB(5); \"x\"\nCLOSE #1\nOPEN \"{DIR}/columns.txt\" FOR INPUT AS #1\nLINE INPUT #1, text$\nLINE INPUT #1, text$\nPRINT text$\nCLOSE #1\n",
+    );
+    assert_eq!(output, "    x\n");
+}
+
+#[test]
+fn test_undefined_goto_is_reported() {
+    let (_, result) = run_bas_may_fail("GOTO missing\n");
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("undefined label: MISSING")
+    );
+}
+
+#[test]
+fn test_exit_for_propagates_through_other_loops() {
+    assert_eq!(
+        run_bas(
+            "FOR i = 1 TO 3\nWHILE i = 1\nDO\nEXIT FOR\nLOOP\nWEND\nPRINT \"unexpected\"\nNEXT i\nPRINT \"done\"\n"
+        ),
+        "done\n"
+    );
+}
+
+#[test]
+fn test_sub_control_flow_cannot_escape_to_callers_labels() {
+    for statement in ["RETURN", "GOTO helper"] {
+        let (_, result) = run_bas_may_fail(&format!(
+            "GOSUB helper\nPRINT \"unexpected\"\nEND\nhelper:\nCALL Worker\nRETURN\nSUB Worker\n{statement}\nEND SUB\n"
+        ));
+        assert!(result.is_err(), "{statement} must remain in its procedure");
+    }
+}

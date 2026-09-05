@@ -59,6 +59,11 @@ pub fn mat_mul(a: &[Vec<f64>], b: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, RuntimeE
         });
     }
     let p = b[0].len();
+    if a.iter().any(|row| row.len() != n) || b.iter().any(|row| row.len() != p) {
+        return Err(RuntimeError::General {
+            msg: "MAT MUL: dimension mismatch".into(),
+        });
+    }
     let mut result = vec![vec![0.0; p]; m];
     for (i, a_row) in a.iter().enumerate() {
         for (j, cell) in result[i].iter_mut().enumerate() {
@@ -117,7 +122,7 @@ pub fn mat_inv(a: &[Vec<f64>]) -> Result<(Vec<Vec<f64>>, f64), RuntimeError> {
             }
         }
 
-        if max_val < 1e-12 {
+        if max_val == 0.0 {
             return Err(RuntimeError::General {
                 msg: "MAT INV: singular matrix".into(),
             });
@@ -219,6 +224,18 @@ mod tests {
     }
 
     #[test]
+    fn test_mat_mul_rejects_ragged_matrices() {
+        let square = vec![vec![1.0, 2.0], vec![3.0, 4.0]];
+        for ragged in [
+            vec![vec![1.0, 2.0], vec![3.0]],
+            vec![vec![1.0, 2.0], vec![3.0, 4.0, 5.0]],
+        ] {
+            assert!(mat_mul(&square, &ragged).is_err());
+            assert!(mat_mul(&ragged, &square).is_err());
+        }
+    }
+
+    #[test]
     fn test_mat_scalar_mul() {
         let a = vec![vec![1.0, 2.0], vec![3.0, 4.0]];
         let c = mat_scalar_mul(3.0, &a);
@@ -251,6 +268,18 @@ mod tests {
     fn test_mat_inv_singular() {
         let a = vec![vec![1.0, 2.0], vec![2.0, 4.0]];
         assert!(mat_inv(&a).is_err());
+    }
+
+    #[test]
+    fn test_mat_inv_small_invertible_matrix() {
+        let a = vec![vec![1e-15, 0.0], vec![0.0, 2e-15]];
+        let (inverse, determinant) = mat_inv(&a).unwrap();
+        let product = mat_mul(&a, &inverse).unwrap();
+        assert!((product[0][0] - 1.0).abs() < 1e-12);
+        assert!((product[1][1] - 1.0).abs() < 1e-12);
+        assert_eq!(product[0][1], 0.0);
+        assert_eq!(product[1][0], 0.0);
+        assert!((determinant / 2e-30 - 1.0).abs() < 1e-12);
     }
 
     #[test]

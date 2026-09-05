@@ -460,16 +460,20 @@ impl Parser {
             return self.parse_file_print();
         }
 
+        Ok(Stmt::Print(self.parse_print_body()?))
+    }
+
+    fn parse_print_body(&mut self) -> Result<PrintStmt, ParseError> {
         let mut items = Vec::new();
         let mut trailing = PrintSep::Newline;
         let mut format = None;
 
         if self.at_stmt_end() {
-            return Ok(Stmt::Print(PrintStmt {
+            return Ok(PrintStmt {
                 format,
                 items,
                 trailing,
-            }));
+            });
         }
 
         // Check for PRINT USING
@@ -526,11 +530,11 @@ impl Parser {
             }
         }
 
-        Ok(Stmt::Print(PrintStmt {
+        Ok(PrintStmt {
             format,
             items,
             trailing,
-        }))
+        })
     }
 
     fn parse_file_print(&mut self) -> Result<Stmt, ParseError> {
@@ -538,49 +542,13 @@ impl Parser {
         let file_num = self.parse_expr()?;
         self.expect(Token::Comma)?;
 
-        let mut items = Vec::new();
-        let mut trailing = PrintSep::Newline;
-        let mut format = None;
-
-        // Check for PRINT #n, USING
-        if matches!(self.peek(), Token::KwUsing) {
-            self.advance(); // consume USING
-            format = Some(self.parse_expr()?);
-            self.expect(Token::Semicolon)?; // consume ;
-        }
-
-        while !self.at_stmt_end() {
-            match self.peek() {
-                Token::Semicolon => {
-                    self.advance();
-                    trailing = PrintSep::Semicolon;
-                    if self.at_stmt_end() {
-                        break;
-                    }
-                    continue;
-                }
-                Token::Comma => {
-                    self.advance();
-                    items.push(PrintItem::Comma);
-                    trailing = PrintSep::Comma;
-                    if self.at_stmt_end() {
-                        break;
-                    }
-                    continue;
-                }
-                _ => {
-                    let expr = self.parse_expr()?;
-                    items.push(PrintItem::Expr(expr));
-                    trailing = PrintSep::Newline;
-                }
-            }
-        }
+        let print = self.parse_print_body()?;
 
         Ok(Stmt::PrintFile(FilePrintStmt {
             file_num,
-            format,
-            items,
-            trailing,
+            format: print.format,
+            items: print.items,
+            trailing: print.trailing,
         }))
     }
 
@@ -602,6 +570,10 @@ impl Parser {
             } else {
                 Ok(Stmt::TimeAssign(expr))
             };
+        }
+
+        if matches!(self.peek(), Token::Dot) {
+            return self.parse_member_assignment(Expr::Variable(var));
         }
 
         // Check for string slice assignment: LET name$(start:end) = expr
@@ -635,6 +607,12 @@ impl Parser {
                 }
             }
             self.expect(Token::RightParen)?;
+            if matches!(self.peek(), Token::Dot) {
+                return self.parse_member_assignment(Expr::ArrayIndex {
+                    name: var.name,
+                    indices,
+                });
+            }
             self.expect(Token::Equal)?;
             let expr = self.parse_expr()?;
             return Ok(Stmt::Let {
@@ -764,10 +742,7 @@ impl Parser {
                     name: name.clone(),
                     indices,
                 };
-                let target = self.parse_dot_chain(base)?;
-                self.expect(Token::Equal)?;
-                let value = self.parse_expr()?;
-                return Ok(Stmt::MemberAssign { target, value });
+                return self.parse_member_assignment(base);
             }
 
             if matches!(self.peek(), Token::Equal) {
@@ -808,10 +783,7 @@ impl Parser {
         // Member access on scalar: name.field[.field...] = expr
         if matches!(self.peek(), Token::Dot) {
             let base = Expr::Variable(Variable { name: name.clone() });
-            let target = self.parse_dot_chain(base)?;
-            self.expect(Token::Equal)?;
-            let value = self.parse_expr()?;
-            return Ok(Stmt::MemberAssign { target, value });
+            return self.parse_member_assignment(base);
         }
 
         // Simple assignment: name = expr
@@ -1069,7 +1041,14 @@ impl Parser {
         self.expect(Token::KwNext)?;
 
         // Optional variable name after NEXT
-        if let Token::Identifier(_) = self.peek() {
+        if let Token::Identifier(name) = self.peek() {
+            if name != &var.name {
+                return Err(ParseError::Expected {
+                    line: self.current_line(),
+                    expected: format!("{} after NEXT", var.name),
+                    found: name.clone(),
+                });
+            }
             self.advance();
         }
 
@@ -1765,35 +1744,26 @@ impl Parser {
             // Expect FOR keyword
             self.expect(Token::KwFor)?;
 
-            // Expect Mode
-            let access;
-            let organization;
-
-            match self.peek().clone() {
+            let (access, organization) = match self.peek().clone() {
                 Token::KwInput => {
                     self.advance();
-                    access = FileAccess::Input;
-                    organization = Some(FileOrg::Sequential);
+                    (FileAccess::Input, Some(FileOrg::Sequential))
                 }
                 Token::KwOutput => {
                     self.advance();
-                    access = FileAccess::Output;
-                    organization = Some(FileOrg::Sequential);
+                    (FileAccess::Output, Some(FileOrg::Sequential))
                 }
                 Token::Identifier(ref mode) if mode == "APPEND" => {
                     self.advance();
-                    access = FileAccess::Append;
-                    organization = Some(FileOrg::Sequential);
+                    (FileAccess::Append, Some(FileOrg::Sequential))
                 }
                 Token::Identifier(ref mode) if mode == "BINARY" => {
                     self.advance();
-                    access = FileAccess::OutIn;
-                    organization = Some(FileOrg::Stream);
+                    (FileAccess::OutIn, Some(FileOrg::Stream))
                 }
                 Token::Identifier(ref mode) if mode == "RANDOM" => {
                     self.advance();
-                    access = FileAccess::OutIn;
-                    organization = Some(FileOrg::Sequential);
+                    (FileAccess::OutIn, Some(FileOrg::Sequential))
                 }
                 tok => {
                     return Err(ParseError::Expected {
@@ -1802,7 +1772,7 @@ impl Parser {
                         found: format!("{:?}", tok),
                     });
                 }
-            }
+            };
 
             // Optional ACCESS read/write/read write
             if matches!(self.peek(), Token::KwAccess) {
@@ -1824,7 +1794,7 @@ impl Parser {
 
             // Optional locks: SHARED, LOCK READ, LOCK WRITE, LOCK READ WRITE
             match self.peek().clone() {
-                Token::Identifier(ref lock) if lock == "SHARED" => {
+                Token::KwShared => {
                     self.advance();
                 }
                 Token::Identifier(ref lock) if lock == "LOCK" => {
@@ -2468,7 +2438,11 @@ impl Parser {
             }
             Token::Plus => {
                 self.advance();
-                self.parse_unary()
+                let operand = self.parse_unary()?;
+                Ok(Expr::UnaryOp {
+                    op: UnaryOp::Pos,
+                    operand: Box::new(operand),
+                })
             }
             _ => self.parse_power(),
         }
@@ -2619,6 +2593,13 @@ impl Parser {
         Ok(base)
     }
 
+    fn parse_member_assignment(&mut self, base: Expr) -> Result<Stmt, ParseError> {
+        let target = self.parse_dot_chain(base)?;
+        self.expect(Token::Equal)?;
+        let value = self.parse_expr()?;
+        Ok(Stmt::MemberAssign { target, value })
+    }
+
     fn is_keyword_function(&self, tok: &Token) -> bool {
         matches!(tok, Token::KwLen | Token::KwString)
     }
@@ -2692,6 +2673,13 @@ impl Parser {
                 if matches!(self.peek(), Token::Star) {
                     self.advance(); // consume *
                     if let Token::NumericLiteral(n) = self.peek().clone() {
+                        if !n.is_finite() || n.fract() != 0.0 || n < 0.0 || n >= usize::MAX as f64 {
+                            return Err(ParseError::Expected {
+                                line: self.current_line(),
+                                expected: "non-negative integer string length within range".into(),
+                                found: n.to_string(),
+                            });
+                        }
                         self.advance();
                         Ok(BasicType::FixedLengthString(n as usize))
                     } else {
@@ -2922,8 +2910,12 @@ mod tests {
     use crate::lexer::Lexer;
 
     fn parse(s: &str) -> Program {
+        parse_result(s).unwrap()
+    }
+
+    fn parse_result(s: &str) -> Result<Program, ParseError> {
         let tokens = Lexer::new(s).tokenize().unwrap();
-        Parser::new(tokens).parse_program().unwrap()
+        Parser::new(tokens).parse_program()
     }
 
     #[test]
@@ -2948,6 +2940,45 @@ mod tests {
     }
 
     #[test]
+    fn test_member_assignments_allow_explicit_let() {
+        for prefix in ["", "LET "] {
+            let prog = parse(&format!("{prefix}person.address.zip = 12345"));
+            assert!(matches!(
+                &prog.statements[0].stmt,
+                Stmt::MemberAssign {
+                    target: Expr::MemberAccess { field, .. },
+                    value: Expr::NumericLit(12345.0),
+                } if field == "ZIP"
+            ));
+            let prog = parse(&format!("{prefix}people(2).age = 30"));
+            assert!(matches!(
+                &prog.statements[0].stmt,
+                Stmt::MemberAssign {
+                    target: Expr::MemberAccess { object, field },
+                    value: Expr::NumericLit(30.0),
+                } if field == "AGE" && matches!(object.as_ref(), Expr::ArrayIndex { name, .. } if name == "PEOPLE")
+            ));
+        }
+    }
+
+    #[test]
+    fn test_file_print_supports_tab_and_spc() {
+        let prog = parse("PRINT #1, TAB(5); \"A\"; SPC(2); \"B\";");
+        let Stmt::PrintFile(print) = &prog.statements[0].stmt else {
+            panic!("expected a file PRINT statement");
+        };
+        assert!(matches!(
+            print.items[0],
+            PrintItem::Tab(Expr::NumericLit(5.0))
+        ));
+        assert!(matches!(
+            print.items[2],
+            PrintItem::Spc(Expr::NumericLit(2.0))
+        ));
+        assert_eq!(print.trailing, PrintSep::Semicolon);
+    }
+
+    #[test]
     fn test_if_block() {
         let prog = parse("IF x > 0 THEN\nPRINT 1\nEND IF");
         assert_eq!(prog.statements.len(), 1);
@@ -2959,6 +2990,57 @@ mod tests {
         let prog = parse("FOR i = 1 TO 10\nPRINT i\nNEXT i");
         assert_eq!(prog.statements.len(), 1);
         assert!(matches!(prog.statements[0].stmt, Stmt::For(_)));
+    }
+
+    #[test]
+    fn test_next_variable_must_match_for_variable() {
+        assert!(parse_result("FOR i = 1 TO 10\nNEXT j").is_err());
+        assert!(parse_result("FOR i = 1 TO 2\nFOR j = 1 TO 2\nNEXT i\nNEXT j").is_err());
+        assert!(parse_result("FOR i = 1 TO 2\nFOR j = 1 TO 2\nNEXT J\nNEXT I").is_ok());
+        assert!(parse_result("FOR i = 1 TO 2\nNEXT").is_ok());
+    }
+
+    #[test]
+    fn test_unary_plus_is_preserved_in_call_arguments() {
+        let prog = parse("CALL Change(+x)");
+        let Stmt::Call { args, .. } = &prog.statements[0].stmt else {
+            panic!("expected a procedure call");
+        };
+        assert!(matches!(
+            &args[0],
+            Expr::UnaryOp {
+                op: UnaryOp::Pos,
+                operand,
+            } if matches!(operand.as_ref(), Expr::Variable(var) if var.name == "X")
+        ));
+    }
+
+    #[test]
+    fn test_open_shared_clause() {
+        let prog = parse("OPEN \"input.dat\" FOR INPUT SHARED AS #1");
+        assert!(matches!(
+            &prog.statements[0].stmt,
+            Stmt::Open(OpenStmt {
+                access: FileAccess::Input,
+                channel: Expr::NumericLit(1.0),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn test_fixed_string_length_must_be_a_representable_integer() {
+        for length in ["2.5", "1E100", "1E999", "-1"] {
+            assert!(
+                parse_result(&format!("DIM text AS STRING * {length}")).is_err(),
+                "invalid length {length} was accepted"
+            );
+        }
+        let prog = parse("DIM text AS STRING * 20");
+        let Stmt::Dim { decls, .. } = &prog.statements[0].stmt else {
+            panic!("expected a DIM statement");
+        };
+        assert_eq!(decls[0].as_type, Some(BasicType::FixedLengthString(20)));
     }
 
     #[test]

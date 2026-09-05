@@ -45,9 +45,8 @@ enum ControlFlow {
     ExitFor,
     ExitDo,
     ExitSub,
-    ExitFunction(Value),
+    ExitFunction,
     Goto(Label),
-    Gosub(Label),
     Return,
     End,
     Retry,
@@ -77,6 +76,7 @@ struct UserFunction {
 
 struct FileHandle {
     _access: FileAccess,
+    print_col: usize,
     reader: Option<BufReader<File>>,
     writer: Option<BufWriter<File>>,
     eof_flag: bool,
@@ -92,9 +92,16 @@ struct FieldBinding {
     width: usize,
 }
 
+#[derive(Clone)]
+struct LabelTarget {
+    statements: Rc<Vec<LabeledStmt>>,
+    index: usize,
+    trap_errors: bool,
+}
+
 pub struct Interpreter {
     pub dialect: crate::Dialect,
-    gosub_stack: Vec<usize>,
+    gosub_targets: HashMap<String, LabelTarget>,
     env: EnvRef,
     builtins: BuiltinRegistry,
     subs: HashMap<String, UserSub>,
@@ -134,6 +141,8 @@ pub struct Interpreter {
     /// Overrides for DATE$ and TIME$ pseudo-variables (set by assignment).
     date_override: Option<String>,
     time_override: Option<String>,
+    /// ENVIRON changes are local to this interpreter and inherited by SHELL.
+    environment_overrides: HashMap<String, String>,
     /// Classic ON ERROR handler target (None = no handler / disabled).
     on_error_label: Option<Label>,
     /// Most recent BASIC error code (ERR) and line (ERL).
@@ -174,7 +183,7 @@ impl Interpreter {
     pub fn with_io(output: Box<dyn Write>, input: Box<dyn BufRead>) -> Self {
         Self {
             dialect: crate::DEFAULT_DIALECT,
-            gosub_stack: Vec::new(),
+            gosub_targets: HashMap::new(),
             env: Environment::new_global(),
             builtins: BuiltinRegistry::new(),
             subs: HashMap::new(),
@@ -211,6 +220,7 @@ impl Interpreter {
             option_explicit: false,
             date_override: None,
             time_override: None,
+            environment_overrides: HashMap::new(),
             on_error_label: None,
             err_code: 0,
             err_line: 0,
@@ -246,16 +256,25 @@ impl Interpreter {
         // Pre-scan: collect labels, DATA statements, SUB/FUNCTION definitions
         self.prescan(&program.statements);
 
-        // Execute top-level statements
-        self.exec_top_level(&program.statements)?;
-        Ok(())
+        let previous_targets = std::mem::replace(
+            &mut self.gosub_targets,
+            Self::collect_label_targets(&program.statements, true),
+        );
+        let result = self.exec_top_level(&program.statements);
+        self.gosub_targets = previous_targets;
+        match result? {
+            ControlFlow::Normal | ControlFlow::End => Ok(()),
+            ControlFlow::Goto(label) => Err(RuntimeError::UndefinedLabel {
+                label: label.to_string(),
+            }),
+            _ => Err(RuntimeError::General {
+                msg: "control-flow statement outside its enclosing construct".into(),
+            }),
+        }
     }
 
     fn prescan(&mut self, stmts: &[LabeledStmt]) {
-        for (i, ls) in stmts.iter().enumerate() {
-            if let Some(label) = &ls.label {
-                self.env.borrow_mut().register_label(label, i);
-            }
+        for ls in stmts {
             match &ls.stmt {
                 Stmt::Data(items) => {
                     if let Some(label) = &ls.label {
@@ -320,21 +339,135 @@ impl Interpreter {
 
     /// Execute a nested block of statements (inside IF, FOR, DO, WHILE, SELECT CASE, SUB, FUNCTION).
     fn exec_block(&mut self, stmts: &[LabeledStmt]) -> Result<ControlFlow, RuntimeError> {
-        let mut pc = 0;
+        self.exec_block_from(stmts, 0)
+    }
+
+    fn exec_block_from(
+        &mut self,
+        stmts: &[LabeledStmt],
+        mut pc: usize,
+    ) -> Result<ControlFlow, RuntimeError> {
         while pc < stmts.len() {
             let ls = &stmts[pc];
             let cf = self.exec_stmt(&ls.stmt)?;
             match cf {
                 ControlFlow::Normal => pc += 1,
+                ControlFlow::Goto(ref label) => {
+                    if let Some(idx) = Self::label_index(stmts, label) {
+                        pc = idx;
+                    } else {
+                        return Ok(cf);
+                    }
+                }
                 other => return Ok(other),
             }
         }
         Ok(ControlFlow::Normal)
     }
 
+    fn label_index(stmts: &[LabeledStmt], label: &Label) -> Option<usize> {
+        stmts
+            .iter()
+            .position(|stmt| stmt.label.as_ref() == Some(label))
+    }
+
+    /// Retain statement blocks for labels in this procedure, excluding other procedures.
+    fn collect_label_targets(
+        stmts: &[LabeledStmt],
+        trap_errors: bool,
+    ) -> HashMap<String, LabelTarget> {
+        fn collect(
+            stmts: &[LabeledStmt],
+            targets: &mut HashMap<String, LabelTarget>,
+            trap_errors: bool,
+        ) {
+            if stmts.iter().any(|stmt| stmt.label.is_some()) {
+                let block = Rc::new(stmts.to_vec());
+                for (index, stmt) in stmts.iter().enumerate() {
+                    if let Some(label) = &stmt.label {
+                        targets
+                            .entry(label.to_string())
+                            .or_insert_with(|| LabelTarget {
+                                statements: block.clone(),
+                                index,
+                                trap_errors,
+                            });
+                    }
+                }
+            }
+            for stmt in stmts {
+                match &stmt.stmt {
+                    Stmt::If(if_stmt) => {
+                        collect(&if_stmt.then_body, targets, false);
+                        for (_, body) in &if_stmt.elseif_clauses {
+                            collect(body, targets, false);
+                        }
+                        if let Some(body) = &if_stmt.else_body {
+                            collect(body, targets, false);
+                        }
+                    }
+                    Stmt::For(for_stmt) => collect(&for_stmt.body, targets, false),
+                    Stmt::WhileWend { body, .. } => collect(body, targets, false),
+                    Stmt::DoLoop(do_stmt) => collect(&do_stmt.body, targets, false),
+                    Stmt::SelectCase(select) => {
+                        for case in &select.cases {
+                            collect(&case.body, targets, false);
+                        }
+                        if let Some(body) = &select.else_body {
+                            collect(body, targets, false);
+                        }
+                    }
+                    Stmt::WhenException { body, handler } => {
+                        collect(body, targets, false);
+                        collect(handler, targets, false);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let mut targets = HashMap::new();
+        collect(stmts, &mut targets, trap_errors);
+        targets
+    }
+
+    fn exec_gosub(&mut self, label: &Label) -> Result<ControlFlow, RuntimeError> {
+        let mut target = label.clone();
+        loop {
+            let destination = self
+                .gosub_targets
+                .get(&target.to_string())
+                .cloned()
+                .ok_or_else(|| RuntimeError::UndefinedLabel {
+                    label: target.to_string(),
+                })?;
+            // Keep the caller's nested blocks alive until this invocation returns.
+            let result = if destination.trap_errors {
+                self.exec_top_level_from(&destination.statements, destination.index, true)?
+            } else {
+                self.exec_block_from(&destination.statements, destination.index)?
+            };
+            match result {
+                ControlFlow::Return => return Ok(ControlFlow::Normal),
+                ControlFlow::Goto(label) => target = label,
+                // Falling off the program ends execution; it is not an implicit RETURN.
+                ControlFlow::Normal => return Ok(ControlFlow::End),
+                other => return Ok(other),
+            }
+        }
+    }
+
     /// Execute the top-level statement block with GOTO handling.
     fn exec_top_level(&mut self, stmts: &[LabeledStmt]) -> Result<ControlFlow, RuntimeError> {
-        let mut pc = 0;
+        self.exec_top_level_from(stmts, 0, false)
+    }
+
+    fn exec_top_level_from(
+        &mut self,
+        stmts: &[LabeledStmt],
+        mut pc: usize,
+        is_gosub: bool,
+    ) -> Result<ControlFlow, RuntimeError> {
         while pc < stmts.len() {
             let ls = &stmts[pc];
             let cf = match self.exec_stmt(&ls.stmt) {
@@ -348,7 +481,7 @@ impl Interpreter {
                         self.err_line = Self::erl_for_stmt(ls);
                         self.err_resume_pc = Some(pc);
                         self.handling_error = true;
-                        let resolved = self.env.borrow().resolve_label(&handler);
+                        let resolved = Self::label_index(stmts, &handler);
                         if let Some(idx) = resolved {
                             pc = idx;
                             continue;
@@ -365,36 +498,25 @@ impl Interpreter {
                     pc += 1;
                 }
                 ControlFlow::Goto(label) => {
-                    let resolved = self.env.borrow().resolve_label(&label);
+                    let resolved = Self::label_index(stmts, &label);
                     if let Some(idx) = resolved {
                         pc = idx;
                     } else {
                         return Ok(ControlFlow::Goto(label));
                     }
                 }
-                ControlFlow::Gosub(label) => {
-                    let resolved = self.env.borrow().resolve_label(&label);
-                    if let Some(idx) = resolved {
-                        self.gosub_stack.push(pc + 1);
-                        pc = idx;
-                    } else {
-                        return Err(RuntimeError::General {
-                            msg: format!("Label not found for GOSUB: {label}"),
-                        });
-                    }
-                }
                 ControlFlow::Return => {
-                    if let Some(return_pc) = self.gosub_stack.pop() {
-                        pc = return_pc;
-                    } else {
-                        return Err(RuntimeError::General {
-                            msg: "RETURN without GOSUB".into(),
-                        });
+                    if is_gosub {
+                        return Ok(ControlFlow::Return);
                     }
+                    return Err(RuntimeError::General {
+                        msg: "RETURN without GOSUB".into(),
+                    });
                 }
                 ControlFlow::Resume(kind) => {
-                    pc = self.resolve_resume_pc(&kind)?;
+                    pc = self.resolve_resume_pc(&kind, stmts)?;
                     self.handling_error = false;
+                    self.err_resume_pc = None;
                 }
                 other => return Ok(other),
             }
@@ -409,7 +531,11 @@ impl Interpreter {
         }
     }
 
-    fn resolve_resume_pc(&self, kind: &ResumeKind) -> Result<usize, RuntimeError> {
+    fn resolve_resume_pc(
+        &self,
+        kind: &ResumeKind,
+        stmts: &[LabeledStmt],
+    ) -> Result<usize, RuntimeError> {
         let error_pc = self.err_resume_pc.ok_or_else(|| RuntimeError::General {
             msg: "RESUME without error".into(),
         })?;
@@ -417,12 +543,9 @@ impl Interpreter {
             ResumeKind::Same => Ok(error_pc),
             ResumeKind::Next => Ok(error_pc + 1),
             ResumeKind::Label(label) => {
-                self.env
-                    .borrow()
-                    .resolve_label(label)
-                    .ok_or_else(|| RuntimeError::UndefinedLabel {
-                        label: label.to_string(),
-                    })
+                Self::label_index(stmts, label).ok_or_else(|| RuntimeError::UndefinedLabel {
+                    label: label.to_string(),
+                })
             }
         }
     }
@@ -440,7 +563,7 @@ impl Interpreter {
                 end,
                 expr,
             } => {
-                self.require_declared(name)?;
+                self.require_writable(name)?;
                 let start_f = self.eval_expr(start)?.to_f64()?;
                 let end_f = self.eval_expr(end)?.to_f64()?;
                 if start_f < 1.0 || end_f < 1.0 {
@@ -468,7 +591,7 @@ impl Interpreter {
                 len,
                 expr,
             } => {
-                self.require_declared(name)?;
+                self.require_writable(name)?;
                 let start_i = self.eval_expr(start)?.to_i64()?;
                 if start_i < 1 {
                     return Err(RuntimeError::IllegalFunctionCall {
@@ -522,17 +645,27 @@ impl Interpreter {
                 Ok(ControlFlow::Normal)
             }
             Stmt::LineInput { prompt, var } => {
+                self.require_writable(&var.name)?;
                 if let Some(p) = prompt {
-                    write!(self.output, "{}", p).ok();
-                    self.output.flush().ok();
+                    write!(self.output, "{}", p)
+                        .map_err(|e| RuntimeError::from_io("LINE INPUT", e))?;
+                    self.output
+                        .flush()
+                        .map_err(|e| RuntimeError::from_io("LINE INPUT", e))?;
                 }
                 let mut line = String::new();
-                self.input.read_line(&mut line).ok();
+                if self
+                    .input
+                    .read_line(&mut line)
+                    .map_err(|e| RuntimeError::from_io("LINE INPUT", e))?
+                    == 0
+                {
+                    return Err(RuntimeError::BasicError { code: 62 });
+                }
                 let line = line
                     .trim_end_matches('\n')
                     .trim_end_matches('\r')
                     .to_string();
-                self.require_declared(&var.name)?;
                 self.env.borrow_mut().set(&var.name, Value::Str(line));
                 Ok(ControlFlow::Normal)
             }
@@ -542,7 +675,7 @@ impl Interpreter {
             Stmt::DoLoop(do_stmt) => self.exec_do(do_stmt),
             Stmt::SelectCase(select) => self.exec_select(select),
             Stmt::Goto(label) => Ok(ControlFlow::Goto(label.clone())),
-            Stmt::Gosub(label) => Ok(ControlFlow::Gosub(label.clone())),
+            Stmt::Gosub(label) => self.exec_gosub(label),
             Stmt::Return => Ok(ControlFlow::Return),
             Stmt::OnGoto {
                 expr,
@@ -572,11 +705,7 @@ impl Interpreter {
             Stmt::ExitFor => Ok(ControlFlow::ExitFor),
             Stmt::ExitDo => Ok(ControlFlow::ExitDo),
             Stmt::ExitSub => Ok(ControlFlow::ExitSub),
-            Stmt::ExitFunction => {
-                // ExitFunction doesn't need to carry a value here;
-                // the caller (call_user_function) reads the function-name variable.
-                Ok(ControlFlow::ExitFunction(Value::Numeric(0.0)))
-            }
+            Stmt::ExitFunction => Ok(ControlFlow::ExitFunction),
             Stmt::End | Stmt::System | Stmt::Stop => Ok(ControlFlow::End),
             Stmt::Rem => Ok(ControlFlow::Normal),
             Stmt::ExprStmt(expr) => {
@@ -589,8 +718,8 @@ impl Interpreter {
             }
             Stmt::Call { name, args } => self.exec_sub_call(name, args),
             Stmt::Swap { a, b } => {
-                self.require_declared(&a.name)?;
-                self.require_declared(&b.name)?;
+                self.require_writable(&a.name)?;
+                self.require_writable(&b.name)?;
                 let va = self
                     .env
                     .borrow()
@@ -668,7 +797,12 @@ impl Interpreter {
             Stmt::Seek { file_num, position } => {
                 let fnum = self.eval_expr(file_num)?.to_i64()?;
                 let pos = self.eval_expr(position)?.to_i64()?;
-                let byte_pos = (pos - 1).max(0) as u64;
+                if pos < 1 {
+                    return Err(RuntimeError::IllegalFunctionCall {
+                        msg: "SEEK position must be >= 1".into(),
+                    });
+                }
+                let byte_pos = (pos - 1) as u64;
                 let fh = self
                     .file_handles
                     .get_mut(&fnum)
@@ -760,9 +894,13 @@ impl Interpreter {
                             msg: "ENVIRON: empty variable name".into(),
                         });
                     }
-                    // SAFETY: env var mutation is unsafe in current Rust; this is the
-                    // intended effect of the ENVIRON statement.
-                    unsafe { std::env::set_var(name, value) };
+                    if name.contains('\0') || value.contains('\0') {
+                        return Err(RuntimeError::IllegalFunctionCall {
+                            msg: "ENVIRON: name and value must not contain NUL".into(),
+                        });
+                    }
+                    self.environment_overrides
+                        .insert(Self::environment_key(name), value.to_string());
                 } else {
                     return Err(RuntimeError::IllegalFunctionCall {
                         msg: "ENVIRON: expected \"name=value\"".into(),
@@ -840,8 +978,8 @@ impl Interpreter {
                 let entries = read_dir.map_err(|e| RuntimeError::from_io("FILES", e))?;
                 for entry in entries.flatten() {
                     let name = entry.file_name().to_string_lossy().to_string();
-                    self.write_text(&name);
-                    self.write_text("\n");
+                    self.write_text(&name)?;
+                    self.write_text("\n")?;
                 }
                 Ok(ControlFlow::Normal)
             }
@@ -852,9 +990,13 @@ impl Interpreter {
                     #[cfg(target_os = "windows")]
                     let result = std::process::Command::new("cmd")
                         .args(["/c", &cmd])
+                        .envs(&self.environment_overrides)
                         .status();
                     #[cfg(not(target_os = "windows"))]
-                    let result = std::process::Command::new("sh").args(["-c", &cmd]).status();
+                    let result = std::process::Command::new("sh")
+                        .args(["-c", &cmd])
+                        .envs(&self.environment_overrides)
+                        .status();
                     result.map_err(|e| RuntimeError::General {
                         msg: format!("SHELL error: {}", e),
                     })?;
@@ -886,7 +1028,10 @@ impl Interpreter {
                 for decl in decls {
                     self.env.borrow_mut().declare_var(&decl.name);
                     if self.env.borrow().get(&decl.name).is_none() {
-                        let default = Value::default_for(Self::resolve_decl_type(decl));
+                        let default = match Self::resolve_decl_type(decl) {
+                            BasicType::UserDefined(name) => self.create_default_record(&name)?,
+                            ty => Value::default_for(ty),
+                        };
                         self.env.borrow_mut().set(&decl.name, default);
                     }
                     self.current_static_vars.insert(decl.name.clone());
@@ -987,12 +1132,21 @@ impl Interpreter {
                 Ok(ControlFlow::Normal)
             }
             Stmt::Width { columns, rows } => {
-                if let Some(expr) = columns {
-                    self.screen_width = self.eval_expr(expr)?.to_i64()? as usize;
+                let width = match columns {
+                    Some(expr) => self.eval_expr(expr)?.to_i64()?,
+                    None => self.screen_width as i64,
+                };
+                let height = match rows {
+                    Some(expr) => self.eval_expr(expr)?.to_i64()?,
+                    None => self.screen_height as i64,
+                };
+                if width < 1 || height < 1 {
+                    return Err(RuntimeError::IllegalFunctionCall {
+                        msg: "WIDTH columns and rows must be positive".into(),
+                    });
                 }
-                if let Some(expr) = rows {
-                    self.screen_height = self.eval_expr(expr)?.to_i64()? as usize;
-                }
+                self.screen_width = width as usize;
+                self.screen_height = height as usize;
                 Ok(ControlFlow::Normal)
             }
             Stmt::ViewPrint { top, bottom } => {
@@ -1040,11 +1194,11 @@ impl Interpreter {
                 .map(|e| self.eval_expr(e).and_then(|v| v.to_i64()))
                 .collect::<Result<Vec<_>, _>>()?;
             let key = Self::array_key(name, &idx_vals);
-            self.require_declared(name)?;
+            self.require_writable(name)?;
             self.env.borrow_mut().set(&key, val);
             return Ok(ControlFlow::Normal);
         }
-        self.require_declared(&var.name)?;
+        self.require_writable(&var.name)?;
         let val = self.eval_expr(expr)?;
         self.env.borrow_mut().set(&var.name, val);
         Ok(ControlFlow::Normal)
@@ -1073,6 +1227,14 @@ impl Interpreter {
                             (lower, upper)
                         }
                     };
+                    if lower > upper
+                        || upper
+                            .checked_sub(lower)
+                            .and_then(|span| span.checked_add(1))
+                            .is_none()
+                    {
+                        return Err(RuntimeError::SubscriptOutOfRange);
+                    }
                     bounds.push((lower, upper));
                 }
                 self.array_dim_info.insert(decl.name.clone(), bounds);
@@ -1106,7 +1268,7 @@ impl Interpreter {
                 DataItem::Number(n) => Value::Numeric(*n),
                 DataItem::Str(s) => Value::Str(s.clone()),
             };
-            self.require_declared(&var.name)?;
+            self.require_writable(&var.name)?;
             self.env.borrow_mut().set(&var.name, val);
         }
         Ok(ControlFlow::Normal)
@@ -1148,6 +1310,14 @@ impl Interpreter {
                             (lower, upper)
                         }
                     };
+                    if lower > upper
+                        || upper
+                            .checked_sub(lower)
+                            .and_then(|span| span.checked_add(1))
+                            .is_none()
+                    {
+                        return Err(RuntimeError::SubscriptOutOfRange);
+                    }
                     bounds.push((lower, upper));
                 }
                 self.array_dim_info.insert(decl.name.clone(), bounds);
@@ -1193,24 +1363,24 @@ impl Interpreter {
     fn exec_write_console(&mut self, exprs: &[Expr]) -> Result<ControlFlow, RuntimeError> {
         for (i, expr) in exprs.iter().enumerate() {
             if i > 0 {
-                self.write_text(",");
+                self.write_text(",")?;
             }
             let val = self.eval_expr(expr)?;
             match &val {
-                Value::Str(s) => self.write_text(&format!("\"{}\"", s)),
+                Value::Str(s) => self.write_text(&format!("\"{}\"", s))?,
                 Value::Numeric(n) => {
                     if *n == (*n as i64) as f64 && n.abs() < 1e15 {
-                        self.write_text(&format!("{}", *n as i64));
+                        self.write_text(&format!("{}", *n as i64))?;
                     } else {
-                        self.write_text(&format!("{}", n));
+                        self.write_text(&format!("{}", n))?;
                     }
                 }
                 Value::Record { type_name, .. } => {
-                    self.write_text(&format!("[{}]", type_name));
+                    self.write_text(&format!("[{}]", type_name))?;
                 }
             };
         }
-        self.write_text("\n");
+        self.write_text("\n")?;
         Ok(ControlFlow::Normal)
     }
 
@@ -1218,19 +1388,21 @@ impl Interpreter {
         // Handle PRINT USING
         if let Some(ref fmt_expr) = ps.format {
             let result = self.eval_format_using(fmt_expr, &ps.items)?;
-            self.write_text(&result);
+            self.write_text(&result)?;
             match ps.trailing {
                 PrintSep::Newline => {
-                    self.write_text("\n");
+                    self.write_text("\n")?;
                 }
                 PrintSep::Semicolon => {}
                 PrintSep::Comma => {
                     let next_zone = ((self.print_col / 16) + 1) * 16;
                     let spaces = next_zone - self.print_col;
-                    self.write_text(&" ".repeat(spaces));
+                    self.write_text(&" ".repeat(spaces))?;
                 }
             }
-            self.output.flush().ok();
+            self.output
+                .flush()
+                .map_err(|e| RuntimeError::from_io("output", e))?;
             return Ok(());
         }
 
@@ -1239,7 +1411,7 @@ impl Interpreter {
                 PrintItem::Expr(expr) => {
                     let val = self.eval_expr(expr)?;
                     let s = val.format_for_print();
-                    self.write_text(&s);
+                    self.write_text(&s)?;
                 }
                 PrintItem::Tab(expr) => {
                     let n = self.eval_expr(expr)?.to_i64()?;
@@ -1248,10 +1420,10 @@ impl Interpreter {
                             msg: "TAB argument must be non-negative".into(),
                         });
                     }
-                    let n = n as usize;
+                    let n = (n as usize).saturating_sub(1);
                     if n > self.print_col {
                         let spaces = n - self.print_col;
-                        self.write_text(&" ".repeat(spaces));
+                        self.write_text(&" ".repeat(spaces))?;
                     }
                 }
                 PrintItem::Spc(expr) => {
@@ -1262,42 +1434,52 @@ impl Interpreter {
                         });
                     }
                     let n = n as usize;
-                    self.write_text(&" ".repeat(n));
+                    self.write_text(&" ".repeat(n))?;
                 }
                 PrintItem::Comma => {
-                    // Advance to next 14-column zone
+                    // Advance to the next 16-column zone
                     let next_zone = ((self.print_col / 16) + 1) * 16;
                     let spaces = next_zone - self.print_col;
-                    self.write_text(&" ".repeat(spaces));
+                    self.write_text(&" ".repeat(spaces))?;
                 }
             }
         }
         match ps.trailing {
             PrintSep::Newline => {
-                self.write_text("\n");
+                self.write_text("\n")?;
             }
             PrintSep::Semicolon => {}
-            PrintSep::Comma => {
-                let next_zone = ((self.print_col / 16) + 1) * 16;
-                let spaces = next_zone - self.print_col;
-                self.write_text(&" ".repeat(spaces));
-            }
+            PrintSep::Comma => {}
         }
-        self.output.flush().ok();
+        self.output
+            .flush()
+            .map_err(|e| RuntimeError::from_io("output", e))?;
         Ok(())
     }
 
     fn exec_input(&mut self, input: &InputStmt) -> Result<(), RuntimeError> {
+        for var in &input.vars {
+            self.require_writable(&var.name)?;
+        }
         loop {
             if let Some(p) = &input.prompt {
-                write!(self.output, "{}? ", p).ok();
+                write!(self.output, "{}? ", p).map_err(|e| RuntimeError::from_io("INPUT", e))?;
             } else {
-                write!(self.output, "? ").ok();
+                write!(self.output, "? ").map_err(|e| RuntimeError::from_io("INPUT", e))?;
             }
-            self.output.flush().ok();
+            self.output
+                .flush()
+                .map_err(|e| RuntimeError::from_io("INPUT", e))?;
 
             let mut line = String::new();
-            self.input.read_line(&mut line).ok();
+            if self
+                .input
+                .read_line(&mut line)
+                .map_err(|e| RuntimeError::from_io("INPUT", e))?
+                == 0
+            {
+                return Err(RuntimeError::BasicError { code: 62 });
+            }
             let line = line.trim_end_matches('\n').trim_end_matches('\r');
 
             let parts: Vec<&str> = if input.vars.len() == 1 {
@@ -1306,23 +1488,38 @@ impl Interpreter {
                 line.split(',').map(|s| s.trim()).collect()
             };
 
-            if parts.len() < input.vars.len() {
-                writeln!(self.output, "? Redo from start").ok();
+            if parts.len() != input.vars.len() {
+                writeln!(self.output, "? Redo from start")
+                    .map_err(|e| RuntimeError::from_io("INPUT", e))?;
                 continue;
             }
 
+            let mut values = Vec::new();
             for (var, part) in input.vars.iter().zip(parts.iter()) {
-                self.require_declared(&var.name)?;
-                let val = if var.name.ends_with('$') {
+                let current = self
+                    .env
+                    .borrow()
+                    .get(&var.name)
+                    .unwrap_or_else(|| self.default_for_var(&var.name));
+                let val = if matches!(current, Value::Str(_)) {
                     Value::Str(part.to_string())
                 } else {
-                    // Try to parse as number
-                    if let Ok(n) = part.parse::<f64>() {
+                    if let Ok(n) = part.trim().parse::<f64>()
+                        && n.is_finite()
+                    {
                         Value::Numeric(n)
                     } else {
-                        Value::Str(part.to_string())
+                        break;
                     }
                 };
+                values.push(val);
+            }
+            if values.len() != input.vars.len() {
+                writeln!(self.output, "? Redo from start")
+                    .map_err(|e| RuntimeError::from_io("INPUT", e))?;
+                continue;
+            }
+            for (var, val) in input.vars.iter().zip(values) {
                 self.env.borrow_mut().set(&var.name, val);
             }
             break;
@@ -1363,7 +1560,7 @@ impl Interpreter {
         if n >= 1 && n <= labels.len() as i64 {
             let label = &labels[(n - 1) as usize];
             if is_gosub {
-                Ok(ControlFlow::Gosub(label.clone()))
+                self.exec_gosub(label)
             } else {
                 Ok(ControlFlow::Goto(label.clone()))
             }
@@ -1408,12 +1605,8 @@ impl Interpreter {
             let cf = self.exec_block(&for_stmt.body)?;
             match cf {
                 ControlFlow::ExitFor => break,
-                ControlFlow::End => return Ok(ControlFlow::End),
-                ControlFlow::Goto(l) => return Ok(ControlFlow::Goto(l)),
-                ControlFlow::ExitSub => return Ok(ControlFlow::ExitSub),
-                ControlFlow::ExitFunction(v) => return Ok(ControlFlow::ExitFunction(v)),
-                ControlFlow::Retry | ControlFlow::Continue => return Ok(cf),
-                _ => {}
+                ControlFlow::Normal => {}
+                other => return Ok(other),
             }
 
             // Increment
@@ -1443,13 +1636,8 @@ impl Interpreter {
             }
             let cf = self.exec_block(body)?;
             match cf {
-                ControlFlow::End => return Ok(ControlFlow::End),
-                ControlFlow::Goto(l) => return Ok(ControlFlow::Goto(l)),
-                ControlFlow::ExitSub => return Ok(ControlFlow::ExitSub),
-                ControlFlow::ExitFunction(v) => return Ok(ControlFlow::ExitFunction(v)),
-                ControlFlow::ExitDo => return Ok(ControlFlow::ExitDo),
-                ControlFlow::Retry | ControlFlow::Continue => return Ok(cf),
-                _ => {}
+                ControlFlow::Normal => {}
+                other => return Ok(other),
             }
         }
         Ok(ControlFlow::Normal)
@@ -1470,12 +1658,8 @@ impl Interpreter {
             let cf = self.exec_block(&do_stmt.body)?;
             match cf {
                 ControlFlow::ExitDo => break,
-                ControlFlow::End => return Ok(ControlFlow::End),
-                ControlFlow::Goto(l) => return Ok(ControlFlow::Goto(l)),
-                ControlFlow::ExitSub => return Ok(ControlFlow::ExitSub),
-                ControlFlow::ExitFunction(v) => return Ok(ControlFlow::ExitFunction(v)),
-                ControlFlow::Retry | ControlFlow::Continue => return Ok(cf),
-                _ => {}
+                ControlFlow::Normal => {}
+                other => return Ok(other),
             }
 
             if !do_stmt.check_at_top
@@ -1635,12 +1819,14 @@ impl Interpreter {
 
             let prev_env = self.env.clone();
             let prev_static = std::mem::take(&mut self.current_static_vars);
-            if sub.is_static {
-                // Mark all locals as static — we'll capture them after execution
-            }
+            let previous_targets = std::mem::replace(
+                &mut self.gosub_targets,
+                Self::collect_label_targets(&sub.body, false),
+            );
             self.env = child_env.clone();
             let result = self.exec_block(&sub.body);
             self.env = prev_env;
+            self.gosub_targets = previous_targets;
 
             // Save static variables
             if sub.is_static {
@@ -1667,8 +1853,17 @@ impl Interpreter {
             self.byref_writeback(&sub.params, arg_exprs, &child_env);
 
             match result? {
+                ControlFlow::Normal | ControlFlow::ExitSub => Ok(ControlFlow::Normal),
                 ControlFlow::End => Ok(ControlFlow::End),
-                _ => Ok(ControlFlow::Normal),
+                ControlFlow::Goto(label) => Err(RuntimeError::UndefinedLabel {
+                    label: label.to_string(),
+                }),
+                ControlFlow::Return => Err(RuntimeError::General {
+                    msg: "RETURN without GOSUB in current procedure".into(),
+                }),
+                _ => Err(RuntimeError::General {
+                    msg: "control-flow statement outside its enclosing construct".into(),
+                }),
             }
         } else {
             Err(RuntimeError::General {
@@ -1708,6 +1903,16 @@ impl Interpreter {
         })
     }
 
+    fn require_writable(&self, name: &str) -> Result<(), RuntimeError> {
+        self.require_declared(name)?;
+        if self.env.borrow().is_const(name) {
+            return Err(RuntimeError::General {
+                msg: format!("cannot assign to constant: {name}"),
+            });
+        }
+        Ok(())
+    }
+
     fn is_declared(&self, name: &str) -> bool {
         {
             let env = self.env.borrow();
@@ -1736,25 +1941,17 @@ impl Interpreter {
     }
 
     fn current_date_value(&self) -> Result<Value, RuntimeError> {
-        Ok(Value::Str(self.date_override.clone().unwrap_or_else(
-            || {
-                crate::builtins::builtin_date(&[])
-                    .unwrap()
-                    .to_string_val()
-                    .unwrap()
-            },
-        )))
+        match &self.date_override {
+            Some(date) => Ok(Value::Str(date.clone())),
+            None => crate::builtins::builtin_date(&[]),
+        }
     }
 
     fn current_time_value(&self) -> Result<Value, RuntimeError> {
-        Ok(Value::Str(self.time_override.clone().unwrap_or_else(
-            || {
-                crate::builtins::builtin_time(&[])
-                    .unwrap()
-                    .to_string_val()
-                    .unwrap()
-            },
-        )))
+        match &self.time_override {
+            Some(time) => Ok(Value::Str(time.clone())),
+            None => crate::builtins::builtin_time(&[]),
+        }
     }
 
     pub fn eval_expr(&mut self, expr: &Expr) -> Result<Value, RuntimeError> {
@@ -1814,10 +2011,10 @@ impl Interpreter {
                     }
 
                     // A 0-argument user-defined function may be referenced without parentheses.
-                    if let Some(func) = self.functions.get(builtin_name).cloned() {
-                        if func.params.is_empty() {
-                            return self.call_user_function(&func, &[], &[]);
-                        }
+                    if let Some(func) = self.functions.get(builtin_name).cloned()
+                        && func.params.is_empty()
+                    {
+                        return self.call_user_function(&func, &[], &[]);
                     }
 
                     self.require_declared(&var.name)?;
@@ -1856,6 +2053,18 @@ impl Interpreter {
 
                 // Stateful functions (need access to interpreter state)
                 match name.as_str() {
+                    "ENVIRON$" => {
+                        if arg_vals.len() != 1 {
+                            return Err(RuntimeError::ArityMismatch {
+                                expected: 1,
+                                got: arg_vals.len(),
+                            });
+                        }
+                        let key = Self::environment_key(&arg_vals[0].to_string_val()?);
+                        if let Some(value) = self.environment_overrides.get(&key) {
+                            return Ok(Value::Str(value.clone()));
+                        }
+                    }
                     "RND" => {
                         // RND with no args or positive arg → next random number
                         // RND(0) → return last random number
@@ -1985,15 +2194,15 @@ impl Interpreter {
                                 got: arg_vals.len(),
                             });
                         }
-                        let row = arg_vals[0].to_i64()? as usize;
-                        let col = arg_vals[1].to_i64()? as usize;
+                        let row = arg_vals[0].to_i64()?;
+                        let col = arg_vals[1].to_i64()?;
                         if row < 1 || col < 1 {
                             return Err(RuntimeError::IllegalFunctionCall {
                                 msg: format!("SCREEN({}, {}): row and col must be >= 1", row, col),
                             });
                         }
-                        let r = row - 1;
-                        let c = col - 1;
+                        let r = (row - 1) as usize;
+                        let c = (col - 1) as usize;
                         let ch = if r < self.screen_buffer.len() && c < self.screen_buffer[r].len()
                         {
                             self.screen_buffer[r][c]
@@ -2053,24 +2262,28 @@ impl Interpreter {
                             });
                         }
                         let fnum = arg_vals[0].to_i64()?;
-                        let fh =
-                            self.file_handles
-                                .get(&fnum)
-                                .ok_or_else(|| RuntimeError::General {
-                                    msg: format!("file #{fnum} is not open"),
-                                })?;
+                        let fh = self.file_handles.get_mut(&fnum).ok_or_else(|| {
+                            RuntimeError::General {
+                                msg: format!("file #{fnum} is not open"),
+                            }
+                        })?;
+                        if let Some(writer) = &mut fh.writer {
+                            writer
+                                .flush()
+                                .map_err(|e| RuntimeError::from_io("LOF", e))?;
+                        }
                         let len = if let Some(reader) = &fh.reader {
                             reader
                                 .get_ref()
                                 .metadata()
-                                .map(|m| m.len() as i64)
-                                .unwrap_or(0)
+                                .map_err(|e| RuntimeError::from_io("LOF", e))?
+                                .len()
                         } else if let Some(writer) = &fh.writer {
                             writer
                                 .get_ref()
                                 .metadata()
-                                .map(|m| m.len() as i64)
-                                .unwrap_or(0)
+                                .map_err(|e| RuntimeError::from_io("LOF", e))?
+                                .len()
                         } else {
                             0
                         };
@@ -2267,9 +2480,14 @@ impl Interpreter {
 
         let prev_env = self.env.clone();
         let prev_static = std::mem::take(&mut self.current_static_vars);
+        let previous_targets = std::mem::replace(
+            &mut self.gosub_targets,
+            Self::collect_label_targets(&func.body, false),
+        );
         self.env = child_env.clone();
         let result = self.exec_block(&func.body);
         self.env = prev_env;
+        self.gosub_targets = previous_targets;
 
         // Save static variables
         if func.is_static {
@@ -2431,13 +2649,15 @@ impl Interpreter {
                     Ok(Value::Numeric(if n == 0.0 { 1.0 } else { 0.0 }))
                 }
             }
-            UnaryOp::Pos => Ok(val.clone()),
+            UnaryOp::Pos => Ok(Value::Numeric(val.to_f64()?)),
         }
     }
 
     fn resolve_decl_type(decl: &DimDecl) -> BasicType {
         if let Some(ref t) = decl.as_type {
             t.clone()
+        } else if decl.name.ends_with('$') {
+            BasicType::String
         } else {
             BasicType::Numeric
         }
@@ -2464,6 +2684,14 @@ impl Interpreter {
         !name.ends_with(['$', '%', '!', '#', '&'])
     }
 
+    fn environment_key(name: &str) -> String {
+        if cfg!(windows) {
+            name.to_uppercase()
+        } else {
+            name.to_string()
+        }
+    }
+
     fn validate_date_format(s: &str) -> Result<(), RuntimeError> {
         // Accept MM-DD-YYYY or MM/DD/YYYY (QBasic allows both separators).
         let s = s.trim();
@@ -2479,7 +2707,7 @@ impl Interpreter {
                 msg: format!("DATE$: invalid date format '{}'", s),
             });
         }
-        let parts: Vec<&str> = s.split(|c: char| c == '-' || c == '/').collect();
+        let parts: Vec<&str> = s.split(['-', '/']).collect();
         if parts.len() != 3 {
             return Err(RuntimeError::IllegalFunctionCall {
                 msg: format!("DATE$: invalid date format '{}'", s),
@@ -2580,6 +2808,19 @@ impl Interpreter {
     }
 
     fn create_default_record(&self, type_name: &str) -> Result<Value, RuntimeError> {
+        self.create_record_fields(type_name, &mut HashSet::new())
+    }
+
+    fn create_record_fields(
+        &self,
+        type_name: &str,
+        active_types: &mut HashSet<String>,
+    ) -> Result<Value, RuntimeError> {
+        if !active_types.insert(type_name.to_string()) {
+            return Err(RuntimeError::General {
+                msg: format!("recursive TYPE definition: {type_name}"),
+            });
+        }
         let field_specs: Vec<(String, BasicType)> = self
             .type_defs
             .get(type_name)
@@ -2592,11 +2833,14 @@ impl Interpreter {
         let mut fields = HashMap::new();
         for (name, field_type) in field_specs {
             let val = match &field_type {
-                BasicType::UserDefined(nested) => self.create_default_record(nested)?,
+                BasicType::UserDefined(nested) => {
+                    self.create_record_fields(nested, active_types)?
+                }
                 other => Value::default_for(other.clone()),
             };
             fields.insert(name, val);
         }
+        active_types.remove(type_name);
         Ok(Value::Record {
             type_name: type_name.to_string(),
             fields,
@@ -2894,10 +3138,12 @@ impl Interpreter {
                         .iter()
                         .map(|v| Value::Numeric(*v).format_for_print())
                         .collect();
-                    self.write_text(&formatted.join(" "));
-                    self.write_text("\n");
+                    self.write_text(&formatted.join(" "))?;
+                    self.write_text("\n")?;
                 }
-                self.output.flush().ok();
+                self.output
+                    .flush()
+                    .map_err(|e| RuntimeError::from_io("output", e))?;
                 Ok(ControlFlow::Normal)
             }
             MatOp::Read { name } => {
@@ -2934,7 +3180,9 @@ impl Interpreter {
                 let mut m = vec![vec![0.0; cols]; rows];
                 for row in m.iter_mut().take(rows) {
                     write!(self.output, "? ").ok();
-                    self.output.flush().ok();
+                    self.output
+                        .flush()
+                        .map_err(|e| RuntimeError::from_io("output", e))?;
                     let mut line = String::new();
                     self.input.read_line(&mut line).ok();
                     let parts: Vec<&str> = line.trim().split(',').map(|s| s.trim()).collect();
@@ -3020,14 +3268,15 @@ impl Interpreter {
     }
 
     /// Write visible text to output and update screen buffer.
-    fn write_text(&mut self, text: &str) {
-        write!(self.output, "{}", text).ok();
+    fn write_text(&mut self, text: &str) -> Result<(), RuntimeError> {
+        write!(self.output, "{}", text).map_err(|e| RuntimeError::from_io("output", e))?;
         crate::update_screen_buffer(
             &mut self.screen_buffer,
             &mut self.print_row,
             &mut self.print_col,
             text,
         );
+        Ok(())
     }
 
     /// Non-blocking read of a single keypress. Returns "" if no key available.
@@ -3182,6 +3431,14 @@ impl Interpreter {
             });
         }
 
+        let mut field_buffer = Vec::new();
+        if let Some(len) = record_len {
+            field_buffer
+                .try_reserve_exact(len)
+                .map_err(|_| RuntimeError::BasicError { code: 7 })?;
+            field_buffer.resize(len, b' ');
+        }
+
         let (reader, writer) = match open.access {
             FileAccess::Input => {
                 let f = File::open(&filename).map_err(|e| RuntimeError::from_io("OPEN", e))?;
@@ -3220,10 +3477,11 @@ impl Interpreter {
                 _access: open.access,
                 reader,
                 writer,
+                print_col: 0,
                 eof_flag: false,
                 record_len,
                 field_layout: Vec::new(),
-                field_buffer: record_len.map_or_else(Vec::new, |len| vec![b' '; len]),
+                field_buffer,
             },
         );
 
@@ -3231,25 +3489,26 @@ impl Interpreter {
     }
 
     fn exec_close(&mut self, file_nums: &[Expr]) -> Result<(), RuntimeError> {
-        if file_nums.is_empty() {
-            // Close all
-            for (_, fh) in self.file_handles.drain() {
-                if let Some(mut w) = fh.writer {
-                    let _ = w.flush();
-                }
-            }
+        let nums: Vec<i64> = if file_nums.is_empty() {
+            self.file_handles.keys().copied().collect()
         } else {
-            let nums: Vec<i64> = file_nums
+            file_nums
                 .iter()
                 .map(|e| self.eval_expr(e).and_then(|v| v.to_i64()))
-                .collect::<Result<Vec<_>, _>>()?;
-            for n in nums {
-                if let Some(fh) = self.file_handles.remove(&n)
-                    && let Some(mut w) = fh.writer
-                {
-                    let _ = w.flush();
-                }
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        // Keep handles available if flushing fails, so an error handler can retry.
+        for n in &nums {
+            if let Some(fh) = self.file_handles.get_mut(n)
+                && let Some(writer) = &mut fh.writer
+            {
+                writer
+                    .flush()
+                    .map_err(|e| RuntimeError::from_io("CLOSE", e))?;
             }
+        }
+        for n in nums {
+            self.file_handles.remove(&n);
         }
         Ok(())
     }
@@ -3284,8 +3543,17 @@ impl Interpreter {
                     msg: format!("file #{file_num} is not open"),
                 })?;
 
-            let total_width: usize = specs.iter().map(|(width, _)| *width).sum();
+            let total_width = specs.iter().try_fold(0usize, |total, (width, _)| {
+                total
+                    .checked_add(*width)
+                    .ok_or_else(|| RuntimeError::Overflow {
+                        msg: "FIELD widths exceed the supported record size".into(),
+                    })
+            })?;
             if fh.record_len.is_none() {
+                fh.field_buffer
+                    .try_reserve(total_width.max(1).saturating_sub(fh.field_buffer.len()))
+                    .map_err(|_| RuntimeError::BasicError { code: 7 })?;
                 fh.record_len = Some(total_width.max(1));
                 fh.field_buffer.resize(total_width.max(1), b' ');
             }
@@ -3403,13 +3671,17 @@ impl Interpreter {
             .collect()
     }
 
-    fn record_start(fh: &FileHandle, record: i64) -> u64 {
-        let idx = (record - 1).max(0) as u64;
-        if let Some(record_len) = fh.record_len {
-            idx * record_len as u64
-        } else {
-            idx
+    fn record_start(fh: &FileHandle, record: i64) -> Result<u64, RuntimeError> {
+        if record < 1 {
+            return Err(RuntimeError::IllegalFunctionCall {
+                msg: "record position must be >= 1".into(),
+            });
         }
+        let idx = (record - 1) as u64;
+        idx.checked_mul(fh.record_len.unwrap_or(1) as u64)
+            .ok_or_else(|| RuntimeError::Overflow {
+                msg: "record position exceeds the supported file size".into(),
+            })
     }
 
     fn exec_set_pointer(
@@ -3419,6 +3691,11 @@ impl Interpreter {
     ) -> Result<(), RuntimeError> {
         let file_num = self.eval_expr(file_num_expr)?.to_i64()?;
         let position = self.eval_expr(position_expr)?.to_i64()?;
+        if position < 1 {
+            return Err(RuntimeError::IllegalFunctionCall {
+                msg: "SET POINTER position must be >= 1".into(),
+            });
+        }
         let fh = self
             .file_handles
             .get_mut(&file_num)
@@ -3426,24 +3703,21 @@ impl Interpreter {
                 msg: format!("file #{file_num} is not open"),
             })?;
         // SET POINTER uses 1-based byte position
-        let byte_pos = (position - 1).max(0) as u64;
+        let byte_pos = (position - 1) as u64;
         if let Some(writer) = &mut fh.writer {
-            writer.flush().map_err(|e| RuntimeError::General {
-                msg: format!("flush error: {e}"),
-            })?;
+            writer
+                .flush()
+                .map_err(|e| RuntimeError::from_io("flush", e))?;
             writer
                 .seek(SeekFrom::Start(byte_pos))
-                .map_err(|e| RuntimeError::General {
-                    msg: format!("seek error: {e}"),
-                })?;
+                .map_err(|e| RuntimeError::from_io("seek", e))?;
         }
         if let Some(reader) = &mut fh.reader {
             reader
                 .seek(SeekFrom::Start(byte_pos))
-                .map_err(|e| RuntimeError::General {
-                    msg: format!("seek error: {e}"),
-                })?;
+                .map_err(|e| RuntimeError::from_io("seek", e))?;
         }
+        fh.eof_flag = false;
         Ok(())
     }
 
@@ -3453,7 +3727,7 @@ impl Interpreter {
         var: &Variable,
     ) -> Result<(), RuntimeError> {
         let file_num = self.eval_expr(file_num_expr)?.to_i64()?;
-        self.require_declared(&var.name)?;
+        self.require_writable(&var.name)?;
         let fh = self
             .file_handles
             .get_mut(&file_num)
@@ -3462,73 +3736,103 @@ impl Interpreter {
             })?;
         // Flush writer to ensure position reflects writes
         if let Some(writer) = &mut fh.writer {
-            writer.flush().map_err(|e| RuntimeError::General {
-                msg: format!("flush error: {e}"),
-            })?;
+            writer
+                .flush()
+                .map_err(|e| RuntimeError::from_io("flush", e))?;
         }
         let byte_pos = if let Some(writer) = &mut fh.writer {
-            writer.stream_position().unwrap_or(0)
+            writer
+                .stream_position()
+                .map_err(|e| RuntimeError::from_io("ASK POINTER", e))?
         } else if let Some(reader) = &mut fh.reader {
-            reader.stream_position().unwrap_or(0)
+            reader
+                .stream_position()
+                .map_err(|e| RuntimeError::from_io("ASK POINTER", e))?
         } else {
             0
         };
         // ASK POINTER returns 1-based byte position
-        let result = byte_pos as i64 + 1;
-        self.env
-            .borrow_mut()
-            .set(&var.name, Value::Numeric(result as f64));
+        let result = byte_pos as f64 + 1.0;
+        self.env.borrow_mut().set(&var.name, Value::Numeric(result));
+        Ok(())
+    }
+
+    fn append_file_print_text(output: &mut String, column: &mut usize, text: &str) {
+        output.push_str(text);
+        for ch in text.chars() {
+            if ch == '\n' {
+                *column = 0;
+            } else {
+                *column += 1;
+            }
+        }
+    }
+
+    fn append_file_print_spaces(
+        output: &mut String,
+        column: &mut usize,
+        count: usize,
+    ) -> Result<(), RuntimeError> {
+        let next_column = column
+            .checked_add(count)
+            .ok_or_else(|| RuntimeError::Overflow {
+                msg: "PRINT column exceeds the supported range".into(),
+            })?;
+        output
+            .try_reserve(count)
+            .map_err(|_| RuntimeError::BasicError { code: 7 })?;
+        output.extend(std::iter::repeat_n(' ', count));
+        *column = next_column;
         Ok(())
     }
 
     fn exec_file_print(&mut self, pf: &FilePrintStmt) -> Result<(), RuntimeError> {
         let file_num = self.eval_expr(&pf.file_num)?.to_i64()?;
-
-        // Handle PRINT #n, USING
-        if let Some(ref fmt_expr) = pf.format {
+        let mut column = self
+            .file_handles
+            .get(&file_num)
+            .ok_or_else(|| RuntimeError::General {
+                msg: format!("file #{file_num} is not open"),
+            })?
+            .print_col;
+        let mut output = String::new();
+        if let Some(fmt_expr) = &pf.format {
             let result = self.eval_format_using(fmt_expr, &pf.items)?;
-            let trailing = pf.trailing;
-
-            let fh = self
-                .file_handles
-                .get_mut(&file_num)
-                .ok_or_else(|| RuntimeError::General {
-                    msg: format!("file #{file_num} is not open"),
-                })?;
-            let writer = fh.writer.as_mut().ok_or_else(|| RuntimeError::General {
-                msg: format!("file #{file_num} is not open for writing"),
-            })?;
-
-            let _ = write!(writer, "{}", result);
-            match trailing {
-                PrintSep::Newline => {
-                    let _ = writeln!(writer);
-                }
-                PrintSep::Semicolon => {}
-                PrintSep::Comma => {
-                    let _ = write!(writer, "\t");
+            Self::append_file_print_text(&mut output, &mut column, &result);
+            if pf.trailing == PrintSep::Comma {
+                let spaces = 16 - column % 16;
+                Self::append_file_print_spaces(&mut output, &mut column, spaces)?;
+            }
+        } else {
+            for item in &pf.items {
+                match item {
+                    PrintItem::Expr(expr) => {
+                        let text = self.eval_expr(expr)?.format_for_print();
+                        Self::append_file_print_text(&mut output, &mut column, &text);
+                    }
+                    PrintItem::Tab(expr) | PrintItem::Spc(expr) => {
+                        let count = self.eval_expr(expr)?.to_i64()?;
+                        if count < 0 {
+                            return Err(RuntimeError::IllegalFunctionCall {
+                                msg: "TAB/SPC argument must be non-negative".into(),
+                            });
+                        }
+                        let spaces = if matches!(item, PrintItem::Tab(_)) {
+                            (count as usize).saturating_sub(1).saturating_sub(column)
+                        } else {
+                            count as usize
+                        };
+                        Self::append_file_print_spaces(&mut output, &mut column, spaces)?;
+                    }
+                    PrintItem::Comma => {
+                        let spaces = 16 - column % 16;
+                        Self::append_file_print_spaces(&mut output, &mut column, spaces)?;
+                    }
                 }
             }
-            return Ok(());
         }
-
-        // Evaluate all items first to avoid borrow conflicts
-        let mut parts: Vec<String> = Vec::new();
-        let trailing = pf.trailing;
-        for item in &pf.items {
-            match item {
-                PrintItem::Expr(expr) => {
-                    let val = self.eval_expr(expr)?;
-                    parts.push(val.format_for_print());
-                }
-                PrintItem::Tab(_) | PrintItem::Spc(_) => {
-                    // Simplified: just add a space
-                    parts.push(" ".to_string());
-                }
-                PrintItem::Comma => {
-                    parts.push("\t".to_string());
-                }
-            }
+        if pf.trailing == PrintSep::Newline {
+            Self::append_file_print_text(&mut output, &mut column, "\n");
         }
 
         let fh = self
@@ -3540,20 +3844,10 @@ impl Interpreter {
         let writer = fh.writer.as_mut().ok_or_else(|| RuntimeError::General {
             msg: format!("file #{file_num} is not open for writing"),
         })?;
-
-        for part in &parts {
-            let _ = write!(writer, "{}", part);
-        }
-        match trailing {
-            PrintSep::Newline => {
-                let _ = writeln!(writer);
-            }
-            PrintSep::Semicolon => {}
-            PrintSep::Comma => {
-                let _ = write!(writer, "\t");
-            }
-        }
-
+        writer
+            .write_all(output.as_bytes())
+            .map_err(|e| RuntimeError::from_io("PRINT", e))?;
+        fh.print_col = column;
         Ok(())
     }
 
@@ -3579,27 +3873,32 @@ impl Interpreter {
 
         for (i, val) in vals.iter().enumerate() {
             if i > 0 {
-                let _ = write!(writer, ",");
+                write!(writer, ",").map_err(|e| RuntimeError::from_io("WRITE", e))?;
             }
             match val {
                 Value::Str(s) => {
-                    let _ = write!(writer, "\"{}\"", s);
+                    write!(writer, "\"{}\"", s.replace('"', "\"\""))
+                        .map_err(|e| RuntimeError::from_io("WRITE", e))?;
                 }
                 _ => {
-                    let _ = write!(writer, "{}", val.format_for_write());
+                    write!(writer, "{}", val.format_for_write())
+                        .map_err(|e| RuntimeError::from_io("WRITE", e))?;
                 }
             }
         }
-        let _ = writeln!(writer);
+        writeln!(writer).map_err(|e| RuntimeError::from_io("WRITE", e))?;
+        fh.print_col = 0;
 
         Ok(())
     }
 
     fn exec_file_input(&mut self, fi: &FileInputStmt) -> Result<(), RuntimeError> {
         let file_num = self.eval_expr(&fi.file_num)?.to_i64()?;
+        for var in &fi.vars {
+            self.require_writable(&var.name)?;
+        }
 
-        // Read fields from file for each variable
-        let mut fields: Vec<String> = Vec::new();
+        let mut fields = Vec::with_capacity(fi.vars.len());
         {
             let fh = self
                 .file_handles
@@ -3611,117 +3910,136 @@ impl Interpreter {
                 msg: format!("file #{file_num} is not open for reading"),
             })?;
 
-            for _ in 0..fi.vars.len() {
-                let field = Self::read_next_field(reader)?;
-                if field.is_none() {
+            for _ in &fi.vars {
+                let Some(field) = Self::read_next_field(reader)? else {
                     fh.eof_flag = true;
-                    break;
+                    return Err(RuntimeError::IoError {
+                        msg: "INPUT past end of file".into(),
+                        code: 62,
+                    });
+                };
+                fields.push(field);
+            }
+            fh.eof_flag = reader
+                .fill_buf()
+                .map_err(|e| RuntimeError::from_io("INPUT", e))?
+                .is_empty();
+        }
+
+        let values = fi
+            .vars
+            .iter()
+            .zip(fields)
+            .map(|(var, field)| {
+                let existing = self
+                    .env
+                    .borrow()
+                    .get(&var.name)
+                    .unwrap_or_else(|| self.default_for_var(&var.name));
+                match existing {
+                    Value::Str(_) => Ok(Value::Str(field)),
+                    Value::Numeric(_) => field.parse::<f64>().map(Value::Numeric).map_err(|_| {
+                        RuntimeError::TypeMismatch {
+                            msg: format!("INPUT expected a number for {}", var.name),
+                        }
+                    }),
+                    Value::Record { .. } => Err(RuntimeError::TypeMismatch {
+                        msg: "INPUT cannot read a record value".into(),
+                    }),
                 }
-                fields.push(field.unwrap());
-            }
-
-            // Check if we've reached EOF
-            let buf = reader.fill_buf().unwrap_or(&[]);
-            if buf.is_empty() {
-                fh.eof_flag = true;
-            }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for (var, value) in fi.vars.iter().zip(values) {
+            self.env.borrow_mut().set(&var.name, value);
         }
-
-        for (i, var) in fi.vars.iter().enumerate() {
-            self.require_declared(&var.name)?;
-            let field = fields.get(i).cloned().unwrap_or_default();
-            let val = if var.name.ends_with('$') {
-                Value::Str(field)
-            } else if let Ok(n) = field.parse::<f64>() {
-                Value::Numeric(n)
-            } else {
-                Value::Str(field)
-            };
-            self.env.borrow_mut().set(&var.name, val);
-        }
-
         Ok(())
     }
 
-    fn read_next_field(reader: &mut BufReader<File>) -> Result<Option<String>, RuntimeError> {
-        // Skip leading whitespace (spaces, tabs) but not newlines
+    fn read_next_field(reader: &mut impl BufRead) -> Result<Option<String>, RuntimeError> {
+        // Fields may span lines; ignore separators before the next field.
         loop {
-            let buf = reader.fill_buf().map_err(|e| RuntimeError::General {
-                msg: format!("file read error: {e}"),
-            })?;
+            let buf = reader
+                .fill_buf()
+                .map_err(|e| RuntimeError::from_io("INPUT", e))?;
             if buf.is_empty() {
                 return Ok(None);
             }
-            let ch = buf[0];
-            match ch {
-                b' ' | b'\t' => {
-                    reader.consume(1);
-                }
-                b'\r' | b'\n' => {
-                    reader.consume(1);
-                    if ch == b'\r' {
-                        let buf2 = reader.fill_buf().unwrap_or(&[]);
-                        if !buf2.is_empty() && buf2[0] == b'\n' {
-                            reader.consume(1);
-                        }
-                    }
-                }
-                _ => break,
-            }
-        }
-
-        let buf = reader.fill_buf().map_err(|e| RuntimeError::General {
-            msg: format!("file read error: {e}"),
-        })?;
-        if buf.is_empty() {
-            return Ok(None);
-        }
-
-        // Check for quoted string
-        if buf[0] == b'"' {
-            reader.consume(1); // consume opening quote
-            let mut field = String::new();
-            let mut byte = [0u8; 1];
-            loop {
-                let n = reader.read(&mut byte).unwrap_or(0);
-                if n == 0 {
-                    break;
-                }
-                if byte[0] == b'"' {
-                    break;
-                }
-                field.push(byte[0] as char);
-            }
-            // Consume trailing comma; newlines are consumed at the start of the next field read.
-            let buf = reader.fill_buf().unwrap_or(&[]);
-            if !buf.is_empty() && buf[0] == b',' {
+            if matches!(buf[0], b' ' | b'\t' | b'\r' | b'\n') {
                 reader.consume(1);
-            }
-            return Ok(Some(field));
-        }
-
-        // Unquoted field: read until comma or newline
-        let mut field = String::new();
-        let mut byte = [0u8; 1];
-        loop {
-            let n = reader.read(&mut byte).unwrap_or(0);
-            if n == 0 {
+            } else {
                 break;
             }
-            if byte[0] == b',' || byte[0] == b'\r' || byte[0] == b'\n' {
-                // Handle \r\n
+        }
+
+        let quoted = reader
+            .fill_buf()
+            .map_err(|e| RuntimeError::from_io("INPUT", e))?[0]
+            == b'"';
+        if quoted {
+            reader.consume(1);
+        }
+        let mut field = Vec::new();
+        let mut byte = [0u8; 1];
+        loop {
+            let n = reader
+                .read(&mut byte)
+                .map_err(|e| RuntimeError::from_io("INPUT", e))?;
+            if n == 0 {
+                if quoted {
+                    return Err(RuntimeError::IoError {
+                        msg: "INPUT reached end of file inside a quoted string".into(),
+                        code: 62,
+                    });
+                }
+                break;
+            }
+            if quoted {
+                if byte[0] == b'"' {
+                    let next = reader
+                        .fill_buf()
+                        .map_err(|e| RuntimeError::from_io("INPUT", e))?;
+                    if next.first() == Some(&b'"') {
+                        reader.consume(1);
+                        field.push(b'"');
+                        continue;
+                    }
+                    // Permit whitespace between the closing quote and delimiter.
+                    loop {
+                        let next = reader
+                            .fill_buf()
+                            .map_err(|e| RuntimeError::from_io("INPUT", e))?;
+                        match next.first() {
+                            Some(b' ' | b'\t') => reader.consume(1),
+                            Some(b',') => {
+                                reader.consume(1);
+                                break;
+                            }
+                            _ => break,
+                        }
+                    }
+                    break;
+                }
+            } else if matches!(byte[0], b',' | b'\r' | b'\n') {
                 if byte[0] == b'\r' {
-                    let buf = reader.fill_buf().unwrap_or(&[]);
-                    if !buf.is_empty() && buf[0] == b'\n' {
+                    let next = reader
+                        .fill_buf()
+                        .map_err(|e| RuntimeError::from_io("INPUT", e))?;
+                    if next.first() == Some(&b'\n') {
                         reader.consume(1);
                     }
                 }
                 break;
             }
-            field.push(byte[0] as char);
+            field.push(byte[0]);
         }
-
-        Ok(Some(field.trim().to_string()))
+        let field = String::from_utf8(field).map_err(|e| RuntimeError::General {
+            msg: format!("INPUT file contains invalid UTF-8: {e}"),
+        })?;
+        Ok(Some(if quoted {
+            field
+        } else {
+            field.trim().to_string()
+        }))
     }
 
     fn exec_line_input_file(
@@ -3730,7 +4048,17 @@ impl Interpreter {
         var: &Variable,
     ) -> Result<(), RuntimeError> {
         let file_num = self.eval_expr(file_num_expr)?.to_i64()?;
-        self.require_declared(&var.name)?;
+        self.require_writable(&var.name)?;
+        let existing = self
+            .env
+            .borrow()
+            .get(&var.name)
+            .unwrap_or_else(|| self.default_for_var(&var.name));
+        if !matches!(existing, Value::Str(_)) {
+            return Err(RuntimeError::TypeMismatch {
+                msg: "LINE INPUT requires a string variable".into(),
+            });
+        }
 
         let line = {
             let fh = self
@@ -3746,16 +4074,20 @@ impl Interpreter {
             let mut line = String::new();
             let bytes_read = reader
                 .read_line(&mut line)
-                .map_err(|e| RuntimeError::General {
-                    msg: format!("file read error: {e}"),
-                })?;
+                .map_err(|e| RuntimeError::from_io("read", e))?;
 
             if bytes_read == 0 {
                 fh.eof_flag = true;
+                return Err(RuntimeError::IoError {
+                    msg: "LINE INPUT past end of file".into(),
+                    code: 62,
+                });
             }
 
             // Check if more data available
-            let buf = reader.fill_buf().unwrap_or(&[]);
+            let buf = reader
+                .fill_buf()
+                .map_err(|e| RuntimeError::from_io("LINE INPUT", e))?;
             if buf.is_empty() {
                 fh.eof_flag = true;
             }
@@ -3770,6 +4102,9 @@ impl Interpreter {
     }
 
     fn get_var_basic_type(&self, name: &str) -> BasicType {
+        if let Some(Value::Record { type_name, .. }) = self.env.borrow().get(name) {
+            return BasicType::UserDefined(type_name);
+        }
         if name.ends_with('%') {
             BasicType::Integer
         } else if name.ends_with('&') {
@@ -3806,33 +4141,25 @@ impl Interpreter {
                 let n = val.to_f64()? as i16;
                 writer
                     .write_all(&n.to_le_bytes())
-                    .map_err(|e| RuntimeError::General {
-                        msg: format!("binary write error: {e}"),
-                    })?;
+                    .map_err(|e| RuntimeError::from_io("write", e))?;
             }
             BasicType::Long => {
                 let n = val.to_f64()? as i32;
                 writer
                     .write_all(&n.to_le_bytes())
-                    .map_err(|e| RuntimeError::General {
-                        msg: format!("binary write error: {e}"),
-                    })?;
+                    .map_err(|e| RuntimeError::from_io("write", e))?;
             }
             BasicType::Single => {
                 let n = val.to_f64()? as f32;
                 writer
                     .write_all(&n.to_le_bytes())
-                    .map_err(|e| RuntimeError::General {
-                        msg: format!("binary write error: {e}"),
-                    })?;
+                    .map_err(|e| RuntimeError::from_io("write", e))?;
             }
             BasicType::Double | BasicType::Numeric => {
                 let n = val.to_f64()?;
                 writer
                     .write_all(&n.to_le_bytes())
-                    .map_err(|e| RuntimeError::General {
-                        msg: format!("binary write error: {e}"),
-                    })?;
+                    .map_err(|e| RuntimeError::from_io("write", e))?;
             }
             BasicType::FixedLengthString(len) => {
                 let s = val.to_string_val()?;
@@ -3840,24 +4167,21 @@ impl Interpreter {
                 bytes.resize(*len, 0);
                 writer
                     .write_all(&bytes)
-                    .map_err(|e| RuntimeError::General {
-                        msg: format!("binary write error: {e}"),
-                    })?;
+                    .map_err(|e| RuntimeError::from_io("write", e))?;
             }
             BasicType::String => {
                 let s = val.to_string_val()?;
                 let bytes = basic_string_to_bytes(&s);
-                let len = bytes.len() as u16;
+                let len =
+                    u16::try_from(bytes.len()).map_err(|_| RuntimeError::IllegalFunctionCall {
+                        msg: "binary string exceeds the maximum length of 65535 bytes".into(),
+                    })?;
                 writer
                     .write_all(&len.to_le_bytes())
-                    .map_err(|e| RuntimeError::General {
-                        msg: format!("binary write error: {e}"),
-                    })?;
+                    .map_err(|e| RuntimeError::from_io("write", e))?;
                 writer
                     .write_all(&bytes)
-                    .map_err(|e| RuntimeError::General {
-                        msg: format!("binary write error: {e}"),
-                    })?;
+                    .map_err(|e| RuntimeError::from_io("write", e))?;
             }
             BasicType::UserDefined(nested_name) => {
                 if let Value::Record { fields, .. } = val {
@@ -3896,9 +4220,7 @@ impl Interpreter {
                 let mut buf = [0u8; 2];
                 reader
                     .read_exact(&mut buf)
-                    .map_err(|e| RuntimeError::General {
-                        msg: format!("binary read error: {e}"),
-                    })?;
+                    .map_err(|e| RuntimeError::from_io("read", e))?;
                 let val = i16::from_le_bytes(buf) as f64;
                 Ok(Value::Numeric(val))
             }
@@ -3906,9 +4228,7 @@ impl Interpreter {
                 let mut buf = [0u8; 4];
                 reader
                     .read_exact(&mut buf)
-                    .map_err(|e| RuntimeError::General {
-                        msg: format!("binary read error: {e}"),
-                    })?;
+                    .map_err(|e| RuntimeError::from_io("read", e))?;
                 let val = i32::from_le_bytes(buf) as f64;
                 Ok(Value::Numeric(val))
             }
@@ -3916,9 +4236,7 @@ impl Interpreter {
                 let mut buf = [0u8; 4];
                 reader
                     .read_exact(&mut buf)
-                    .map_err(|e| RuntimeError::General {
-                        msg: format!("binary read error: {e}"),
-                    })?;
+                    .map_err(|e| RuntimeError::from_io("read", e))?;
                 let val = f32::from_le_bytes(buf) as f64;
                 Ok(Value::Numeric(val))
             }
@@ -3926,9 +4244,7 @@ impl Interpreter {
                 let mut buf = [0u8; 8];
                 reader
                     .read_exact(&mut buf)
-                    .map_err(|e| RuntimeError::General {
-                        msg: format!("binary read error: {e}"),
-                    })?;
+                    .map_err(|e| RuntimeError::from_io("read", e))?;
                 let val = f64::from_le_bytes(buf);
                 Ok(Value::Numeric(val))
             }
@@ -3936,9 +4252,7 @@ impl Interpreter {
                 let mut buf = vec![0u8; *len];
                 reader
                     .read_exact(&mut buf)
-                    .map_err(|e| RuntimeError::General {
-                        msg: format!("binary read error: {e}"),
-                    })?;
+                    .map_err(|e| RuntimeError::from_io("read", e))?;
                 while buf.last() == Some(&0) {
                     buf.pop();
                 }
@@ -3948,16 +4262,12 @@ impl Interpreter {
                 let mut len_buf = [0u8; 2];
                 reader
                     .read_exact(&mut len_buf)
-                    .map_err(|e| RuntimeError::General {
-                        msg: format!("binary read error: {e}"),
-                    })?;
+                    .map_err(|e| RuntimeError::from_io("read", e))?;
                 let len = u16::from_le_bytes(len_buf) as usize;
                 let mut buf = vec![0u8; len];
                 reader
                     .read_exact(&mut buf)
-                    .map_err(|e| RuntimeError::General {
-                        msg: format!("binary read error: {e}"),
-                    })?;
+                    .map_err(|e| RuntimeError::from_io("read", e))?;
                 Ok(Value::Str(bytes_to_basic_string(&buf)))
             }
             BasicType::UserDefined(nested_name) => {
@@ -3988,17 +4298,17 @@ impl Interpreter {
     ) -> Result<(), RuntimeError> {
         if gp.is_get {
             if let Some(writer) = &mut fh.writer {
-                writer.flush().ok();
+                writer
+                    .flush()
+                    .map_err(|e| RuntimeError::from_io("GET", e))?;
             }
 
             if let Some(pos) = record {
-                let byte_pos = Self::record_start(fh, pos);
+                let byte_pos = Self::record_start(fh, pos)?;
                 if let Some(reader) = &mut fh.reader {
                     reader
                         .seek(SeekFrom::Start(byte_pos))
-                        .map_err(|e| RuntimeError::General {
-                            msg: format!("seek error: {e}"),
-                        })?;
+                        .map_err(|e| RuntimeError::from_io("seek", e))?;
                 }
             }
 
@@ -4022,7 +4332,9 @@ impl Interpreter {
                         _ => 128,
                     };
                     let mut buf = vec![0u8; read_len];
-                    let bytes_read = reader.read(&mut buf).unwrap_or(0);
+                    let bytes_read = reader
+                        .read(&mut buf)
+                        .map_err(|e| RuntimeError::from_io("GET", e))?;
                     if bytes_read == 0 {
                         fh.eof_flag = true;
                     }
@@ -4036,12 +4348,9 @@ impl Interpreter {
                 let record_len = fh.record_len.unwrap_or(fh.field_buffer.len());
                 fh.field_buffer.resize(record_len, b' ');
                 fh.field_buffer.fill(b' ');
-                let bytes_read =
-                    reader
-                        .read(&mut fh.field_buffer)
-                        .map_err(|e| RuntimeError::General {
-                            msg: format!("binary read error: {e}"),
-                        })?;
+                let bytes_read = reader
+                    .read(&mut fh.field_buffer)
+                    .map_err(|e| RuntimeError::from_io("read", e))?;
                 if bytes_read == 0 {
                     fh.eof_flag = true;
                 }
@@ -4052,13 +4361,11 @@ impl Interpreter {
             }
         } else {
             if let Some(pos) = record {
-                let byte_pos = Self::record_start(fh, pos);
+                let byte_pos = Self::record_start(fh, pos)?;
                 if let Some(writer) = &mut fh.writer {
                     writer
                         .seek(SeekFrom::Start(byte_pos))
-                        .map_err(|e| RuntimeError::General {
-                            msg: format!("seek error: {e}"),
-                        })?;
+                        .map_err(|e| RuntimeError::from_io("seek", e))?;
                 }
             }
 
@@ -4085,14 +4392,14 @@ impl Interpreter {
                         Value::Str(s) => s,
                         other => other.format_for_write(),
                     };
-                    let _ = writer.write_all(s.as_bytes());
+                    writer
+                        .write_all(s.as_bytes())
+                        .map_err(|e| RuntimeError::from_io("PUT", e))?;
                 }
             } else if fh.record_len.is_some() && !fh.field_layout.is_empty() {
                 writer
                     .write_all(&fh.field_buffer)
-                    .map_err(|e| RuntimeError::General {
-                        msg: format!("binary write error: {e}"),
-                    })?;
+                    .map_err(|e| RuntimeError::from_io("write", e))?;
             }
         }
 
@@ -4110,7 +4417,7 @@ impl Interpreter {
         if gp.is_get
             && let Some(var) = &gp.var
         {
-            self.require_declared(&var.name)?;
+            self.require_writable(&var.name)?;
         }
 
         let mut fh = self
@@ -4123,5 +4430,130 @@ impl Interpreter {
         let res = self.exec_get_put_inner(&mut fh, gp, record);
         self.file_handles.insert(file_num, fh);
         res
+    }
+}
+
+#[cfg(test)]
+mod file_io_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn empty_handle() -> FileHandle {
+        FileHandle {
+            _access: FileAccess::OutIn,
+            reader: None,
+            writer: None,
+            print_col: 0,
+            eof_flag: false,
+            record_len: None,
+            field_layout: Vec::new(),
+            field_buffer: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn text_fields_preserve_unicode_quotes_and_delimiters() {
+        let mut reader = Cursor::new("\"héllo \"\"世界\"\"\" , 42\r\nplainé".as_bytes());
+        for expected in ["héllo \"世界\"", "42", "plainé"] {
+            assert_eq!(
+                Interpreter::read_next_field(&mut reader).unwrap(),
+                Some(expected.into())
+            );
+        }
+        assert_eq!(Interpreter::read_next_field(&mut reader).unwrap(), None);
+    }
+
+    #[test]
+    fn quoted_field_requires_a_closing_quote() {
+        let mut reader = Cursor::new(b"\"unfinished".as_slice());
+        let error = Interpreter::read_next_field(&mut reader).unwrap_err();
+        assert_eq!(error.basic_err_code(), 62);
+    }
+
+    #[test]
+    fn field_read_errors_are_not_treated_as_end_of_file() {
+        struct FailingReader(Cursor<Vec<u8>>);
+        impl io::Read for FailingReader {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                let count = self.0.read(bytes)?;
+                if count == 0 {
+                    Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "read failed",
+                    ))
+                } else {
+                    Ok(count)
+                }
+            }
+        }
+        impl BufRead for FailingReader {
+            fn fill_buf(&mut self) -> io::Result<&[u8]> {
+                if self.0.position() == self.0.get_ref().len() as u64 {
+                    Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "read failed",
+                    ))
+                } else {
+                    self.0.fill_buf()
+                }
+            }
+            fn consume(&mut self, count: usize) {
+                self.0.consume(count);
+            }
+        }
+        for bytes in [b"unfinished".to_vec(), b"\"unfinished".to_vec()] {
+            let error =
+                Interpreter::read_next_field(&mut FailingReader(Cursor::new(bytes))).unwrap_err();
+            assert_eq!(error.basic_err_code(), 70);
+        }
+    }
+
+    #[test]
+    fn record_offsets_validate_boundaries_without_overflow() {
+        let mut handle = empty_handle();
+        handle.record_len = Some(128);
+        assert_eq!(Interpreter::record_start(&handle, 1).unwrap(), 0);
+        assert_eq!(Interpreter::record_start(&handle, 3).unwrap(), 256);
+        for record in [i64::MIN, -1, 0] {
+            assert!(matches!(
+                Interpreter::record_start(&handle, record),
+                Err(RuntimeError::IllegalFunctionCall { .. })
+            ));
+        }
+        assert!(matches!(
+            Interpreter::record_start(&handle, i64::MAX),
+            Err(RuntimeError::Overflow { .. })
+        ));
+    }
+
+    #[test]
+    fn close_reports_flush_failure_and_preserves_handle() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let read_only = File::open(file.path()).unwrap();
+        let mut writer = BufWriter::new(read_only);
+        writer.write_all(b"pending buffered output").unwrap();
+        let mut handle = empty_handle();
+        handle.writer = Some(writer);
+        let mut interpreter =
+            Interpreter::with_io(Box::new(Vec::new()), Box::new(Cursor::new(Vec::new())));
+        interpreter.file_handles.insert(1, handle);
+        assert!(matches!(
+            interpreter.exec_close(&[]),
+            Err(RuntimeError::IoError { .. })
+        ));
+        assert!(interpreter.file_handles.contains_key(&1));
+    }
+
+    #[test]
+    fn binary_string_length_cannot_wrap_its_header() {
+        let interpreter =
+            Interpreter::with_io(Box::new(Vec::new()), Box::new(Cursor::new(Vec::new())));
+        let mut writer = BufWriter::new(tempfile::tempfile().unwrap());
+        let value = Value::Str("x".repeat(u16::MAX as usize + 1));
+        assert!(matches!(
+            interpreter.serialize_value(&mut writer, &value, &BasicType::String),
+            Err(RuntimeError::IllegalFunctionCall { .. })
+        ));
+        assert_eq!(writer.stream_position().unwrap(), 0);
     }
 }

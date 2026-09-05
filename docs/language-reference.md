@@ -554,7 +554,7 @@ TIME$ = "14:30:00"
 PRINT DATE$; " "; TIME$
 ```
 
-`ENVIRON "name=value"` sets an environment variable. This statement is available in the default QBasic compatibility mode and unavailable in ANSI mode; `ENVIRON$` reads are available in both modes.
+`ENVIRON "name=value"` sets an environment variable for this interpreter and its `SHELL` commands, without modifying the host process environment. This statement is available in the default QBasic compatibility mode and unavailable in ANSI mode; `ENVIRON$` reads are available in both modes.
 
 ---
 

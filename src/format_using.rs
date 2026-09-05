@@ -8,19 +8,20 @@ pub fn format_using(format_str: &str, values: &[Value]) -> Result<String, Runtim
     let mut fi = 0; // format index
     let mut vi = 0; // value index
 
-    let mut iteration_count = 0;
-    let max_iterations = chars.len() * values.len().max(1) + chars.len();
+    let mut cycle_start_vi = 0;
     loop {
         if fi >= chars.len() {
             if vi >= values.len() {
                 break;
             }
-            // Values remain — repeat the format string
-            fi = 0;
-            iteration_count += 1;
-            if iteration_count > max_iterations {
-                break; // Prevent infinite loop with non-consuming format strings
+            if vi == cycle_start_vi {
+                return Err(RuntimeError::IllegalFunctionCall {
+                    msg: "PRINT USING format contains no value fields".into(),
+                });
             }
+            // Values remain — repeat the format string after making progress.
+            cycle_start_vi = vi;
+            fi = 0;
         }
 
         let ch = chars[fi];
@@ -385,7 +386,7 @@ fn format_scientific(value: f64, field: &NumericField) -> String {
         for _ in 0..padding {
             result.push(fill_char);
         }
-    } else if negative {
+    } else if negative && !field.trailing_plus && !field.trailing_minus {
         // Place '-' just before digits, after any padding
         for _ in 0..padding.saturating_sub(1) {
             result.push(fill_char);
@@ -430,4 +431,43 @@ fn add_thousands_separator(s: &str) -> String {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_formats_that_cannot_consume_values() {
+        for format in ["", "literal text", "_#_!_&", "_"] {
+            assert!(matches!(
+                format_using(format, &[Value::Numeric(1.0)]),
+                Err(RuntimeError::IllegalFunctionCall { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn repeats_fields_and_preserves_literals() {
+        assert_eq!(
+            format_using("[##]", &[Value::Numeric(1.0), Value::Numeric(2.0)]).unwrap(),
+            "[ 1][ 2]",
+        );
+        assert_eq!(format_using("literal", &[]).unwrap(), "literal");
+        assert_eq!(format_using("", &[]).unwrap(), "");
+    }
+
+    #[test]
+    fn scientific_trailing_sign_is_printed_once() {
+        for format in ["##.##^^^^+", "##.##^^^^-"] {
+            assert_eq!(
+                format_using(format, &[Value::Numeric(-1234.5)]).unwrap(),
+                "12.35E+02-",
+            );
+        }
+        assert_eq!(
+            format_using("##.##^^^^+", &[Value::Numeric(1234.5)]).unwrap(),
+            "12.35E+02+",
+        );
+    }
 }

@@ -103,6 +103,7 @@ pub fn io_error_to_basic_code(e: &std::io::Error) -> i32 {
         std::io::ErrorKind::NotFound => 53,
         std::io::ErrorKind::PermissionDenied => 70,
         std::io::ErrorKind::AlreadyExists => 58,
+        std::io::ErrorKind::UnexpectedEof => 62,
         _ => 76,
     }
 }
