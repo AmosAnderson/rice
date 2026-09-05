@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Read as IoRead, Seek, SeekFrom, Write};
@@ -59,19 +59,19 @@ struct ExceptionInfo {
     extext: String,
 }
 
-#[derive(Clone)]
 struct UserSub {
     params: Vec<Param>,
     body: Vec<LabeledStmt>,
     is_static: bool,
+    gosub_targets: OnceCell<Rc<HashMap<String, LabelTarget>>>,
 }
 
-#[derive(Clone)]
 struct UserFunction {
     name: String,
     params: Vec<Param>,
     body: Vec<LabeledStmt>,
     is_static: bool,
+    gosub_targets: OnceCell<Rc<HashMap<String, LabelTarget>>>,
 }
 
 struct FileHandle {
@@ -101,11 +101,12 @@ struct LabelTarget {
 
 pub struct Interpreter {
     pub dialect: crate::Dialect,
-    gosub_targets: HashMap<String, LabelTarget>,
+    gosub_targets: Rc<HashMap<String, LabelTarget>>,
     env: EnvRef,
     builtins: BuiltinRegistry,
-    subs: HashMap<String, UserSub>,
-    functions: HashMap<String, UserFunction>,
+    // Calls share immutable definitions and label maps, with a separate environment per call.
+    subs: HashMap<String, Rc<UserSub>>,
+    functions: HashMap<String, Rc<UserFunction>>,
     print_col: usize,
     print_row: usize,
     screen_width: usize,
@@ -183,7 +184,7 @@ impl Interpreter {
     pub fn with_io(output: Box<dyn Write>, input: Box<dyn BufRead>) -> Self {
         Self {
             dialect: crate::DEFAULT_DIALECT,
-            gosub_targets: HashMap::new(),
+            gosub_targets: Rc::new(HashMap::new()),
             env: Environment::new_global(),
             builtins: BuiltinRegistry::new(),
             subs: HashMap::new(),
@@ -258,7 +259,7 @@ impl Interpreter {
 
         let previous_targets = std::mem::replace(
             &mut self.gosub_targets,
-            Self::collect_label_targets(&program.statements, true),
+            Rc::new(Self::collect_label_targets(&program.statements, true)),
         );
         let result = self.exec_top_level(&program.statements);
         self.gosub_targets = previous_targets;
@@ -286,22 +287,24 @@ impl Interpreter {
                 Stmt::SubDef(sub) => {
                     self.subs.insert(
                         sub.name.clone(),
-                        UserSub {
+                        Rc::new(UserSub {
                             params: sub.params.clone(),
                             body: sub.body.clone(),
                             is_static: sub.is_static,
-                        },
+                            gosub_targets: OnceCell::new(),
+                        }),
                     );
                 }
                 Stmt::FunctionDef(func) => {
                     self.functions.insert(
                         func.name.clone(),
-                        UserFunction {
+                        Rc::new(UserFunction {
                             name: func.name.clone(),
                             params: func.params.clone(),
                             body: func.body.clone(),
                             is_static: func.is_static,
-                        },
+                            gosub_targets: OnceCell::new(),
+                        }),
                     );
                 }
                 Stmt::TypeDef { name, fields } => {
@@ -1819,10 +1822,10 @@ impl Interpreter {
 
             let prev_env = self.env.clone();
             let prev_static = std::mem::take(&mut self.current_static_vars);
-            let previous_targets = std::mem::replace(
-                &mut self.gosub_targets,
-                Self::collect_label_targets(&sub.body, false),
-            );
+            let targets = sub
+                .gosub_targets
+                .get_or_init(|| Rc::new(Self::collect_label_targets(&sub.body, false)));
+            let previous_targets = std::mem::replace(&mut self.gosub_targets, Rc::clone(targets));
             self.env = child_env.clone();
             let result = self.exec_block(&sub.body);
             self.env = prev_env;
@@ -2480,10 +2483,10 @@ impl Interpreter {
 
         let prev_env = self.env.clone();
         let prev_static = std::mem::take(&mut self.current_static_vars);
-        let previous_targets = std::mem::replace(
-            &mut self.gosub_targets,
-            Self::collect_label_targets(&func.body, false),
-        );
+        let targets = func
+            .gosub_targets
+            .get_or_init(|| Rc::new(Self::collect_label_targets(&func.body, false)));
+        let previous_targets = std::mem::replace(&mut self.gosub_targets, Rc::clone(targets));
         self.env = child_env.clone();
         let result = self.exec_block(&func.body);
         self.env = prev_env;

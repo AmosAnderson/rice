@@ -1865,6 +1865,78 @@ fn test_gosub_uses_current_procedure_labels() {
 }
 
 #[test]
+fn test_recursive_procedures_reuse_local_labels() {
+    assert_eq!(
+        run_file("tests/programs/procedure_reuse.bas"),
+        "12\n6\nmain\n12\n6\nmain\n"
+    );
+}
+
+#[test]
+fn test_procedure_redefinition_refreshes_bodies_and_labels() {
+    let output = SharedOutput::new();
+    let mut interp = rice::interpreter::Interpreter::with_io(
+        Box::new(output.clone()),
+        Box::new(Cursor::new(Vec::<u8>::new())),
+    );
+    interp
+        .run_source(
+            r#"
+SUB Worker
+    GOSUB helper
+    EXIT SUB
+helper:
+    PRINT "old"
+    RETURN
+END SUB
+FUNCTION Score()
+    GOSUB helper
+    EXIT FUNCTION
+helper:
+    Score = 1
+    RETURN
+END FUNCTION
+"#,
+        )
+        .unwrap();
+    // Definitions and cached labels outlive the source program, including bare function calls.
+    for _ in 0..2 {
+        interp
+            .run_source("CALL Worker\nPRINT Score\nPRINT Score()\n")
+            .unwrap();
+    }
+    interp
+        .run_source(
+            r#"
+SUB Worker
+    PRINT "new"
+    GOSUB helper
+    EXIT SUB
+helper:
+    PRINT "helper"
+    RETURN
+END SUB
+FUNCTION Score()
+    Score = 20
+    GOSUB helper
+    EXIT FUNCTION
+helper:
+    Score = Score + 2
+    RETURN
+END FUNCTION
+"#,
+        )
+        .unwrap();
+    interp
+        .run_source("CALL Worker\nPRINT Score\nPRINT Score()\n")
+        .unwrap();
+    assert_eq!(
+        output.into_string(),
+        "old\n1\n1\nold\n1\n1\nnew\nhelper\n22\n22\n"
+    );
+}
+
+#[test]
 fn test_gosub_end_stops_the_caller() {
     assert_eq!(run_file("tests/programs/gosub_end.bas"), "finished\n");
 }

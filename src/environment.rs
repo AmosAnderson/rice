@@ -80,7 +80,15 @@ impl Environment {
             Self::set_in_root(parent, key, value);
             return;
         }
-        self.vars.insert(name.to_string(), value);
+        self.set_local(name, value);
+    }
+
+    fn set_local(&mut self, name: &str, value: Value) {
+        if let Some(existing) = self.vars.get_mut(name) {
+            *existing = value;
+        } else {
+            self.vars.insert(name.to_string(), value);
+        }
     }
 
     pub fn define_const(&mut self, name: &str, value: Value) -> Result<(), RuntimeError> {
@@ -176,11 +184,84 @@ impl Environment {
         let mut e = env.borrow_mut();
         if e.parent.is_none() {
             // This is root
-            e.vars.insert(key.to_string(), value);
+            e.set_local(key, value);
         } else {
             let parent = e.parent.clone().unwrap();
             drop(e);
             Self::set_in_root(&parent, key, value);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repeated_local_updates_preserve_parent_binding() {
+        let root = Environment::new_global();
+        root.borrow_mut().set("COUNT", Value::Numeric(10.0));
+        let child = Environment::new_child(root.clone());
+
+        for value in [1.0, 2.0, 3.0] {
+            child.borrow_mut().set("COUNT", Value::Numeric(value));
+            assert!(matches!(child.borrow().get("COUNT"), Some(Value::Numeric(n)) if n == value));
+        }
+
+        assert!(matches!(
+            root.borrow().get("COUNT"),
+            Some(Value::Numeric(10.0))
+        ));
+    }
+
+    #[test]
+    fn repeated_shared_updates_target_root_through_ancestors() {
+        let root = Environment::new_global();
+        let child = Environment::new_child(root.clone());
+        child.borrow_mut().shared_vars.insert("COUNT".into());
+        let grandchild = Environment::new_child(child.clone());
+
+        for value in [1.0, 2.0, 3.0] {
+            grandchild.borrow_mut().set("COUNT", Value::Numeric(value));
+            assert!(matches!(root.borrow().get("COUNT"), Some(Value::Numeric(n)) if n == value));
+            assert!(
+                matches!(grandchild.borrow().get("COUNT"), Some(Value::Numeric(n)) if n == value)
+            );
+        }
+
+        assert!(child.borrow().vars_ref().is_empty());
+        assert!(grandchild.borrow().vars_ref().is_empty());
+    }
+
+    #[test]
+    fn updates_preserve_local_and_ancestor_constants() {
+        let root = Environment::new_global();
+        root.borrow_mut()
+            .define_const("FIXED", Value::Numeric(10.0))
+            .unwrap();
+        let child = Environment::new_child(root.clone());
+        child
+            .borrow_mut()
+            .define_const("LOCAL", Value::Numeric(20.0))
+            .unwrap();
+
+        for value in [1.0, 2.0] {
+            child.borrow_mut().set("FIXED", Value::Numeric(value));
+            child.borrow_mut().set("LOCAL", Value::Numeric(value));
+        }
+
+        assert!(matches!(
+            root.borrow().get("FIXED"),
+            Some(Value::Numeric(10.0))
+        ));
+        assert!(matches!(
+            child.borrow().get("FIXED"),
+            Some(Value::Numeric(10.0))
+        ));
+        assert!(matches!(
+            child.borrow().get("LOCAL"),
+            Some(Value::Numeric(20.0))
+        ));
+        assert!(child.borrow().vars_ref().is_empty());
     }
 }
