@@ -103,6 +103,7 @@ impl Lexer {
             '-' => Token::Minus,
             '*' => Token::Star,
             '/' => Token::Slash,
+            '\\' => Token::Backslash,
             '^' => Token::Caret,
             '=' => Token::Equal,
             '<' => {
@@ -657,6 +658,21 @@ mod tests {
                 Token::NumericLiteral(3.0),
                 Token::Star,
                 Token::NumericLiteral(4.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_integer_division_token_and_literal_backslash() {
+        assert_eq!(
+            tokenize(r#"PRINT 9 \ 2; "a\b""#),
+            vec![
+                Token::KwPrint,
+                Token::NumericLiteral(9.0),
+                Token::Backslash,
+                Token::NumericLiteral(2.0),
+                Token::Semicolon,
+                Token::StringLiteral("a\\b".into()),
             ]
         );
     }

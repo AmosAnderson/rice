@@ -1,0 +1,12 @@
+OPTION DIALECT "QB"
+PRINT 7 \ 2; ";"; -7 \ 2; ";"; 7 \ -2; ";"; -7 \ -2
+PRINT 7.5 \ 2; ";"; 6.5 \ 2; ";"; -7.5 \ 2; ";"; -6.5 \ 2
+PRINT 9 \ 2.5; ";"; 9 \ 3.5; ";"; 9 \ -2.5; ";"; 0.5 \ 2
+PRINT 20 \ 2 * 3; ";"; 20 \ 5 / 2; ";"; 20 \ 3 MOD 2
+PRINT 24 \ 3 \ 2; ";"; 2 + 9 \ 2; ";"; -2 ^ 3 \ 3
+PRINT 5.5 MOD 2; ";"; 5 / 2
+PRINT 9007199254740991 \ 3
+DIM halves(2)
+halves(1) = 9 \ 2
+PRINT halves(1)
+PRINT "literal backslash: \"

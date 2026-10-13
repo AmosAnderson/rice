@@ -30,9 +30,10 @@ pub enum Token {
     Minus,
     Star,
     Slash,
-    Caret,    // ^
-    Equal,    // = (assignment AND comparison)
-    NotEqual, // <>
+    Backslash, // integer division (QBasic)
+    Caret,     // ^
+    Equal,     // = (assignment AND comparison)
+    NotEqual,  // <>
     Less,
     Greater,
     LessEqual,

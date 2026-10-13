@@ -154,6 +154,7 @@ fn token_color(token: &Token) -> &'static str {
         | Token::Minus
         | Token::Star
         | Token::Slash
+        | Token::Backslash
         | Token::Caret
         | Token::Ampersand
         | Token::Dot
@@ -914,5 +915,16 @@ mod tests {
         let mut repl = Repl::with_dialect(crate::Dialect::Ansi);
         assert!(!repl.execute_line("OPTION DIALECT \"QB\": X% = 7").unwrap());
         assert_eq!(repl.interpreter.dialect, crate::Dialect::QuickBasic);
+    }
+
+    #[test]
+    fn test_integer_division_highlight_and_numeric_if_depth() {
+        let dialect = crate::Dialect::QuickBasic;
+        let highlighted = super::highlight_line("PRINT 7 \\ 2", dialect);
+        assert!(highlighted.contains(&format!("{COLOR_OPERATOR}\\{COLOR_RESET}")));
+        assert_eq!(
+            super::compute_depth_delta("IF 1 THEN 100 ELSE 200", dialect),
+            0
+        );
     }
 }

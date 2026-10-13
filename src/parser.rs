@@ -1006,7 +1006,28 @@ impl Parser {
                 break;
             }
             let line = self.current_line();
-            let stmt = self.parse_statement()?;
+            let stmt = if stmts.is_empty()
+                && matches!(self.peek(), Token::NumericLiteral(_) | Token::LineNumber(_))
+            {
+                if self.dialect != crate::Dialect::QuickBasic {
+                    return Err(ParseError::General {
+                        line,
+                        msg: "IF line-number shorthand is not supported in ANSI BASIC; use GOTO"
+                            .into(),
+                    });
+                }
+                let label = self.parse_label()?;
+                if !self.at_stmt_end() {
+                    return Err(ParseError::Expected {
+                        line: self.current_line(),
+                        expected: "end of branch after line number".into(),
+                        found: format!("{:?}", self.peek()),
+                    });
+                }
+                Stmt::Goto(label)
+            } else {
+                self.parse_statement()?
+            };
             stmts.push(LabeledStmt {
                 label: None,
                 stmt,
@@ -2394,13 +2415,33 @@ impl Parser {
     }
 
     fn parse_mod_expr(&mut self) -> Result<Expr, ParseError> {
-        let mut left = self.parse_multiplicative()?;
+        let mut left = self.parse_integer_division()?;
         while matches!(self.peek(), Token::KwMod) {
+            self.advance();
+            let right = self.parse_integer_division()?;
+            left = Expr::BinaryOp {
+                left: Box::new(left),
+                op: BinOp::Mod,
+                right: Box::new(right),
+            };
+        }
+        Ok(left)
+    }
+
+    fn parse_integer_division(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_multiplicative()?;
+        while matches!(self.peek(), Token::Backslash) {
+            if self.dialect != crate::Dialect::QuickBasic {
+                return Err(ParseError::General {
+                    line: self.current_line(),
+                    msg: "Integer division (\\) is not supported in ANSI BASIC".into(),
+                });
+            }
             self.advance();
             let right = self.parse_multiplicative()?;
             left = Expr::BinaryOp {
                 left: Box::new(left),
-                op: BinOp::Mod,
+                op: BinOp::IntDiv,
                 right: Box::new(right),
             };
         }
@@ -2986,6 +3027,53 @@ mod tests {
     }
 
     #[test]
+    fn test_if_line_number_branches() {
+        let prog = parse("IF x THEN 100 ELSE 200");
+        let Stmt::If(branch) = &prog.statements[0].stmt else {
+            panic!("expected IF");
+        };
+        assert!(matches!(
+            branch.then_body[0].stmt,
+            Stmt::Goto(Label::Number(100))
+        ));
+        assert!(matches!(
+            branch.else_body.as_ref().unwrap()[0].stmt,
+            Stmt::Goto(Label::Number(200))
+        ));
+    }
+
+    #[test]
+    fn test_if_line_number_target_must_be_valid_and_complete() {
+        for target in ["1.5", "-1", "4294967296", "1E999", "100 + 1", "100 PRINT 1"] {
+            for branch in [
+                format!("IF 1 THEN {target}"),
+                format!("IF 1 THEN PRINT 1 ELSE {target}"),
+            ] {
+                assert!(parse_result(&branch).is_err(), "accepted {branch}");
+            }
+        }
+        // A shorthand target is only accepted at the beginning of an IF branch.
+        assert!(parse_result("IF 1 THEN PRINT 1: 100").is_err());
+    }
+
+    #[test]
+    fn test_if_line_number_shorthand_is_qbasic_only() {
+        for source in ["IF 1 THEN 100", "IF 1 THEN PRINT 1 ELSE 100"] {
+            let tokens = Lexer::with_dialect(source, crate::Dialect::Ansi)
+                .tokenize()
+                .unwrap();
+            let error = Parser::with_dialect(tokens, crate::Dialect::Ansi)
+                .parse_program()
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("line-number shorthand is not supported in ANSI")
+            );
+        }
+    }
+
+    #[test]
     fn test_for_loop() {
         let prog = parse("FOR i = 1 TO 10\nPRINT i\nNEXT i");
         assert_eq!(prog.statements.len(), 1);
@@ -3055,5 +3143,68 @@ mod tests {
                 assert!(matches!(**right, Expr::BinaryOp { op: BinOp::Mul, .. }));
             }
         }
+    }
+
+    #[test]
+    fn test_integer_division_precedence_and_association() {
+        let prog = parse(r"x = 20 MOD 9 \ 2 * 2");
+        let Stmt::Let { expr, .. } = &prog.statements[0].stmt else {
+            panic!("expected assignment");
+        };
+        let Expr::BinaryOp {
+            op: BinOp::Mod,
+            right,
+            ..
+        } = expr
+        else {
+            panic!("MOD must have lower precedence than integer division");
+        };
+        let Expr::BinaryOp {
+            op: BinOp::IntDiv,
+            right,
+            ..
+        } = right.as_ref()
+        else {
+            panic!("expected integer division");
+        };
+        assert!(matches!(
+            right.as_ref(),
+            Expr::BinaryOp { op: BinOp::Mul, .. }
+        ));
+
+        let prog = parse(r"x = 24 \ 4 \ 2");
+        let Stmt::Let { expr, .. } = &prog.statements[0].stmt else {
+            panic!("expected assignment");
+        };
+        let Expr::BinaryOp {
+            op: BinOp::IntDiv,
+            left,
+            ..
+        } = expr
+        else {
+            panic!("expected integer division");
+        };
+        assert!(matches!(
+            left.as_ref(),
+            Expr::BinaryOp {
+                op: BinOp::IntDiv,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_integer_division_is_qbasic_only() {
+        let tokens = Lexer::with_dialect(r"PRINT 9 \ 2", crate::Dialect::Ansi)
+            .tokenize()
+            .unwrap();
+        let error = Parser::with_dialect(tokens, crate::Dialect::Ansi)
+            .parse_program()
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Integer division (\\) is not supported in ANSI")
+        );
     }
 }

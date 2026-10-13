@@ -335,9 +335,15 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("ERASE", "Erase an array"),
         ("SHARED", "Share variable with main module"),
         ("STATIC", "Preserve local variables between calls"),
-        ("CLEAR", "Clear current variable values and reset DATA cursor"),
+        (
+            "CLEAR",
+            "Clear current variable values and reset DATA cursor",
+        ),
         // Control flow
-        ("IF", "Conditional statement"),
+        (
+            "IF",
+            "Conditional statement; numeric branch targets in QBasic",
+        ),
         ("THEN", "Part of IF statement"),
         ("ELSE", "Alternative branch of IF"),
         ("ELSEIF", "Additional conditional branch"),
@@ -379,7 +385,10 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("DECLARE", "Forward-declare a SUB or FUNCTION"),
         ("BYVAL", "Pass argument by value"),
         ("BYREF", "Copy parameter back to a plain variable argument"),
-        ("DEF FN", "Define a single-expression or multiline QBasic function"),
+        (
+            "DEF FN",
+            "Define a single-expression or multiline QBasic function",
+        ),
         ("DEFINT", "Set default numeric type for variable letters"),
         ("DEFLNG", "Set default numeric type for variable letters"),
         ("DEFSNG", "Set default numeric type for variable letters"),
@@ -430,7 +439,10 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("CHDIR", "Change current directory"),
         ("CHDRIVE", "Change current drive"),
         ("FILES", "List directory entries"),
-        ("ENVIRON", "Set a QBasic interpreter-local environment override"),
+        (
+            "ENVIRON",
+            "Set a QBasic interpreter-local environment override",
+        ),
         // Console
         ("CLS", "Clear the screen"),
         ("LOCATE", "Move cursor to row, column"),
@@ -452,6 +464,10 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("OR", "Bitwise OR in QBasic; logical OR in ANSI"),
         ("NOT", "Bitwise NOT in QBasic; logical NOT in ANSI"),
         ("XOR", "Bitwise XOR in QBasic; logical XOR in ANSI"),
+        (
+            "\\",
+            "Integer division in QBasic; rounds operands, truncates quotient",
+        ),
         ("MOD", "Modulo operator"),
         // Other
         ("REM", "Comment"),
@@ -460,7 +476,11 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
     .iter()
     .map(|(kw, doc)| CompletionItem {
         label: kw.to_string(),
-        kind: Some(CompletionItemKind::KEYWORD),
+        kind: Some(if *kw == "\\" {
+            CompletionItemKind::OPERATOR
+        } else {
+            CompletionItemKind::KEYWORD
+        }),
         detail: Some(doc.to_string()),
         ..Default::default()
     })
@@ -481,7 +501,10 @@ static BUILTIN_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("ATN", "ATN(n) — Arctangent (radians)"),
         ("EXP", "EXP(n) — e raised to power n"),
         ("LOG", "LOG(n) — Natural logarithm"),
-        ("RND", "RND([n]) — Random number [0,1); parentheses required"),
+        (
+            "RND",
+            "RND([n]) — Random number [0,1); parentheses required",
+        ),
         (
             "ROUND",
             "ROUND(n[, places]) — Round to nearest integer or decimal place",
@@ -498,6 +521,8 @@ static BUILTIN_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
             "TRUNCATE(n[, places]) — Truncate to decimal places",
         ),
         ("REMAINDER", "REMAINDER(a, b) — Remainder of a / b"),
+        ("MIN", "MIN(n[, n...]) — Minimum of one or more numbers"),
+        ("MAX", "MAX(n[, n...]) — Maximum of one or more numbers"),
         ("MAXNUM", "MAXNUM() — Largest finite f64 value"),
         ("PI", "PI() — Value of pi (3.14159...)"),
         // String
@@ -532,7 +557,10 @@ static BUILTIN_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("ERL", "ERL — Line number of last classic BASIC error"),
         // System
         ("ENVIRON$", "ENVIRON$(name$) — Get environment variable"),
-        ("CURDIR$", "CURDIR$() — Current process directory; no drive argument"),
+        (
+            "CURDIR$",
+            "CURDIR$() — Current process directory; no drive argument",
+        ),
         ("COMMAND$", "COMMAND$() — Raw host arguments from index 2"),
         ("TIMER", "TIMER — Seconds since midnight"),
         ("DATE$", "DATE$ — Current date"),
@@ -671,6 +699,14 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         (
             "REMAINDER",
             "```basic\nREMAINDER(a, b)\n```\nReturns the floating-point remainder using a truncating quotient. Unlike MOD, a nonzero result has the dividend's sign. A zero divisor raises an error.",
+        ),
+        (
+            "MIN",
+            "```basic\nMIN(n[, n...])\n```\nReturns the smallest of one or more numeric arguments in either dialect. Strings and records are rejected. NaN propagates; infinities are supported. Parentheses are required.",
+        ),
+        (
+            "MAX",
+            "```basic\nMAX(n[, n...])\n```\nReturns the largest of one or more numeric arguments in either dialect. Strings and records are rejected. NaN propagates; infinities are supported. Parentheses are required.",
         ),
         (
             "MAXNUM",
@@ -942,7 +978,19 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         // Control flow
         (
             "IF",
-            "```basic\nIF condition THEN\n  ...\n[ELSEIF condition THEN\n  ...]\n[ELSE\n  ...]\nEND IF\n```\nConditional execution. Also supports single-line form: `IF cond THEN stmt [ELSE stmt]`.",
+            "```basic\nIF condition THEN\n  ...\n[ELSEIF condition THEN\n  ...]\n[ELSE\n  ...]\nEND IF\n```\nConditional execution. Also supports single-line form: `IF cond THEN stmt [ELSE stmt]`. In QBasic mode, `IF cond THEN 100 ELSE 200` jumps to the selected numeric line label. Either branch may use a statement instead of a line number; ANSI requires explicit GOTO.",
+        ),
+        (
+            "THEN",
+            "```basic\nIF condition THEN statement [ELSE statement]\nIF condition THEN 100 [ELSE 200]\n```\nBegins the true branch of IF. A numeric branch target is shorthand for GOTO in QBasic mode only. A newline immediately after THEN begins a block IF.",
+        ),
+        (
+            "ELSE",
+            "```basic\nIF condition THEN statement ELSE statement\nIF condition THEN 100 ELSE 200\n```\nBegins the false branch of IF. Single-line numeric targets are shorthand for GOTO in QBasic mode only.",
+        ),
+        (
+            "\\",
+            "```basic\nPRINT 7 \\ 2\n```\nQBasic mode only. Rounds each numeric operand to the nearest integer, ties to even, then divides signed 64-bit integers and truncates the quotient toward zero. Returns an f64. A divisor that rounds to zero raises division by zero; nonfinite or out-of-range operands and quotient overflow raise overflow. Multiplication and / bind more tightly; MOD binds less tightly.",
         ),
         (
             "FOR",
@@ -996,8 +1044,14 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
             "RESUME",
             "```basic\nRESUME\nRESUME NEXT\nRESUME label\n```\nQuickBasic compatibility mode only. Resumes execution after a classic `ON ERROR GOTO` handler. Resume is exact at top-level scope.",
         ),
-        ("END", "```basic\nEND\n```\nEnds the current program, including when used in a SUB. Function evaluation currently discards this control flow, so END inside a FUNCTION does not stop its caller."),
-        ("STOP", "```basic\nSTOP\n```\nEnds execution like END; no resumable debugger break is implemented. Function evaluation currently discards this control flow."),
+        (
+            "END",
+            "```basic\nEND\n```\nEnds the current program, including when used in a SUB. Function evaluation currently discards this control flow, so END inside a FUNCTION does not stop its caller.",
+        ),
+        (
+            "STOP",
+            "```basic\nSTOP\n```\nEnds execution like END; no resumable debugger break is implemented. Function evaluation currently discards this control flow.",
+        ),
         (
             "SYSTEM",
             "```basic\nSYSTEM\n```\nEnds execution like END; QUIT is an alias. A stored REPL RUN returns to the prompt. Function evaluation currently discards this control flow.",
@@ -1207,6 +1261,9 @@ fn resolve_token_name(state: &DocumentState, pos: Position) -> Option<String> {
         .last()?;
     let name = token_name(&token.token)?;
     let start = line.char_indices().nth(token.span.col.saturating_sub(1))?.0;
+    if matches!(token.token, rice::token::Token::Backslash) {
+        return (byte_col == start).then_some(name);
+    }
     let text = &line[start..];
 
     // A preceding token does not own trailing whitespace or comments. Canonical
@@ -1233,6 +1290,7 @@ fn token_name(tok: &rice::token::Token) -> Option<String> {
         rice::token::Token::Identifier(name) => Some(name.clone()),
         rice::token::Token::NumericLiteral(n) => Some(n.to_string()),
         rice::token::Token::LineNumber(n) => Some(n.to_string()),
+        rice::token::Token::Backslash => Some("\\".into()),
         rice::token::Token::KwPrint => Some("PRINT".into()),
         rice::token::Token::KwInput => Some("INPUT".into()),
         rice::token::Token::KwLineInput => Some("LINE INPUT".into()),
@@ -1630,5 +1688,80 @@ mod tests {
         assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
         assert!(find_symbol(&state.symbols, "INSIDE").is_some());
         assert!(find_symbol(&state.symbols, "RECOVERED").is_some());
+    }
+
+    #[test]
+    fn integer_division_hover_uses_its_punctuation_span() {
+        let state = analyze_source("PRINT \"😀\"; 7 \\ 2 ' \\ comment\n".into(), 1);
+        assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+        let name = resolve_token_name(&state, Position::new(0, 14)).unwrap();
+        assert_eq!(name, "\\");
+        let hover = keyword_hover(&name).unwrap();
+        assert!(hover.contains("ties to even"));
+        assert!(hover.contains("64-bit"));
+        for character in [13, 15, 20, 23] {
+            assert_eq!(
+                resolve_token_name(&state, Position::new(0, character)),
+                None,
+                "{character}"
+            );
+        }
+        let completion = KEYWORD_COMPLETIONS
+            .iter()
+            .find(|item| item.label == "\\")
+            .unwrap();
+        assert_eq!(completion.kind, Some(CompletionItemKind::OPERATOR));
+    }
+
+    #[test]
+    fn numeric_if_targets_resolve_to_numbered_labels() {
+        let source = "10 IF MIN(3, MAX(1, 2)) THEN 30 ELSE 40\n30 END\n40 END\n";
+        let state = analyze_source(source.into(), 1);
+        assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+        for (branch, offset, expected_line) in [("THEN", 5, 2), ("ELSE", 5, 3)] {
+            let col = source.find(branch).unwrap() + offset;
+            let name = resolve_token_name(&state, Position::new(0, col as u32)).unwrap();
+            assert_eq!(
+                find_symbol(&state.symbols, &name).unwrap().line,
+                expected_line
+            );
+            assert!(keyword_hover(branch).unwrap().contains("QBasic"));
+        }
+        assert!(keyword_hover("IF").unwrap().contains("THEN 100 ELSE 200"));
+    }
+
+    #[test]
+    fn min_max_have_completions_and_hover_in_both_dialects() {
+        for dialect in ["QB", "ANSI"] {
+            let source = format!("OPTION DIALECT \"{dialect}\"\nPRINT MIN(3, MAX(1, 2))\n");
+            let state = analyze_source(source, 1);
+            assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+            for (expected_name, character) in [("MIN", 6), ("MAX", 13)] {
+                let name = resolve_token_name(&state, Position::new(1, character)).unwrap();
+                assert_eq!(name, expected_name);
+                let hover = builtin_hover(&name).unwrap();
+                assert!(hover.contains("one or more numeric arguments"));
+                assert!(hover.contains("NaN propagates"));
+                let completion = BUILTIN_COMPLETIONS
+                    .iter()
+                    .find(|item| item.label == name)
+                    .unwrap();
+                assert_eq!(completion.kind, Some(CompletionItemKind::FUNCTION));
+            }
+        }
+    }
+
+    #[test]
+    fn qbasic_expression_and_branch_syntax_produce_ansi_diagnostics() {
+        for statement in ["PRINT 7 \\ 2", "IF 1 THEN 30 ELSE 40"] {
+            let source = format!("OPTION DIALECT \"ANSI\"\n{statement}\n30 END\n40 END\n");
+            let state = analyze_source(source, 1);
+            assert_eq!(state.diagnostics.len(), 1, "{statement}");
+            assert_eq!(
+                state.diagnostics[0].severity,
+                Some(DiagnosticSeverity::ERROR)
+            );
+            assert_eq!(state.diagnostics[0].range.start.line, 1);
+        }
     }
 }

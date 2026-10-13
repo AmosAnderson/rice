@@ -54,6 +54,8 @@ impl BuiltinRegistry {
         reg.register("CDBL", builtin_cdbl, 1);
         reg.register_variadic("TRUNCATE", builtin_truncate);
         reg.register("REMAINDER", builtin_remainder, 2);
+        reg.register_variadic("MIN", builtin_min);
+        reg.register_variadic("MAX", builtin_max);
         reg.register("MAXNUM", builtin_maxnum, 0);
         reg.register("PI", builtin_pi, 0);
         // RND is handled as a stateful function in the interpreter
@@ -374,6 +376,34 @@ fn decimal_factor(places: i64) -> Result<f64, RuntimeError> {
         });
     }
     Ok(10_f64.powi(places as i32))
+}
+
+fn builtin_min(args: &[Value]) -> Result<Value, RuntimeError> {
+    numeric_extremum(args, f64::min)
+}
+
+fn builtin_max(args: &[Value]) -> Result<Value, RuntimeError> {
+    numeric_extremum(args, f64::max)
+}
+
+fn numeric_extremum(args: &[Value], select: fn(f64, f64) -> f64) -> Result<Value, RuntimeError> {
+    let mut result = args
+        .first()
+        .ok_or(RuntimeError::ArityMismatch {
+            expected: 1,
+            got: 0,
+        })?
+        .to_f64()?;
+    for arg in &args[1..] {
+        let value = arg.to_f64()?;
+        // Propagate NaN, but continue validating the remaining arguments.
+        result = if result.is_nan() || value.is_nan() {
+            f64::NAN
+        } else {
+            select(result, value)
+        };
+    }
+    Ok(Value::Numeric(result))
 }
 
 fn builtin_maxnum(_args: &[Value]) -> Result<Value, RuntimeError> {
@@ -895,6 +925,84 @@ fn builtin_command(_args: &[Value]) -> Result<Value, RuntimeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn minmax_accepts_one_or_more_numeric_arguments() {
+        let registry = BuiltinRegistry::new();
+        for name in ["MIN", "MAX"] {
+            assert_eq!(
+                registry.call(name, &[Value::Numeric(-2.5)]).unwrap(),
+                Some(Value::Numeric(-2.5)),
+            );
+        }
+        let values = [6.0, -8.0, 2.5, -8.0, 0.0].map(Value::Numeric);
+        assert_eq!(
+            registry.call("min", &values).unwrap(),
+            Some(Value::Numeric(-8.0)),
+        );
+        assert_eq!(
+            registry.call("max", &values).unwrap(),
+            Some(Value::Numeric(6.0)),
+        );
+    }
+
+    #[test]
+    fn minmax_rejects_empty_and_nonnumeric_arguments() {
+        let registry = BuiltinRegistry::new();
+        for name in ["MIN", "MAX"] {
+            assert!(matches!(
+                registry.call(name, &[]),
+                Err(RuntimeError::ArityMismatch {
+                    expected: 1,
+                    got: 0
+                }),
+            ));
+            for invalid in [
+                Value::Str("2".into()),
+                Value::Record {
+                    type_name: "POINT".into(),
+                    fields: HashMap::new(),
+                },
+            ] {
+                assert!(matches!(
+                    registry.call(name, std::slice::from_ref(&invalid)),
+                    Err(RuntimeError::TypeMismatch { .. }),
+                ));
+                assert!(matches!(
+                    registry.call(name, &[Value::Numeric(f64::NAN), invalid]),
+                    Err(RuntimeError::TypeMismatch { .. }),
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn minmax_propagates_nan_and_orders_infinities() {
+        let registry = BuiltinRegistry::new();
+        for name in ["MIN", "MAX"] {
+            for nan_index in 0..3 {
+                let mut values = [
+                    Value::Numeric(2.0),
+                    Value::Numeric(-3.0),
+                    Value::Numeric(8.0),
+                ];
+                values[nan_index] = Value::Numeric(f64::NAN);
+                assert!(matches!(
+                    registry.call(name, &values).unwrap(),
+                    Some(Value::Numeric(n)) if n.is_nan(),
+                ));
+            }
+        }
+        let values = [f64::INFINITY, 0.0, f64::NEG_INFINITY].map(Value::Numeric);
+        assert_eq!(
+            registry.call("MIN", &values).unwrap(),
+            Some(Value::Numeric(f64::NEG_INFINITY)),
+        );
+        assert_eq!(
+            registry.call("MAX", &values).unwrap(),
+            Some(Value::Numeric(f64::INFINITY)),
+        );
+    }
 
     #[test]
     fn decimal_rounding_does_not_overflow_finite_values() {

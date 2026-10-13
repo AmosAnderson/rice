@@ -33,11 +33,13 @@ The **first recognized directive** in source order selects the mode for the enti
 | Comparisons | True is `-1`, false is `0` | True is `1`, false is `0` |
 | Conditions | Zero false; nonzero true | Same |
 | `AND`, `OR`, `XOR`, `NOT` | Bitwise operations using signed 64-bit integer casts | Boolean operations on zero/nonzero values |
+| Integer division `\` | Nearest-even operand rounding, checked signed 64-bit division, quotient truncated toward zero | Rejected |
 | String concatenation | String `+` and `&` | String `&`; `+` requires numbers |
 | Hex/octal literals | `&H...`, `&O...` | Not recognized as numeric literal syntax |
 | Initial `OPTION BASE` | **1 in the current implementation** | 1 |
 | Default procedure arguments | `BYREF` | `BYVAL` |
 | `GOSUB`, `RETURN`, `ON expression GOTO/GOSUB` | Supported | Rejected |
+| Single-line `IF expr THEN line-number [ELSE line-number]` | Numeric branch targets abbreviate GOTO; either branch may instead contain statements | Rejected; write explicit GOTO |
 | `ON ERROR GOTO`, `RESUME`, `ERROR` | Supported with limits below | Rejected |
 | `DEFINT`, `DEFLNG`, `DEFSNG`, `DEFDBL`, `DEFSTR`; `DEF FN` | Supported | Rejected |
 | `MID$` assignment | Supported | Rejected; use slice assignment |
@@ -59,7 +61,7 @@ Unless a row above explicitly rejects a construct, do not infer that its histori
 - ANSI-style string slicing, MAT operations, and `PRINT USING`.
 - **Both** `OPEN #n: NAME ...` and `OPEN path$ FOR ... AS #n` syntaxes. The parser does not restrict these by dialect. `INPUT`, `OUTPUT`, `APPEND`, `BINARY`, and `RANDOM` mode words are accepted by the latter syntax in either profile, but their record and `GET`/`PUT` behavior differs.
 - `SEEK`, `SET #n: POINTER`, `ASK #n: POINTER`, text file I/O, filesystem statements, and text console control.
-- The shared builtin registry, including QBasic-style string function names, `INPUT$`, `MKI$`/`MKL$`/`MKS$`/`MKD$`, `CVI`/`CVL`/`CVS`/`CVD`, and `ENVIRON$` reads. See the complete [builtin catalog](builtins.md).
+- The shared builtin registry, including numeric `MIN`/`MAX` with one or more arguments, QBasic-style string function names, `INPUT$`, `MKI$`/`MKL$`/`MKS$`/`MKD$`, `CVI`/`CVL`/`CVS`/`CVD`, and `ENVIRON$` reads. See the complete [builtin catalog](builtins.md).
 
 Identifiers are case-insensitive; string contents are case-sensitive. Undefined values initialize to `0` or `""` unless declaration enforcement applies. `=` assigns at statement level and compares inside expressions. `MOD` is `a - b * FLOOR(a / b)` in both profiles, including real operands and negative values. Plain `PRINT` adds neither leading nor trailing spaces to numbers and uses 16-column comma zones. Numeric and string operands do not implicitly convert for arithmetic or concatenation.
 

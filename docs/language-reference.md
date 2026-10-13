@@ -173,6 +173,7 @@ Operands and ordinary argument lists are evaluated left to right. `AND`, `OR`, a
 | Power | `^` | Right |
 | Unary sign | `+`, `-` | Prefix |
 | Multiply/divide | `*`, `/` | Left |
+| Integer divide (QB only) | `\` | Left |
 | Modulus | `MOD` | Left |
 | Add/subtract/concatenate | `+`, `-`, `&` | Left |
 | Comparison | `=`, `<>`, `<`, `>`, `<=`, `>=` | Left |
@@ -183,7 +184,13 @@ Operands and ordinary argument lists are evaluated left to right. `AND`, `OR`, a
 
 For example `-2^2 = -4`, `2^-2 = 0.25`, and `2^3^2 = 512`. Chained comparisons are evaluated as successive binary operations: `2 < 1 < 1` means `(2 < 1) < 1`, which is true. Use `(a < b) AND (b < c)` for a range test.
 
-Arithmetic operators require numbers. `/` is real division; division by zero raises an error. `MOD` uses **`a - b * FLOOR(a / b)` in both modes**, including real operands. Examples: `-5 MOD 3 = 1`, `5 MOD -3 = -1`, and `5.5 MOD 2 = 1.5`. A zero divisor raises an error. Integer division `\`, `IMP`, and `EQV` are not implemented.
+Arithmetic operators require numbers. `/` is real division; division by zero raises an error. `MOD` uses **`a - b * FLOOR(a / b)` in both modes**, including real operands. Examples: `-5 MOD 3 = 1`, `5 MOD -3 = -1`, and `5.5 MOD 2 = 1.5`. A zero divisor raises an error. `IMP` and `EQV` are not implemented.
+
+QB also supports integer division, `a \ b`. Both operands round to the nearest integer, with exact halfway values rounding to the even integer. The rounded operands must fit signed 64-bit integers; division then truncates the quotient toward zero and returns an `f64`. For example, `7 \ 2 = 3`, `-7 \ 2 = -3`, `7.5 \ 2 = 4`, and `6.5 \ 2 = 3`. `*` and `/` bind more tightly than `\`, which binds more tightly than `MOD`: `20 \ 2 * 3 = 3` and `20 \ 3 MOD 2 = 0`. Repeated integer divisions associate left to right.
+
+A divisor that rounds to zero (including `0.5` or `-0.5`) raises division by zero (`ERR = 11`). Nonfinite or out-of-range rounded operands, and `(-2 ^ 63) \ -1`, raise overflow (`ERR = 6`). These errors also work with structured exception handlers. Rice uses a wider integer range than historical QBasic, and large results can lose precision when converted back to `f64`. ANSI mode rejects `\`; `/` and real-number `MOD` keep their existing behavior. The nearest-even rounding choice follows Microsoft's [archived QuickBASIC rounding documentation](https://ftp.zx.net.nz/pub/Patches/ftp.microsoft.com/MISC/KB/en-us/28/855.HTM).
+
+`MIN(number [, number ...])` and `MAX(number [, number ...])` select numeric extrema in either mode. They require at least one numeric argument; see [Built-in functions](builtins.md#mathematics-and-numeric-conversion) for evaluation and nonfinite-value behavior.
 
 Comparison works on two numbers or two strings and returns the dialect's numeric true/false values. Mixed string/number expression comparison raises a type mismatch. Strings compare case-sensitively in lexicographic Unicode order; there is no locale collation or case-folding option. Ordinary operators do not compare records.
 
@@ -238,7 +245,18 @@ ELSE
 END IF
 ```
 
-THEN followed by a newline/comment starts a block IF; statements following THEN on the same line form a single-line IF. Single-line branches can contain colon-separated statements. ELSEIF clauses belong to the block form. Conditions are evaluated in order until one is true; only that branch executes. Write an explicit `GOTO` for a jump: the historical shorthand `IF condition THEN 100` is not implemented.
+THEN followed by a newline/comment starts a block IF; statements following THEN on the same line form a single-line IF. Single-line branches can contain colon-separated statements. ELSEIF clauses belong to the block form. Conditions are evaluated in order until one is true; only that branch executes.
+
+QB also permits a literal line number at the start of either single-line branch as shorthand for `GOTO`:
+
+```basic
+10 x = -1
+20 IF x > 0 THEN 100 ELSE 200
+100 PRINT "positive": END
+200 PRINT "zero or negative": END
+```
+
+Either branch can mix with ordinary statement syntax, such as `IF ready THEN 100 ELSE PRINT "waiting"` or `IF ready THEN PRINT "ready" ELSE 200`. The numeric target must be a nonnegative integral literal in the same range as a GOTO line number (`0..4294967295`). Computed expressions are not valid targets; named labels require explicit `GOTO`. A following colon introduces more statements in that branch, though an executed jump transfers control before reaching them. Nested single-line IF statements associate ELSE with the nearest unmatched IF. Targets use the existing GOTO label scope; an executed jump to an undefined target raises an error. This shorthand is QB-only; ANSI programs use `IF condition THEN GOTO label`.
 
 ### FOR / NEXT
 
@@ -419,4 +437,4 @@ TO TYPE UNTIL USE USING VIEW WEND WHEN WHILE WIDTH WRITE XOR
 
 Compound forms are listed in the source-text section. Identifiers such as `NUMERIC`, `DIALECT`, `BINARY`, and `RANDOM` are interpreted contextually rather than always reserved. Builtin names and aliases are listed in [Built-in functions](builtins.md).
 
-There is no implemented graphics mode, event/timer/key handler, SOUND/PLAY music, memory-address access, CHAIN loader, integer division, or general module import/linking. Some unsupported words parse as ordinary implicit SUB calls and fail at runtime instead of producing a dedicated syntax error. See [Compatibility limits](compatibility.md) for verified quirks, standards coverage that remains unknown, and portability limits. Successful parsing alone does not establish historical compatibility.
+There is no implemented graphics mode, event/timer/key handler, SOUND/PLAY music, memory-address access, CHAIN loader, or general module import/linking. Some unsupported words parse as ordinary implicit SUB calls and fail at runtime instead of producing a dedicated syntax error. See [Compatibility limits](compatibility.md) for verified quirks, standards coverage that remains unknown, and portability limits. Successful parsing alone does not establish historical compatibility.

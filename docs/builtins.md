@@ -39,6 +39,7 @@ All numeric results are stored as `f64`, including integer conversion results. T
 | `ROUND(x[, places])` | Nearest value, ties away from zero. Default `places` is zero; explicitly supplied places truncate to an integer and must be `0..308`. Negative places are unsupported. |
 | `TRUNCATE(x[, places])` | Truncation toward zero at the requested decimal places; same places rules as `ROUND`. |
 | `REMAINDER(x, y)` | Floating-point remainder using a quotient truncated toward zero; sign follows the dividend. Unlike MOD for negative operands: `REMAINDER(-5, 3)` is `-2`, while `-5 MOD 3` is `1`. Zero divisor raises division by zero. |
+| `MIN(x[, y, ...])`, `MAX(x[, y, ...])` | Smallest / largest of one or more numeric arguments. A single argument is returned unchanged; no arguments raises an arity error. Strings and records raise a type mismatch. Infinities compare normally; any NaN produces NaN, while remaining arguments are still type-checked. |
 | `CINT(x)` | Half-to-even rounding; original input must be within `-32768..32767` **before** rounding. |
 | `CLNG(x)` | Half-to-even rounding; original input must be within `-2147483648..2147483647` before rounding. |
 | `CSNG(x)` | Converts through IEEE single precision (`f32`), then stores the result as `f64`. |
@@ -47,6 +48,14 @@ All numeric results are stored as `f64`, including integer conversion results. T
 | `PI()` | The `f64` approximation of pi. |
 
 `ROUND` and `TRUNCATE` use binary floating-point scaling. If scaling overflows, they return the original value. Arithmetic and many math functions can produce infinity or NaN rather than a BASIC overflow exception; this is not a complete historical numeric error model. `CINT`/`CLNG` differ from the truncation used for most indices. For example, `ROUND(2.5)` is `3`, but `CINT(2.5)` is `2`.
+
+`MIN` and `MAX` are Rice extensions available in both dialects. They accept individual numeric expressions, including indexed array elements and nested calls; they do not reduce a whole array. Arguments are evaluated eagerly from left to right, following normal function-call rules.
+
+```basic
+PRINT MIN(7, -2, 4.5)        ' -2
+PRINT MAX(-8, -3, -12)       ' -3
+PRINT MIN(10, MAX(0, 12))    ' 10 (clamp 12 to the range 0..10)
+```
 
 ## Random numbers
 

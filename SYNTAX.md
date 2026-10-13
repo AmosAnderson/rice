@@ -42,6 +42,7 @@ Numbers include `12`, `.5`, `1.5E-3`, and `1D3`. QB additionally accepts unsigne
 | Power, right associative | `^` |
 | Unary sign | `+`, `-` |
 | Multiplicative | `*`, `/` |
+| Integer division (QB only) | `\` |
 | Modulus | `MOD` |
 | Additive/concatenation | `+`, `-`, `&` |
 | Comparison | `=`, `<>`, `<`, `>`, `<=`, `>=` |
@@ -50,7 +51,7 @@ Numbers include `12`, `.5`, `1.5E-3`, and `1D3`. QB additionally accepts unsigne
 | Disjunction | `OR` |
 | Exclusive OR | `XOR` |
 
-QB comparisons return `-1`/`0`; ANSI comparisons return `1`/`0`. QB logical operators are 64-bit bitwise operations; ANSI uses logical nonzero/zero tests. Both eagerly evaluate operands. MOD uses real-number floor modulus in both modes. `&` concatenates strings in both modes; string `+` is QB-only. There is no integer division `\`, `IMP`, or `EQV`. See [Expressions and operators](docs/language-reference.md#expressions-and-operators).
+QB comparisons return `-1`/`0`; ANSI comparisons return `1`/`0`. QB logical operators are 64-bit bitwise operations; ANSI uses logical nonzero/zero tests. Both eagerly evaluate operands. QB `\` rounds operands to nearest-even signed 64-bit integers and truncates the quotient toward zero, with zero-divisor and overflow checks. MOD uses real-number floor modulus in both modes. `&` concatenates strings in both modes; string `+` is QB-only. `IMP` and `EQV` are unsupported. See [Expressions and operators](docs/language-reference.md#expressions-and-operators).
 
 ## Values, declarations, arrays, and assignment
 
@@ -133,17 +134,18 @@ EXIT {FOR | DO | SUB | FUNCTION}
 {END | STOP | SYSTEM | QUIT}
 ```
 
-A CASE `test` is `expr`, `lower TO upper`, or `IS comparison-operator expr`. CASE uses the first matching branch. FOR evaluates its limit/step once; STEP 0 skips its body. `NEXT j, i`, `EXIT WHILE`, `EXIT SELECT`, `IF expr THEN line-number`, and loop-continue are unsupported. Both WEND and END WHILE are accepted in both modes.
+A CASE `test` is `expr`, `lower TO upper`, or `IS comparison-operator expr`. CASE uses the first matching branch. FOR evaluates its limit/step once; STEP 0 skips its body. `NEXT j, i`, `EXIT WHILE`, `EXIT SELECT`, and loop-continue are unsupported. Both WEND and END WHILE are accepted in both modes.
 
 QB-only legacy jumps:
 
 ```text
+IF expr THEN line-number [ELSE line-number]
 GOSUB label
 RETURN
 ON expr {GOTO | GOSUB} label [, label ...]
 ```
 
-RETURN takes no target. Computed jumps use 1-based, truncated integer selectors and fall through outside the target list. See [Control flow](docs/language-reference.md#control-flow) for label scope, nested-block jumps, loop variable behavior, and termination.
+Numeric targets at the start of a single-line THEN or ELSE branch abbreviate GOTO; either branch can instead contain ordinary statements. Named targets use explicit GOTO. RETURN takes no target. Computed jumps use 1-based, truncated integer selectors and fall through outside the target list. See [Control flow](docs/language-reference.md#control-flow) for label scope, nested-block jumps, loop variable behavior, and termination.
 
 ## Procedures and scope
 
@@ -317,4 +319,4 @@ ENVIRON string-expression
 
 See [System and filesystem statements](docs/language-reference.md#system-and-filesystem-statements) for host behavior and no-op cases. ENVIRON and date/time assignments set interpreter-local overrides.
 
-The complete [Built-in function reference](docs/builtins.md) lists every implemented function, alias, argument count, type expectation, and known limitation. Call spelling matters: use `RND()`, `PI()`, and `MAXNUM()` with parentheses; use bare `TIMER` and `FREEFILE`. An unknown `name(args)` may resolve as an array element instead of producing an unknown-function error.
+The complete [Built-in function reference](docs/builtins.md) lists every implemented function, alias, argument count, type expectation, and known limitation. `MIN(number [, number ...])` and `MAX(number [, number ...])` select numeric extrema in both modes; each requires at least one numeric argument. Call spelling matters: use `RND()`, `PI()`, and `MAXNUM()` with parentheses; use bare `TIMER` and `FREEFILE`. An unknown `name(args)` may resolve as an array element instead of producing an unknown-function error.

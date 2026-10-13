@@ -51,6 +51,90 @@ fn test_arithmetic() {
 }
 
 #[test]
+fn test_integer_division() {
+    assert_eq!(
+        run_file("tests/programs/integer_division.bas"),
+        "3;-3;-3;3\n4;3;-4;-3\n4;2;-4;0\n3;10;0\n4;6;-2\n1.5;2.5\n3002399751580330\n4\nliteral backslash: \\\n"
+    );
+}
+
+#[test]
+fn test_integer_division_errors() {
+    for expr in ["1 \\ 0", "1 \\ 0.5", "1 \\ -0.5", "1 \\ 0.1"] {
+        let (_, result) = run_bas_may_fail(&format!("PRINT {expr}\n"));
+        assert!(
+            matches!(
+                result
+                    .unwrap_err()
+                    .downcast_ref::<rice::error::RuntimeError>(),
+                Some(rice::error::RuntimeError::DivisionByZero)
+            ),
+            "{expr}"
+        );
+    }
+    for expr in [
+        "(2 ^ 63) \\ 1",
+        "1 \\ (2 ^ 63)",
+        "(-2 ^ 63) \\ -1",
+        "(-2 ^ 64) \\ 1",
+        "EXP(1000) \\ 1",
+        "1 \\ EXP(1000)",
+        "((-1) ^ 0.5) \\ 1",
+    ] {
+        let (_, result) = run_bas_may_fail(&format!("PRINT {expr}\n"));
+        assert!(
+            matches!(
+                result
+                    .unwrap_err()
+                    .downcast_ref::<rice::error::RuntimeError>(),
+                Some(rice::error::RuntimeError::Overflow { .. })
+            ),
+            "{expr}"
+        );
+    }
+    for expr in ["\"7\" \\ 2", "7 \\ \"2\""] {
+        let (_, result) = run_bas_may_fail(&format!("PRINT {expr}\n"));
+        assert!(matches!(
+            result
+                .unwrap_err()
+                .downcast_ref::<rice::error::RuntimeError>(),
+            Some(rice::error::RuntimeError::TypeMismatch { .. })
+        ));
+    }
+}
+
+#[test]
+fn test_integer_division_error_trapping() {
+    let source = r#"
+ON ERROR GOTO handler
+10 PRINT 1 \ 0.5
+20 PRINT (-2 ^ 63) \ -1
+30 PRINT "recovered"
+END
+handler:
+PRINT ERR; ";"; ERL
+RESUME NEXT
+"#;
+    assert_eq!(run_bas(source), "11;10\n6;20\nrecovered\n");
+}
+
+#[test]
+fn test_integer_division_dialect_selection() {
+    let (_, result) = run_bas_may_fail("OPTION DIALECT \"ANSI\"\nPRINT 7 \\ 2\n");
+    assert!(result.unwrap_err().to_string().contains("ANSI"));
+    let output = SharedOutput::new();
+    let mut interp = rice::interpreter::Interpreter::with_io(
+        Box::new(output.clone()),
+        Box::new(Cursor::new(Vec::<u8>::new())),
+    );
+    interp.run_source("OPTION DIALECT \"ANSI\"\n").unwrap();
+    assert!(interp.run_source("PRINT 7 \\ 2\n").is_err());
+    interp.run_source("OPTION DIALECT \"QB\"\n").unwrap();
+    interp.run_source("PRINT 7 \\ 2\n").unwrap();
+    assert_eq!(output.into_string(), "3\n");
+}
+
+#[test]
 fn test_variables() {
     let output = run_file("tests/programs/variables.bas");
     assert!(output.contains("30"));
@@ -2018,5 +2102,135 @@ fn test_sub_control_flow_cannot_escape_to_callers_labels() {
             "GOSUB helper\nPRINT \"unexpected\"\nEND\nhelper:\nCALL Worker\nRETURN\nSUB Worker\n{statement}\nEND SUB\n"
         ));
         assert!(result.is_err(), "{statement} must remain in its procedure");
+    }
+}
+
+#[test]
+fn test_if_line_number_shorthand() {
+    assert_eq!(
+        run_file("tests/programs/if_line_number.bas"),
+        "then\nelse\nfallthrough\nmixed else\nsecond\nmixed then\ncolon jump\n"
+    );
+}
+
+#[test]
+fn test_if_line_number_shorthand_nested_else() {
+    assert_eq!(
+        run_bas(
+            r#"
+IF 1 THEN IF 0 THEN 100 ELSE PRINT "inner" ELSE PRINT "wrong outer"
+IF 0 THEN IF 1 THEN PRINT "wrong inner" ELSE 100 ELSE PRINT "outer"
+IF 1 THEN IF 1 THEN 100 ELSE PRINT "wrong inner" ELSE PRINT "wrong outer"
+PRINT "unreachable"
+END
+100 PRINT "jumped"
+"#,
+        ),
+        "inner\nouter\njumped\n"
+    );
+}
+
+#[test]
+fn test_if_line_number_shorthand_uses_procedure_labels() {
+    assert_eq!(
+        run_bas(
+            r#"
+SUB Worker(flag)
+    IF flag THEN 100 ELSE 200
+100 PRINT "sub then": EXIT SUB
+200 PRINT "sub else"
+END SUB
+FUNCTION Pick(flag)
+    IF flag THEN 100 ELSE 200
+100 Pick = 10: EXIT FUNCTION
+200 Pick = 20
+END FUNCTION
+CALL Worker(1)
+CALL Worker(0)
+PRINT Pick(1); ","; Pick(0)
+END
+100 PRINT "wrong global"
+200 PRINT "wrong global"
+"#,
+        ),
+        "sub then\nsub else\n10,20\n"
+    );
+}
+
+#[test]
+fn test_if_line_number_shorthand_requires_an_existing_target() {
+    let (_, result) = run_bas_may_fail("IF 1 THEN 999\n");
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("undefined label: 999")
+    );
+}
+
+#[test]
+fn test_if_line_number_shorthand_before_exception_boundaries() {
+    for target in ["100", "GOTO 100"] {
+        assert_eq!(
+            run_bas(&format!(
+                "WHEN EXCEPTION IN\nIF 1 THEN {target} USE PRINT \"handler\"\nEND WHEN\n100 PRINT \"jumped\"\n"
+            )),
+            "jumped\n"
+        );
+        assert_eq!(
+            run_bas(&format!(
+                "WHEN EXCEPTION IN\nPRINT 1 / 0\nUSE\nIF 0 THEN PRINT \"wrong\" ELSE {target} END WHEN\n100 PRINT \"recovered\"\n"
+            )),
+            "recovered\n"
+        );
+    }
+}
+
+#[test]
+fn test_if_line_number_shorthand_rejects_ansi() {
+    for statement in ["IF 1 THEN 100", "IF 1 THEN PRINT 1 ELSE 100"] {
+        let (output, result) = run_bas_may_fail(&format!(
+            "OPTION DIALECT \"ANSI\"\n{statement}\n100 PRINT 2\n"
+        ));
+        assert!(output.is_empty());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("IF line-number shorthand is not supported in ANSI BASIC; use GOTO")
+        );
+    }
+}
+
+#[test]
+fn test_minmax_functions_in_both_dialects() {
+    let expected = "7\n-2.5\n-8\n-3\n4\n5\n2\n1\n312\n3\n231\n";
+    assert_eq!(run_file("tests/programs/minmax.bas"), expected);
+    let source = std::fs::read_to_string("tests/programs/minmax.bas").unwrap();
+    assert_eq!(
+        run_bas(&format!("OPTION DIALECT \"ANSI\"\n{source}")),
+        expected,
+    );
+}
+
+#[test]
+fn test_minmax_rejects_missing_or_nonnumeric_arguments() {
+    for dialect in ["QB", "ANSI"] {
+        for name in ["MIN", "MAX"] {
+            for arguments in ["", "\"2\"", "1, \"2\"", "VAL(\"NaN\"), \"2\""] {
+                let (_, result) = run_bas_may_fail(&format!(
+                    "OPTION DIALECT \"{dialect}\"\nPRINT {name}({arguments})\n"
+                ));
+                let message = result.unwrap_err().to_string();
+                assert!(
+                    message.contains(if arguments.is_empty() {
+                        "wrong number of arguments"
+                    } else {
+                        "type mismatch"
+                    }),
+                    "{dialect} {name}({arguments}): {message}",
+                );
+            }
+        }
     }
 }

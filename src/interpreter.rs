@@ -2587,6 +2587,21 @@ impl Interpreter {
                 }
                 Ok(Value::Numeric(a / b))
             }
+            BinOp::IntDiv => {
+                // QB rounds operands before dividing; Rice uses signed 64-bit integers.
+                let dividend = Value::Numeric(a.round_ties_even()).to_i64()?;
+                let divisor = Value::Numeric(b.round_ties_even()).to_i64()?;
+                if divisor == 0 {
+                    return Err(RuntimeError::DivisionByZero);
+                }
+                let quotient =
+                    dividend
+                        .checked_div(divisor)
+                        .ok_or_else(|| RuntimeError::Overflow {
+                            msg: "integer division result is outside the integer range".into(),
+                        })?;
+                Ok(Value::Numeric(quotient as f64))
+            }
             BinOp::Mod => {
                 if b == 0.0 {
                     return Err(RuntimeError::DivisionByZero);
