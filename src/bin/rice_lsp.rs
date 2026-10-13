@@ -210,10 +210,20 @@ fn collect_symbols(
             }
             Stmt::FunctionDef(func) => {
                 let params: Vec<String> = func.params.iter().map(param_signature).collect();
+                let result_type = func
+                    .as_type
+                    .as_ref()
+                    .map(|ty| format!(" AS {}", type_signature(ty)))
+                    .unwrap_or_default();
                 syms.functions.push(SymbolInfo {
                     name: func.name.clone(),
                     line: ls.line,
-                    detail: Some(format!("FUNCTION {}({})", func.name, params.join(", "))),
+                    detail: Some(format!(
+                        "FUNCTION {}({}){}",
+                        func.name,
+                        params.join(", "),
+                        result_type
+                    )),
                 });
                 collect_symbols(&func.body, syms, seen_vars);
             }
@@ -317,6 +327,19 @@ fn param_signature(p: &Param) -> String {
     }
 }
 
+fn type_signature(ty: &BasicType) -> String {
+    match ty {
+        BasicType::Numeric => "NUMERIC".into(),
+        BasicType::Integer => "INTEGER".into(),
+        BasicType::Long => "LONG".into(),
+        BasicType::Single => "SINGLE".into(),
+        BasicType::Double => "DOUBLE".into(),
+        BasicType::String => "STRING".into(),
+        BasicType::FixedLengthString(length) => format!("STRING * {length}"),
+        BasicType::UserDefined(name) => name.clone(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Completions (cached via LazyLock)
 // ---------------------------------------------------------------------------
@@ -386,6 +409,14 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("ERROR", "Raise a classic BASIC error code"),
         ("EXIT FOR", "Exit a FOR loop early"),
         ("EXIT DO", "Exit a DO loop early"),
+        (
+            "EXIT WHILE",
+            "Exit the nearest WHILE loop in this procedure",
+        ),
+        (
+            "EXIT SELECT",
+            "Exit the nearest SELECT CASE in this procedure",
+        ),
         ("EXIT SUB", "Exit a SUB early"),
         ("EXIT FUNCTION", "Exit a FUNCTION early"),
         ("END", "End program execution"),
@@ -436,8 +467,8 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("CLOSE", "Close a file"),
         ("SET POINTER", "Set file position"),
         ("ASK POINTER", "Query file position"),
-        ("GET", "Read binary record from file"),
-        ("PUT", "Write binary record to file"),
+        ("GET", "Read a file value into a scalar or array element"),
+        ("PUT", "Write a scalar or array element to a file"),
         ("SEEK", "Set file position (SEEK #n, pos)"),
         ("RESET", "Close all open files"),
         (
@@ -566,7 +597,10 @@ static BUILTIN_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("CHR$", "CHR$(n) — Character U+0000..U+00FF"),
         ("ASC", "ASC(s$) — Unicode scalar value of first character"),
         ("STR$", "STR$(n) — Convert number to string"),
-        ("VAL", "VAL(s$) — Convert string to number"),
+        (
+            "VAL",
+            "VAL(s$) — Read a numeric prefix, including E/D exponents",
+        ),
         ("HEX$", "HEX$(n) — Hexadecimal representation"),
         ("OCT$", "OCT$(n) — Octal representation"),
         ("MKI$", "MKI$(n) — Packed 2-byte integer string"),
@@ -582,7 +616,10 @@ static BUILTIN_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("ERR", "ERR — Last classic BASIC error code"),
         ("ERL", "ERL — Line number of last classic BASIC error"),
         // System
-        ("ENVIRON$", "ENVIRON$(name$) — Get environment variable"),
+        (
+            "ENVIRON$",
+            "ENVIRON$(name$ | index) — Read an environment value or entry",
+        ),
         (
             "CURDIR$",
             "CURDIR$() — Current process directory; no drive argument",
@@ -808,7 +845,7 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "VAL",
-            "```basic\nVAL(s$)\n```\nConverts string `s$` to a number.",
+            "```basic\nVAL(s$)\n```\nConverts the longest valid decimal prefix, including E/e or D/d scientific exponents. For example VAL(\"1D2tail\") is 100 and VAL(\"1.2.3\") is 1.2. An incomplete exponent leaves the mantissa: VAL(\"2E+\") is 2. Existing radix and full-string NaN/infinity behavior is retained; see the builtin reference for limits.",
         ),
         (
             "HEX$",
@@ -854,7 +891,7 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         // System
         (
             "ENVIRON$",
-            "```basic\nENVIRON$(name$)\n```\nReturns the value of the environment variable `name$`.",
+            "```basic\nENVIRON$(name$)\nENVIRON$(index)\n```\nA string name returns its environment value, or empty string if absent. A numeric index is truncated and must be positive; it selects a 1-based NAME=value entry from the Unicode host environment merged with interpreter-local overrides, sorted by name (uppercased on Windows). Past the end returns empty string. The list is refreshed on each call. Both dialects support reads; only QB supports the ENVIRON setter.",
         ),
         (
             "ENVIRON",
@@ -1047,7 +1084,7 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "WHILE",
-            "```basic\nWHILE condition\n  ...\nWEND\n```\nLoop while condition is true. `END WHILE` is also accepted.",
+            "```basic\nWHILE condition\n  ...\nWEND\n```\nLoop while condition is true. END WHILE is also accepted. EXIT WHILE leaves the nearest active WHILE loop in this procedure, without another condition check; supported as a Rice extension in both modes.",
         ),
         (
             "WEND",
@@ -1059,7 +1096,11 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "SELECT",
-            "```basic\nSELECT CASE expression\n  CASE value[, value...]\n    ...\n  CASE ELSE\n    ...\nEND SELECT\n```\nMulti-way branch based on expression value.",
+            "```basic\nSELECT CASE expression\n  CASE value[, value...]\n    ...\n  CASE ELSE\n    ...\nEND SELECT\n```\nMulti-way branch based on expression value. EXIT SELECT leaves the nearest active SELECT CASE in this procedure, including from CASE ELSE; supported as a Rice extension in both modes.",
+        ),
+        (
+            "EXIT",
+            "```basic\nEXIT {FOR|DO|WHILE|SELECT|SUB|FUNCTION}\n```\nLeaves the matching construct. EXIT WHILE and EXIT SELECT are Rice extensions in both dialects: they propagate through intervening blocks, are consumed by the nearest matching active loop/selection, and cannot escape a SUB or FUNCTION. Unmatched uses raise a runtime error.",
         ),
         (
             "GOTO",
@@ -1112,7 +1153,7 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "FUNCTION",
-            "```basic\nFUNCTION name(params) [AS type] [STATIC]\n  name = return_value\nEND FUNCTION\n```\nReturns the value assigned to its exact name. The unassigned default is empty string for a $ name, otherwise zero; AS does not enforce or initialize the result type.",
+            "```basic\nFUNCTION name(params) [AS type] [STATIC]\n  name = return_value\nEND FUNCTION\n```\nReturns the value assigned to its exact name. AS initializes a fresh result on every call: empty string, numeric zero, or a recursively initialized record. Explicit AS overrides the suffix; without AS, a $ name starts empty and other names start at zero. Assignments remain permissive; AS does not enforce the final value. Record fields may be set directly through the function name.",
         ),
         (
             "CALL",
@@ -1191,6 +1232,14 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
             "```basic\nOPEN #n: NAME file$, ACCESS {INPUT|OUTPUT|OUTIN}, ORGANIZATION {SEQUENTIAL|STREAM}\nOPEN file$ FOR {INPUT|OUTPUT|APPEND|BINARY|RANDOM} AS #n\n```\nBoth forms are accepted in both dialects. GET/PUT use typed binary records in QBasic mode and a raw-string path in ANSI mode.",
         ),
         ("CLOSE", "```basic\nCLOSE #n\n```\nCloses an open file."),
+        (
+            "GET",
+            "```basic\nGET #channel [, position [, target]]\nGET #1, , records(i)\n```\nReads into a scalar or array element; members, slices, and whole-array operands are not supported. Channel, position, and indices are evaluated once before file I/O. QB uses typed binary serialization, including record arrays; ANSI retains raw string transfers. GET checks writable destinations before reading. Omitting the operand retains FIELD-buffer behavior.",
+        ),
+        (
+            "PUT",
+            "```basic\nPUT #channel [, position [, source]]\nPUT #1, , values%(i, j)\n```\nWrites a scalar or array element; members, slices, and whole-array operands are not supported. Channel, position, and indices are evaluated once before file I/O. QB binary types use the original array name's suffix and record metadata, not the flattened element key. PUT permits constant sources. ANSI retains raw string transfers; omitted operands retain FIELD-buffer behavior.",
+        ),
         (
             "SET POINTER",
             "```basic\nSET #n: POINTER position\n```\nSets the file position for the next read or write.",
@@ -2109,5 +2158,39 @@ mod tests {
             assert_eq!(invalid.diagnostics.len(), 1);
             assert_eq!(invalid.diagnostics[0].range.start.line, 3);
         }
+    }
+
+    #[test]
+    fn completion_and_hover_cover_language_completeness_additions() {
+        for dialect in ["QB", "ANSI"] {
+            let source = format!(
+                "OPTION DIALECT \"{dialect}\"\nDIM values(2)\nWHILE 1\nSELECT CASE 1\nCASE 1\nGET #1, , values(1)\nPUT #1, , values(2)\nEXIT SELECT\nEND SELECT\nEXIT WHILE\nWEND\nFUNCTION TextValue() AS STRING\nEND FUNCTION\nPRINT VAL(\"1D2tail\"); ENVIRON$(1)\n"
+            );
+            let state = analyze_source(source, 1);
+            assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+            assert_eq!(
+                find_symbol(&state.symbols, "TEXTVALUE")
+                    .unwrap()
+                    .detail
+                    .as_deref(),
+                Some("FUNCTION TEXTVALUE() AS STRING")
+            );
+            assert_eq!(
+                resolve_token_name(&state, Position::new(3, 7)).as_deref(),
+                Some("CASE")
+            );
+        }
+        for label in ["EXIT WHILE", "EXIT SELECT", "GET", "PUT", "FUNCTION"] {
+            assert!(KEYWORD_COMPLETIONS.iter().any(|item| item.label == label));
+        }
+        for label in ["VAL", "ENVIRON$"] {
+            assert!(BUILTIN_COMPLETIONS.iter().any(|item| item.label == label));
+        }
+        assert!(keyword_hover("EXIT").unwrap().contains("cannot escape"));
+        assert!(keyword_hover("FUNCTION").unwrap().contains("fresh result"));
+        assert!(keyword_hover("GET").unwrap().contains("array element"));
+        assert!(keyword_hover("PUT").unwrap().contains("array element"));
+        assert!(builtin_hover("VAL").unwrap().contains("1D2tail"));
+        assert!(builtin_hover("ENVIRON$").unwrap().contains("NAME=value"));
     }
 }

@@ -1,6 +1,6 @@
 # Rice BASIC documentation
 
-This documentation specifies **Rice BASIC 0.15.1 as implemented**, for the default QBasic compatibility mode and the ANSI-style mode. It is not a reproduction of either external language standard or a claim of full conformance. Known deviations, ignored syntax, and unverified areas are part of the specification.
+This documentation specifies **Rice BASIC 0.16.0 as implemented**, for the default QBasic compatibility mode and the ANSI-style mode. It is not a reproduction of either external language standard or a claim of full conformance. Known deviations, ignored syntax, and unverified areas are part of the specification.
 
 ## Complete specification
 

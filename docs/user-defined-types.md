@@ -242,6 +242,10 @@ Record lengths require the interpreter's type definitions; a standalone
 
 In QBasic mode, `GET` and `PUT` serialize record fields recursively in declaration
 order. ANSI mode uses the separate raw-string path and does not serialize records.
+An indexed record element is accepted directly, for example `PUT #1, , entries(i)`
+and `GET #1, , entries(i)`. The indices run once before the file transfer. Untouched
+elements use the declared record-array layout; a successfully decoded GET replaces
+only the selected element. Individual record members are not GET/PUT operands.
 Declared numeric kinds and fixed string lengths control the binary representation,
 even though they do not restrict assignment in memory. See [File I/O](file-io.md)
 for byte widths, string encoding, record positioning, and mode restrictions.

@@ -1178,8 +1178,8 @@ impl Parser {
     }
 
     fn parse_select(&mut self) -> Result<Stmt, ParseError> {
-        self.advance(); // consume SELECT (CASE already consumed by compound keyword)
-        // If CASE wasn't consumed as part of compound keyword, consume it now
+        self.advance(); // consume SELECT
+        // Preserve the existing optional CASE spelling for SELECT headers.
         if matches!(self.peek(), Token::KwCase) {
             self.advance();
         }
@@ -1272,6 +1272,22 @@ impl Parser {
                 self.advance();
                 Ok(Stmt::ExitDo)
             }
+            Token::KwWhile | Token::KwSelect => {
+                let stmt = if matches!(self.peek(), Token::KwWhile) {
+                    Stmt::ExitWhile
+                } else {
+                    Stmt::ExitSelect
+                };
+                self.advance();
+                if !self.at_stmt_end() {
+                    return Err(ParseError::Expected {
+                        line: self.current_line(),
+                        expected: "end of statement after EXIT WHILE or EXIT SELECT".into(),
+                        found: format!("{:?}", self.peek()),
+                    });
+                }
+                Ok(stmt)
+            }
             Token::KwSub => {
                 self.advance();
                 Ok(Stmt::ExitSub)
@@ -1282,7 +1298,7 @@ impl Parser {
             }
             _ => Err(ParseError::Expected {
                 line: self.current_line(),
-                expected: "FOR, DO, SUB, or FUNCTION after EXIT".into(),
+                expected: "FOR, DO, WHILE, SELECT, SUB, or FUNCTION after EXIT".into(),
                 found: format!("{:?}", self.peek()),
             }),
         }
@@ -1990,7 +2006,7 @@ impl Parser {
             if matches!(self.peek(), Token::Comma) {
                 self.advance();
                 if !self.at_stmt_end() {
-                    var = Some(self.parse_variable()?);
+                    var = Some(self.parse_input_target()?);
                 }
             }
         }
@@ -2776,7 +2792,8 @@ impl Parser {
         if matches!(self.peek(), Token::Dot) {
             return Err(ParseError::General {
                 line: self.current_line(),
-                msg: "READ, INPUT, and SWAP targets do not support record members".into(),
+                msg: "READ, INPUT, SWAP, GET, and PUT operands do not support record members"
+                    .into(),
             });
         }
         if !self.at_stmt_end() && !matches!(self.peek(), Token::Comma) {
@@ -3086,6 +3103,50 @@ mod tests {
     fn parse_result(s: &str) -> Result<Program, ParseError> {
         let tokens = Lexer::new(s).tokenize().unwrap();
         Parser::new(tokens).parse_program()
+    }
+
+    #[test]
+    fn test_exit_while_and_select_in_both_dialects() {
+        for dialect in [crate::Dialect::QuickBasic, crate::Dialect::Ansi] {
+            let source = "EXIT WHILE: EXIT SELECT\nIF 1 THEN EXIT WHILE ELSE EXIT SELECT\n";
+            let tokens = Lexer::with_dialect(source, dialect).tokenize().unwrap();
+            let program = Parser::with_dialect(tokens, dialect)
+                .parse_program()
+                .unwrap();
+            assert!(matches!(program.statements[0].stmt, Stmt::ExitWhile));
+            assert!(matches!(program.statements[1].stmt, Stmt::ExitSelect));
+            let Stmt::If(branch) = &program.statements[2].stmt else {
+                panic!("expected IF");
+            };
+            assert!(matches!(branch.then_body[0].stmt, Stmt::ExitWhile));
+            assert!(matches!(
+                branch.else_body.as_ref().unwrap()[0].stmt,
+                Stmt::ExitSelect
+            ));
+        }
+    }
+
+    #[test]
+    fn test_exit_while_and_select_require_a_statement_boundary() {
+        for target in ["WHILE", "SELECT"] {
+            for tail in [
+                "1",
+                "condition",
+                "condition = 1",
+                "CallSomething()",
+                ",",
+                "CASE",
+            ] {
+                let source = format!("EXIT {target} {tail}");
+                assert!(parse_result(&source).is_err(), "{source}");
+            }
+            for tail in ["", "\n", " ' comment", ": PRINT 1"] {
+                let source = format!("EXIT {target}{tail}");
+                assert!(parse_result(&source).is_ok(), "{source}");
+            }
+            let source = format!("WHEN EXCEPTION IN\nEXIT {target} USE\nEXIT {target} END WHEN\n");
+            assert!(parse_result(&source).is_ok(), "{source}");
+        }
     }
 
     #[test]

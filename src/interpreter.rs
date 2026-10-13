@@ -44,6 +44,8 @@ enum ControlFlow {
     Normal,
     ExitFor,
     ExitDo,
+    ExitWhile,
+    ExitSelect,
     ExitSub,
     ExitFunction,
     Goto(Label),
@@ -69,6 +71,7 @@ struct UserSub {
 struct UserFunction {
     name: String,
     params: Vec<Param>,
+    as_type: Option<BasicType>,
     body: Vec<LabeledStmt>,
     is_static: bool,
     gosub_targets: OnceCell<Rc<HashMap<String, LabelTarget>>>,
@@ -319,6 +322,7 @@ impl Interpreter {
                         Rc::new(UserFunction {
                             name: func.name.clone(),
                             params: func.params.clone(),
+                            as_type: func.as_type.clone(),
                             body: func.body.clone(),
                             is_static: func.is_static,
                             gosub_targets: OnceCell::new(),
@@ -728,6 +732,8 @@ impl Interpreter {
             }
             Stmt::ExitFor => Ok(ControlFlow::ExitFor),
             Stmt::ExitDo => Ok(ControlFlow::ExitDo),
+            Stmt::ExitWhile => Ok(ControlFlow::ExitWhile),
+            Stmt::ExitSelect => Ok(ControlFlow::ExitSelect),
             Stmt::ExitSub => Ok(ControlFlow::ExitSub),
             Stmt::ExitFunction => Ok(ControlFlow::ExitFunction),
             Stmt::End | Stmt::System | Stmt::Stop => Ok(ControlFlow::End),
@@ -1701,6 +1707,7 @@ impl Interpreter {
             }
             let cf = self.exec_block(body)?;
             match cf {
+                ControlFlow::ExitWhile => break,
                 ControlFlow::Normal => {}
                 other => return Ok(other),
             }
@@ -1780,12 +1787,18 @@ impl Interpreter {
                 }
             }
             if matched {
-                return self.exec_block(&case.body);
+                return Ok(match self.exec_block(&case.body)? {
+                    ControlFlow::ExitSelect => ControlFlow::Normal,
+                    other => other,
+                });
             }
         }
 
         if let Some(else_body) = &select.else_body {
-            return self.exec_block(else_body);
+            return Ok(match self.exec_block(else_body)? {
+                ControlFlow::ExitSelect => ControlFlow::Normal,
+                other => other,
+            });
         }
 
         Ok(ControlFlow::Normal)
@@ -2178,6 +2191,12 @@ impl Interpreter {
                                 expected: 1,
                                 got: arg_vals.len(),
                             });
+                        }
+                        if arg_vals[0].is_numeric() {
+                            return crate::builtins::indexed_environment_value(
+                                &arg_vals[0],
+                                &self.environment_overrides,
+                            );
                         }
                         let key = Self::environment_key(&arg_vals[0].to_string_val()?);
                         if let Some(value) = self.environment_overrides.get(&key) {
@@ -2629,10 +2648,16 @@ impl Interpreter {
 
         // Initialize function return variable
         child_env.borrow_mut().declare_var(&func.name);
-        let return_default = if func.name.ends_with('$') {
-            Value::Str(String::new())
-        } else {
-            Value::Numeric(0.0)
+        let return_type = func.as_type.clone().unwrap_or_else(|| {
+            if func.name.ends_with('$') {
+                BasicType::String
+            } else {
+                BasicType::Numeric
+            }
+        });
+        let return_default = match return_type {
+            BasicType::UserDefined(name) => self.create_default_record(&name)?,
+            other => Value::default_for(other),
         };
         child_env.borrow_mut().set(&func.name, return_default);
 
@@ -2679,6 +2704,11 @@ impl Interpreter {
             ControlFlow::Return(_) => {
                 return Err(RuntimeError::General {
                     msg: "RETURN without GOSUB in current procedure".into(),
+                });
+            }
+            ControlFlow::ExitWhile | ControlFlow::ExitSelect => {
+                return Err(RuntimeError::General {
+                    msg: "control-flow statement outside its enclosing construct".into(),
                 });
             }
             _ => {}
@@ -4404,9 +4434,9 @@ impl Interpreter {
         Ok(())
     }
 
-    fn get_var_basic_type(&self, name: &str) -> BasicType {
-        if let Some(Value::Record { type_name, .. }) = self.env.borrow().get(name) {
-            return BasicType::UserDefined(type_name);
+    fn get_var_basic_type(&self, name: &str, value: &Value) -> BasicType {
+        if let Value::Record { type_name, .. } = value {
+            return BasicType::UserDefined(type_name.clone());
         }
         if name.ends_with('%') {
             BasicType::Integer
@@ -4661,6 +4691,7 @@ impl Interpreter {
         fh: &mut FileHandle,
         gp: &GetPutStmt,
         record: Option<i64>,
+        operand: Option<&(String, Value, BasicType)>,
     ) -> Result<(), RuntimeError> {
         if gp.is_get {
             if let Some(writer) = &mut fh.writer {
@@ -4682,18 +4713,12 @@ impl Interpreter {
                 msg: "file is not open for reading".into(),
             })?;
 
-            if let Some(var) = &gp.var {
+            if let Some((key, existing, var_type)) = operand {
                 if self.dialect == crate::Dialect::QuickBasic {
-                    let var_type = self.get_var_basic_type(&var.name);
-                    let val = self.deserialize_value(reader, &var_type)?;
-                    self.env.borrow_mut().set(&var.name, val);
+                    let val = self.deserialize_value(reader, var_type)?;
+                    self.env.borrow_mut().set(key, val);
                 } else {
-                    let val = self
-                        .env
-                        .borrow()
-                        .get(&var.name)
-                        .unwrap_or(Value::Str(String::new()));
-                    let read_len = match &val {
+                    let read_len = match existing {
                         Value::Str(s) if !s.is_empty() => s.len(),
                         _ => 128,
                     };
@@ -4708,7 +4733,7 @@ impl Interpreter {
                     let s = String::from_utf8_lossy(&buf)
                         .trim_end_matches('\0')
                         .to_string();
-                    self.env.borrow_mut().set(&var.name, Value::Str(s));
+                    self.env.borrow_mut().set(key, Value::Str(s));
                 }
             } else if fh.record_len.is_some() && !fh.field_layout.is_empty() {
                 let record_len = fh.record_len.unwrap_or(fh.field_buffer.len());
@@ -4739,23 +4764,12 @@ impl Interpreter {
                 msg: "file is not open for writing".into(),
             })?;
 
-            if let Some(var) = &gp.var {
+            if let Some((_, val, var_type)) = operand {
                 if self.dialect == crate::Dialect::QuickBasic {
-                    let val = self
-                        .env
-                        .borrow()
-                        .get(&var.name)
-                        .unwrap_or(Value::Numeric(0.0));
-                    let var_type = self.get_var_basic_type(&var.name);
-                    self.serialize_value(writer, &val, &var_type)?;
+                    self.serialize_value(writer, val, var_type)?;
                 } else {
-                    let val = self
-                        .env
-                        .borrow()
-                        .get(&var.name)
-                        .unwrap_or(Value::Str(String::new()));
                     let s = match val {
-                        Value::Str(s) => s,
+                        Value::Str(s) => s.clone(),
                         other => other.format_for_write(),
                     };
                     writer
@@ -4780,11 +4794,38 @@ impl Interpreter {
             None
         };
 
-        if gp.is_get
-            && let Some(var) = &gp.var
-        {
-            self.require_writable(&var.name)?;
-        }
+        // Resolve all expressions while the channel is still available to index
+        // functions, and before this operation flushes, seeks, reads, or writes.
+        let operand = if let Some(var) = &gp.var {
+            let key = if gp.is_get {
+                self.resolve_input_target(var)?
+            } else if var.indices.is_empty() {
+                var.name.clone()
+            } else {
+                self.require_declared(&var.name)?;
+                let indices = var
+                    .indices
+                    .iter()
+                    .map(|expr| self.eval_expr(expr)?.to_i64())
+                    .collect::<Result<Vec<_>, _>>()?;
+                Self::array_key(&var.name, &indices)
+            };
+            let value = if var.indices.is_empty() {
+                self.env.borrow().get(&key).unwrap_or_else(|| {
+                    if self.dialect == crate::Dialect::QuickBasic {
+                        Value::Numeric(0.0)
+                    } else {
+                        Value::Str(String::new())
+                    }
+                })
+            } else {
+                self.input_target_value(var, &key)?
+            };
+            let var_type = self.get_var_basic_type(&var.name, &value);
+            Some((key, value, var_type))
+        } else {
+            None
+        };
 
         let mut fh = self
             .file_handles
@@ -4793,7 +4834,7 @@ impl Interpreter {
                 msg: format!("file #{file_num} is not open"),
             })?;
 
-        let res = self.exec_get_put_inner(&mut fh, gp, record);
+        let res = self.exec_get_put_inner(&mut fh, gp, record, operand.as_ref());
         self.file_handles.insert(file_num, fh);
         res
     }

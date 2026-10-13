@@ -144,19 +144,23 @@ All positioning is in bytes, even for UTF-8 text. Explicit `SEEK`/`SET POINTER` 
 ## GET and PUT syntax
 
 ```basic
-GET #n [, position [, variable]]
-PUT #n [, position [, variable]]
-GET #n, , variable
-PUT #n, , variable
+GET #n [, position [, target]]
+PUT #n [, position [, source]]
+GET #n, , records(i)
+PUT #n, , values%(i, j)
 ```
 
-The parser requires `#` and uses **commas**, not `GET #n: variable`. A variable operand must be a scalar name; whole records qualify, but array elements and individual record members do not. Omitting the position uses the current cursor. An explicit position is at least 1 and means byte offset `position - 1`, or `(position - 1) * recordLength` when `LEN`/the RANDOM default/`FIELD` supplies a record length. Seek positions from `SEEK` remain byte positions regardless of record length.
+The parser requires `#` and uses **commas**, not `GET #n: variable`. Operands may be scalar names or indexed array elements in either dialect, including record-valued elements. Empty subscripts, individual record members, and slices are not accepted. Omitting the position uses the current cursor. An explicit position is at least 1 and means byte offset `position - 1`, or `(position - 1) * recordLength` when `LEN`/the RANDOM default/`FIELD` supplies a record length. Seek positions from `SEEK` remain byte positions regardless of record length.
+
+The channel, optional position, and array indices are evaluated in that order, with indices evaluated left to right exactly once. The location, current/default value, and binary layout are captured before this operation flushes, seeks, or transfers data. Index functions can inspect or use the same open channel; their side effects are retained. Invalid indices or destination checks fail before this operation moves the file cursor. GET checks the base name and flattened element key for constants and follows INPUT's declaration checks. PUT permits constant sources; indexed PUT checks the base declaration under `OPTION EXPLICIT`, while scalar PUT retains its existing declaration-check exception. No array bounds or rank checks are added.
+
+Missing array elements use their ordinary numeric/string default or a default record for a declared record array. Existing scalar fallback behavior is unchanged: a missing scalar PUT source defaults to numeric zero in QB and an empty string in ANSI. GET assigns one complete decoded value to its captured location, so a failed typed read leaves that element unchanged even when it has consumed bytes.
 
 With no variable, a defined `FIELD` buffer is read/written. Without a field layout, the operation merely validates the handle and optionally seeks; it does not transfer a default record. Typed scalar/record I/O is not padded to `LEN` and does not enforce that the serialized value fits one record; the caller must choose a matching layout and length.
 
 ### QBasic typed binary serialization
 
-`PUT` serializes the named scalar or record; `GET` deserializes the same layout. Values are little-endian, without array descriptors or automatic record padding:
+`PUT` serializes the scalar or selected element; `GET` deserializes the same layout. Values are little-endian, without array descriptors or automatic record padding:
 
 | Type selection | Binary layout |
 |---|---|
@@ -169,6 +173,8 @@ With no variable, a defined `FIELD` buffer is read/written. Without a field layo
 | User-defined record | Each field recursively in declaration order, using declared field types |
 
 Scalar width selection follows the variable suffix and retained record/array type metadata, not a complete scalar declaration table. For example, `DIM n AS INTEGER` does not make unsuffixed `n` a two-byte scalar; use `n%`. An unsuffixed scalar declared `AS STRING` is likewise not a reliable binary string operand; use `s$`. Fixed-length scalar declarations do not retain the fixed binary width. Record fields retain their declared serialization types.
+
+For an array element, the suffix is taken from the array's base name: `samples%(i)` uses two bytes and `names$(i)` uses a string length header. A record-valued element uses its current record type; an untouched declared record-array element uses the array's record type. Primitive `AS` declarations do not add retained element-width metadata: use suffixed names for INTEGER/LONG/SINGLE/STRING array transfers. Array syntax always names storage here; it does not call a same-named builtin or user function.
 
 Integer serialization truncates fractions and saturates out-of-range values through casts; it does not raise QB integer overflow. Single serialization converts to `f32` and can lose precision or produce infinity. Binary strings map characters U+0000–U+00FF to bytes directly; characters above U+00FF become byte 255. They do not use UTF-8 or historical code-page conversion.
 
@@ -192,7 +198,7 @@ Typed `GET` requires every byte of the selected layout and reports an I/O error 
 
 ### ANSI raw transfers
 
-ANSI mode does not use the typed serialization table. `PUT` writes a string as UTF-8 bytes; a numeric value is written as ordinary numeric text. `GET` always stores a string, even if the target previously held a number. It reads up to the existing nonempty string's UTF-8 byte length, otherwise up to 128 bytes, performs lossy UTF-8 decoding, and strips trailing NULs. At EOF it returns an empty string and sets EOF; short reads are allowed.
+ANSI mode does not use the typed serialization table. `PUT` writes a string as UTF-8 bytes; a numeric value is written as ordinary numeric text. A record value writes its display marker, such as `[PERSON]`, rather than binary fields. `GET` always stores a string, even if the target previously held a number or record. It reads up to the existing nonempty string's UTF-8 byte length, otherwise up to 128 bytes, performs lossy UTF-8 decoding, and strips trailing NULs. At EOF it returns an empty string and sets EOF; short reads are allowed. These rules apply equally to scalar names and indexed elements.
 
 ```basic
 OPTION DIALECT "ANSI"

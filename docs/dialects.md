@@ -70,7 +70,10 @@ Unless a row above explicitly rejects a construct, do not infer that its histori
 - Scalar and indexed destinations for READ, INPUT, LINE INPUT, INPUT #, and LINE INPUT #. INPUT resolves all targets before reading; READ resolves and assigns each in order. Existing array bounds/storage limitations still apply.
 - **Both** `OPEN #n: NAME ...` and `OPEN path$ FOR ... AS #n` syntaxes. The parser does not restrict these by dialect. `INPUT`, `OUTPUT`, `APPEND`, `BINARY`, and `RANDOM` mode words are accepted by the latter syntax in either profile, but their record and `GET`/`PUT` behavior differs.
 - `SEEK`, `SET #n: POINTER`, `ASK #n: POINTER`, text file I/O, filesystem statements, and text console control.
-- The shared builtin registry, including numeric `MIN`/`MAX` with one or more arguments, QBasic-style string function names, `INPUT$`, `MKI$`/`MKL$`/`MKS$`/`MKD$`, `CVI`/`CVL`/`CVS`/`CVD`, and `ENVIRON$` reads. See the complete [builtin catalog](builtins.md).
+- The shared builtin registry, including numeric `MIN`/`MAX` with one or more arguments, QBasic-style string function names, `INPUT$`, `MKI$`/`MKL$`/`MKS$`/`MKD$`, `CVI`/`CVL`/`CVS`/`CVD`, VAL decimal prefixes with E/D exponents, and `ENVIRON$` reads by name or numeric index. See the complete [builtin catalog](builtins.md).
+- FUNCTION result initialization from `AS type`, including fresh nested records; without AS, the existing name-suffix defaults apply. Assignment remains permissive. See [function result types](procedures.md#function-result-types).
+- `EXIT WHILE` and `EXIT SELECT`, as Rice extensions that leave the nearest matching active construct in the current procedure.
+- Individual array elements as GET/PUT operands, including QB typed binary records and ANSI raw string transfers; file layout still follows the selected dialect.
 
 Identifiers are case-insensitive; string contents are case-sensitive. Undefined values initialize to `0` or `""` unless declaration enforcement applies. `=` assigns at statement level and compares inside expressions. `MOD` is `a - b * FLOOR(a / b)` in both profiles, including real operands and negative values. Plain `PRINT` adds neither leading nor trailing spaces to numbers and uses 16-column comma zones. Numeric and string operands do not implicitly convert for arithmetic or concatenation.
 

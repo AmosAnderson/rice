@@ -1,6 +1,6 @@
 # RICE BASIC
 
-Rice BASIC 0.15.1 is a text-mode BASIC interpreter written in Rust, with an interactive REPL, file execution, and a stdio language server. It defaults to **QBasic compatibility mode** and also provides an **ANSI-style mode** inspired by ANSI X3.113-1991 Full BASIC.
+Rice BASIC 0.16.0 is a text-mode BASIC interpreter written in Rust, with an interactive REPL, file execution, and a stdio language server. It defaults to **QBasic compatibility mode** and also provides an **ANSI-style mode** inspired by ANSI X3.113-1991 Full BASIC.
 
 These are Rice dialects, not claims of complete QBasic 1.1 or ANSI conformance. Both share extensions and implementation limits. The documentation specifies the behavior implemented in this repository, including accepted syntax that has partial or no runtime effect.
 
@@ -50,6 +50,17 @@ Porting details that matter immediately: arrays default to **base 1 in both mode
 Version 0.15.0 adds array-element BYREF arguments and SWAP targets, empty and signed-plus DATA fields, QB `RETURN label`, binary record sizes through `LEN(record)`, and independent matrix determinants through `DET(matrix)`. The references above document evaluation order, error behavior, and dialect limits for each addition.
 
 Version 0.15.1 adds native Linux ARM64 release builds of both binaries, with the full test suite run on an ARM64 runner before publication.
+
+Version 0.16.0 adds six language features:
+
+- `EXIT WHILE` for leaving the nearest WHILE loop.
+- `EXIT SELECT` for leaving the nearest SELECT CASE block.
+- Scalar or array-element `GET`/`PUT` operands, including record arrays.
+- FUNCTION result defaults from `AS type`, including fresh nested records.
+- Scientific decimal prefixes with E/D exponents in `VAL`.
+- Indexed `ENVIRON$(index)` lookup of sorted environment entries, including interpreter overrides.
+
+All six are available in both Rice modes; file transfer formats retain their dialect differences. Their owning references describe evaluation order, errors, and compatibility limits.
 
 ## REPL and editor support
 

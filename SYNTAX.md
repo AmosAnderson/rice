@@ -132,11 +132,11 @@ CASE test [, test ...]
 END SELECT
 
 GOTO label
-EXIT {FOR | DO | SUB | FUNCTION}
+EXIT {FOR | DO | WHILE | SELECT | SUB | FUNCTION}
 {END | STOP | SYSTEM | QUIT}
 ```
 
-A CASE `test` is `expr`, `lower TO upper`, or `IS comparison-operator expr`. CASE uses the first matching branch. FOR evaluates its limit/step once; STEP 0 skips its body. `NEXT j, i` closes nested FOR loops from innermost to outermost in both modes; names must match, and intervening blocks must already be closed. `EXIT WHILE`, `EXIT SELECT`, and loop-continue are unsupported. Both WEND and END WHILE are accepted in both modes.
+A CASE `test` is `expr`, `lower TO upper`, or `IS comparison-operator expr`. CASE uses the first matching branch. FOR evaluates its limit/step once; STEP 0 skips its body. `NEXT j, i` closes nested FOR loops from innermost to outermost in both modes; names must match, and intervening blocks must already be closed. `EXIT WHILE` and `EXIT SELECT` leave the nearest active matching construct in the current procedure or top-level execution, passing through intervening blocks; unmatched exits raise an error. Both are Rice extensions in both modes. Loop-continue remains unsupported. Both WEND and END WHILE are accepted in both modes.
 
 QB-only legacy jumps:
 
@@ -168,7 +168,7 @@ SHARED name [, name ...]
 STATIC declaration [, declaration ...]
 ```
 
-A `parameter` is `[BYVAL | BYREF] name[()] [AS type]`. QB parameters default to BYREF; ANSI defaults to BYVAL. BYREF copies modified values back to variables and individual array elements, capturing each destination during argument evaluation; indices run once, and later aliases win on writeback. Assign to the function name to provide its result. Array parameter annotations do not implement whole-array passing, and primitive return/parameter type clauses do not guarantee coercion. Use explicit CALL syntax with parentheses for multiple arguments; QB `name (x)` makes its argument an expression and suppresses BYREF writeback. The [Procedures reference](docs/procedures.md) specifies available call forms, copy-in/copy-out behavior, scope, STATIC, declaration limits, and QB `DEF FN` syntax.
+A `parameter` is `[BYVAL | BYREF] name[()] [AS type]`. QB parameters default to BYREF; ANSI defaults to BYVAL. BYREF copies modified values back to variables and individual array elements, capturing each destination during argument evaluation; indices run once, and later aliases win on writeback. Assign to the function name to provide its result. A FUNCTION return AS clause initializes a fresh numeric zero, empty string, or nested record at each call, overriding suffix defaults. Array parameter annotations do not implement whole-array passing, and primitive return/parameter type clauses do not guarantee coercion. Use explicit CALL syntax with parentheses for multiple arguments; QB `name (x)` makes its argument an expression and suppresses BYREF writeback. The [Procedures reference](docs/procedures.md) specifies available call forms, copy-in/copy-out behavior, scope, STATIC, declaration limits, and QB `DEF FN` syntax.
 
 ## Records and strings
 
@@ -239,14 +239,14 @@ PRINT #number, USING format-expression; value [; value ...]
 WRITE #number, expr [, expr ...]
 INPUT #number, target [, target ...]
 LINE INPUT #number, target
-GET #number [, [position] [, name]]
-PUT #number [, [position] [, name]]
+GET #number [, [position] [, target]]
+PUT #number [, [position] [, source]]
 SEEK [#]number, position
 SET #number: POINTER position
 ASK #number: POINTER name
 ```
 
-Both OPEN spellings are accepted in both modes; pointer/record interpretation can depend on the dialect. GET/PUT can omit their target for QB FIELD buffers. QB-only record field declarations/alignment include:
+Both OPEN spellings are accepted in both modes; pointer/record interpretation can depend on the dialect. GET/PUT operands may be scalar names or individual array elements, including record arrays, for example `GET #1, , records(i)` and `PUT #1, , values%(i, j)`. Channel, position, and indices evaluate once before transfer. GET/PUT can omit their operand for QB FIELD buffers. QB-only record field declarations/alignment include:
 
 ```text
 FIELD [#]number, width AS name$ [, width AS name$ ...]
@@ -323,7 +323,7 @@ ENVIRON string-expression
 
 See [System and filesystem statements](docs/language-reference.md#system-and-filesystem-statements) for host behavior and no-op cases. ENVIRON and date/time assignments set interpreter-local overrides.
 
-The complete [Built-in function reference](docs/builtins.md) lists every implemented function, alias, argument count, type expectation, and known limitation. `MIN(number [, number ...])` and `MAX(number [, number ...])` select numeric extrema in both modes; each requires at least one numeric argument. Call spelling matters: use `RND()`, `PI()`, and `MAXNUM()` with parentheses; use bare `TIMER` and `FREEFILE`. An unknown `name(args)` may resolve as an array element instead of producing an unknown-function error.
+The complete [Built-in function reference](docs/builtins.md) lists every implemented function, alias, argument count, type expectation, and known limitation. `MIN(number [, number ...])` and `MAX(number [, number ...])` select numeric extrema in both modes; each requires at least one numeric argument. Call spelling matters: use `RND()`, `PI()`, and `MAXNUM()` with parentheses; use bare `TIMER` and `FREEFILE`. An unknown `name(args)` may resolve as an array element instead of producing an unknown-function error. `VAL` accepts decimal prefixes with E/D exponents, and `ENVIRON$(index)` enumerates sorted environment entries (including interpreter overrides) from index 1; see the builtin reference for limits.
 
 `LEN(string)` counts Unicode scalar values. `LEN(record)` returns its current typed binary PUT byte count, including nested records and variable-string length headers; this size query works in both modes, while typed PUT serialization remains QB-specific.
 

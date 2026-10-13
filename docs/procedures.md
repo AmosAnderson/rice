@@ -72,11 +72,20 @@ depth is limited by the host stack; there is no specified portable recursion lim
 
 ## Function result types
 
-`AS type` is accepted on a `FUNCTION`, but the runtime does not enforce it or use
-it to initialize the result. At entry, the function-name variable is `""` when the
-name ends in `$`, and `0` otherwise. Assignment to that variable determines the
-actual returned value. Consequently, an unassigned `FUNCTION Text() AS STRING`
-returns numeric `0`, while an unassigned `FUNCTION Text$()` returns `""`.
+`AS type` initializes the function-name result variable at each call in both
+dialects. `AS STRING` and `AS STRING * n` start as `""`; numeric types start as
+`0`; `AS RecordType` creates a fresh record with recursively initialized fields.
+An explicit `AS` takes precedence over the name suffix, just as in `DIM`.
+Without `AS`, `$` names start as `""` and other names as `0`; DEFSTR does not
+change this result default. Early `EXIT FUNCTION` returns the current result.
+
+Assignments remain permissive: `AS` does not coerce or enforce the returned
+value, and fixed-length strings are not padded/truncated by assignment. The
+initial result is fresh even for recursive calls or a `STATIC` function.
+An undefined or recursively defined result TYPE raises an error before the
+function body runs. TYPE definitions may appear later in the same source because
+they are prescanned before execution. This extends the old behavior in which
+`AS` was ignored and an unassigned `FUNCTION Text() AS STRING` returned `0`.
 
 ```basic
 FUNCTION Greeting$(who$) AS STRING
@@ -85,11 +94,26 @@ END FUNCTION
 PRINT Greeting$("world")
 ```
 
+Record results can be populated directly through the function-name variable:
+
+```basic
+TYPE Point
+    x AS NUMERIC
+    y AS NUMERIC
+END TYPE
+FUNCTION Origin() AS Point
+    Origin.x = 10
+END FUNCTION
+PRINT Origin().x; ","; Origin().y   ' 10,0
+```
+
 Use `EXIT FUNCTION` for an early return. `RETURN` belongs to `GOSUB` in QBasic
 mode and is not a function-return statement. `END` inside a `SUB` stops the whole
 program. A current implementation limitation is that `END` inside a `FUNCTION`
 does not stop the caller; do not use it for program termination. Unmatched RETURN
 and unresolved GOTO/RETURN targets at a function boundary report runtime errors.
+An `EXIT WHILE` or `EXIT SELECT` must find a matching active construct within
+the current procedure; it raises an error instead of exiting a caller's block.
 Labels and `GOSUB` targets in a procedure are local to that invocation.
 See [Error Handling](error-handling.md)
 for the limitations of error handlers in procedures.

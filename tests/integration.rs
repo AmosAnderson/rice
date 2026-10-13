@@ -3689,3 +3689,530 @@ END IF
         "hidden\nmain\n"
     );
 }
+
+#[test]
+fn test_val_scientific_prefixes_in_both_modes() {
+    let source = std::fs::read_to_string("tests/programs/val_scientific.bas").unwrap();
+    for dialect in ["QB", "ANSI"] {
+        assert_eq!(
+            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{source}")),
+            "100|-250|0.05\n1.2|1|2|0\n255|63|0\n125|1\n300|1\n",
+            "{dialect}"
+        );
+        for expression in ["VAL(42)", "VAL()", "VAL(\"1\", \"2\")"] {
+            let (_, result) = run_bas_may_fail(&format!(
+                "OPTION DIALECT \"{dialect}\"\nPRINT {expression}\n"
+            ));
+            assert!(
+                result
+                    .unwrap_err()
+                    .downcast_ref::<rice::error::RuntimeError>()
+                    .is_some()
+            );
+        }
+    }
+}
+
+fn run_bas_with_test_environment(source: &str) -> String {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("environment.bas");
+    std::fs::write(&path, source).unwrap();
+    // Keep platform startup variables (including Windows SystemRoot), but make
+    // this test's namespace independent of any inherited similarly named keys.
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_rice"));
+    for (name, _) in std::env::vars_os() {
+        if name
+            .to_string_lossy()
+            .to_uppercase()
+            .starts_with("RICE_ENV_INDEX_TEST_")
+        {
+            command.env_remove(name);
+        }
+    }
+    let output = command
+        .arg(&path)
+        .env("RICE_ENV_INDEX_TEST_Z_LAST", "last")
+        .env("RICE_ENV_INDEX_TEST_A_FIRST", "first")
+        .env("RICE_ENV_INDEX_TEST_M_MIDDLE", "middle=extra")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+#[test]
+fn test_environment_index_orders_host_entries_in_both_modes() {
+    let source = std::fs::read_to_string("tests/programs/environment_index.bas").unwrap();
+    for dialect in ["QB", "ANSI"] {
+        assert_eq!(
+            run_bas_with_test_environment(&format!("OPTION DIALECT \"{dialect}\"\n{source}")),
+            "RICE_ENV_INDEX_TEST_A_FIRST=first\nRICE_ENV_INDEX_TEST_M_MIDDLE=middle=extra\nRICE_ENV_INDEX_TEST_Z_LAST=last\n3|[]\nRICE_ENV_INDEX_TEST_A_FIRST=first\nRICE_ENV_INDEX_TEST_M_MIDDLE=middle=extra|1\n[]\n",
+            "{dialect}"
+        );
+    }
+}
+
+#[test]
+fn test_environment_index_merges_overrides_without_mutating_host() {
+    let source = r#"
+ENVIRON "RICE_ENV_INDEX_TEST_M_MIDDLE=replaced=é🙂"
+ENVIRON "RICE_ENV_INDEX_TEST_B_ADDED="
+ENVIRON "RICE_ENV_INDEX_TEST_A_FIRST=local"
+prefix$ = "RICE_ENV_INDEX_TEST_"
+i = 1
+count = 0
+DO
+    entry$ = ENVIRON$(i)
+    IF entry$ = "" THEN EXIT DO
+    IF LEFT$(entry$, LEN(prefix$)) = prefix$ THEN
+        PRINT entry$
+        count = count + 1
+        IF INSTR(entry$, prefix$ & "M_MIDDLE=") = 1 THEN middleIndex = i
+    END IF
+    i = i + 1
+LOOP
+PRINT count; "|["; ENVIRON$(i); "]"
+PRINT ENVIRON$(prefix$ & "A_FIRST"); "|"; ENVIRON(prefix$ & "A_FIRST")
+i = 1
+count = 0
+DO
+    entry$ = ENVIRON(i)
+    IF entry$ = "" THEN EXIT DO
+    IF LEFT$(entry$, LEN(prefix$)) = prefix$ THEN
+        PRINT entry$
+        count = count + 1
+    END IF
+    i = i + 1
+LOOP
+PRINT count; "|["; ENVIRON(i); "]"
+ENVIRON "RICE_ENV_INDEX_TEST_M_MIDDLE=changed"
+PRINT ENVIRON$(middleIndex)
+CLEAR
+PRINT ENVIRON$(FindMiddle())
+FUNCTION FindMiddle()
+    index = 1
+    DO
+        value$ = ENVIRON$(index)
+        IF value$ = "" THEN EXIT DO
+        IF INSTR(value$, "RICE_ENV_INDEX_TEST_M_MIDDLE=") = 1 THEN
+            FindMiddle = index
+            EXIT FUNCTION
+        END IF
+        index = index + 1
+    LOOP
+END FUNCTION
+"#;
+    assert_eq!(
+        run_bas_with_test_environment(source),
+        "RICE_ENV_INDEX_TEST_A_FIRST=local\nRICE_ENV_INDEX_TEST_B_ADDED=\nRICE_ENV_INDEX_TEST_M_MIDDLE=replaced=é🙂\nRICE_ENV_INDEX_TEST_Z_LAST=last\n4|[]\nlocal|first\nRICE_ENV_INDEX_TEST_A_FIRST=first\nRICE_ENV_INDEX_TEST_M_MIDDLE=middle=extra\nRICE_ENV_INDEX_TEST_Z_LAST=last\n3|[]\nRICE_ENV_INDEX_TEST_M_MIDDLE=changed\nRICE_ENV_INDEX_TEST_M_MIDDLE=changed\n"
+    );
+}
+
+#[test]
+fn test_environment_index_validates_arguments_in_both_modes() {
+    for dialect in ["QB", "ANSI"] {
+        for (expression, code) in [
+            ("ENVIRON$(0)", 5),
+            ("ENVIRON$(-1)", 5),
+            ("ENVIRON$(.5)", 5),
+            ("ENVIRON$(VAL(\"NaN\"))", 6),
+            ("ENVIRON$(EXP(1000))", 6),
+            ("ENVIRON$(9223372036854775808)", 6),
+            ("ENVIRON$()", 5),
+            ("ENVIRON$(1, 2)", 5),
+        ] {
+            let (_, result) = run_bas_may_fail(&format!(
+                "OPTION DIALECT \"{dialect}\"\nPRINT {expression}\n"
+            ));
+            assert_eq!(
+                result
+                    .unwrap_err()
+                    .downcast_ref::<rice::error::RuntimeError>()
+                    .unwrap()
+                    .basic_err_code(),
+                code,
+                "{dialect}: {expression}"
+            );
+        }
+        let (_, result) = run_bas_may_fail(&format!(
+            "OPTION DIALECT \"{dialect}\"\nTYPE Record\n x AS NUMERIC\nEND TYPE\nDIM item AS Record\nPRINT ENVIRON$(item)\n"
+        ));
+        assert_eq!(
+            result
+                .unwrap_err()
+                .downcast_ref::<rice::error::RuntimeError>()
+                .unwrap()
+                .basic_err_code(),
+            13
+        );
+    }
+}
+
+#[test]
+fn test_function_result_types_initialize_strings_numbers_and_nested_records() {
+    let fixture = std::fs::read_to_string("tests/programs/function_result_types.bas").unwrap();
+    for dialect in ["QB", "ANSI"] {
+        assert_eq!(
+            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{fixture}")),
+            "[]\n[]\n[]\n5\n12\n17\nrecord\n1\n1\npermissive\n"
+        );
+    }
+}
+
+#[test]
+fn test_function_result_type_defaults_are_fresh_in_recursive_calls() {
+    for dialect in ["QB", "ANSI"] {
+        let source = format!(
+            r#"
+OPTION DIALECT "{dialect}"
+TYPE Counter
+    amount AS NUMERIC
+END TYPE
+PRINT MakeCounter(3).amount
+PRINT MakeCounter(1).amount
+FUNCTION MakeCounter(BYVAL depth) AS Counter
+    MakeCounter.amount = 10
+    IF depth > 0 THEN
+        MakeCounter.amount = MakeCounter.amount + MakeCounter(depth - 1).amount
+    END IF
+END FUNCTION
+"#
+        );
+        assert_eq!(run_bas(&source), "40\n20\n");
+    }
+}
+
+#[test]
+fn test_function_result_type_errors_leave_caller_scope_available() {
+    for definition in [
+        "FUNCTION Broken() AS Missing\nEND FUNCTION\n",
+        "TYPE Recursive\nchild AS Recursive\nEND TYPE\nFUNCTION Broken() AS Recursive\nEND FUNCTION\n",
+    ] {
+        for dialect in ["QB", "ANSI"] {
+            let output = run_bas(&format!(
+                "OPTION DIALECT \"{dialect}\"\ncaller = 7\nWHEN EXCEPTION IN\nPRINT Broken()\nUSE\nPRINT caller\nEND WHEN\nPRINT caller\n{definition}"
+            ));
+            assert_eq!(output, "7\n7\n");
+        }
+    }
+}
+
+#[test]
+fn test_function_without_return_as_preserves_suffix_defaults() {
+    assert_eq!(
+        run_bas(
+            "DEFSTR A-Z\nPRINT Plain() + 1\nPRINT LEN(Text$())\nFUNCTION Plain()\nEND FUNCTION\nFUNCTION Text$()\nEND FUNCTION\n"
+        ),
+        "1\n0\n"
+    );
+}
+
+#[test]
+fn test_exit_while_nested_blocks_and_condition_evaluation() {
+    let source = std::fs::read_to_string("tests/programs/exit_while.bas").unwrap();
+    for dialect in ["QB", "ANSI"] {
+        assert_eq!(
+            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{source}")),
+            "1:1:1\n2:1:1\n1\n"
+        );
+    }
+}
+
+#[test]
+fn test_exit_select_nested_blocks_and_case_else() {
+    let source = std::fs::read_to_string("tests/programs/exit_select.bas").unwrap();
+    for dialect in ["QB", "ANSI"] {
+        assert_eq!(
+            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{source}")),
+            "inner done\n1:1\n2:1\ndone\n"
+        );
+    }
+}
+
+#[test]
+fn test_exit_while_and_select_with_local_procedures_and_exception_handlers() {
+    for dialect in ["QB", "ANSI"] {
+        let source = format!(
+            r#"
+OPTION DIALECT "{dialect}"
+CALL Worker
+PRINT Compute()
+WHILE 1
+    WHEN EXCEPTION IN
+        x = 1 / 0
+    USE
+        EXIT WHILE
+    END WHEN
+    PRINT "unexpected"
+WEND
+SELECT CASE 1
+CASE 1
+    WHEN EXCEPTION IN
+        x = 1 / 0
+    USE
+        EXIT SELECT
+    END WHEN
+    PRINT "unexpected"
+END SELECT
+PRINT "done"
+SUB Worker
+    WHILE 1
+        EXIT WHILE
+    WEND
+    SELECT CASE 1
+    CASE ELSE
+        EXIT SELECT
+    END SELECT
+    PRINT "sub"
+END SUB
+FUNCTION Compute()
+    SELECT CASE 1
+    CASE ELSE
+        EXIT SELECT
+    END SELECT
+    WHILE 1
+        EXIT WHILE
+    WEND
+    Compute = 42
+END FUNCTION
+"#
+        );
+        assert_eq!(run_bas(&source), "sub\n42\ndone\n");
+    }
+}
+
+#[test]
+fn test_exit_while_and_select_do_not_escape_procedure_boundaries() {
+    for dialect in ["QB", "ANSI"] {
+        for (exit, open, close) in [
+            ("EXIT WHILE", "WHILE 1", "WEND"),
+            ("EXIT SELECT", "SELECT CASE 1\nCASE 1", "END SELECT"),
+        ] {
+            let sources = [
+                format!("{exit}\nPRINT \"unexpected\""),
+                format!("IF 1 THEN {exit} ELSE PRINT \"unexpected\""),
+                format!(
+                    "{open}\nCALL Worker\n{close}\nPRINT \"unexpected\"\nSUB Worker\n{exit}\nEND SUB"
+                ),
+                format!(
+                    "{open}\nx = Compute()\n{close}\nPRINT \"unexpected\"\nFUNCTION Compute()\n{exit}\nEND FUNCTION"
+                ),
+            ];
+            for source in sources {
+                let (output, result) =
+                    run_bas_may_fail(&format!("OPTION DIALECT \"{dialect}\"\n{source}"));
+                assert!(output.is_empty(), "{source}: {output}");
+                let error = result.unwrap_err().to_string();
+                assert!(
+                    error.contains("control-flow statement outside its enclosing construct"),
+                    "{source}: {error}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_exit_while_and_select_from_gosub_use_active_constructs() {
+    for (exit, open, close) in [
+        ("EXIT WHILE", "WHILE 1", "WEND"),
+        ("EXIT SELECT", "SELECT CASE 1\nCASE 1", "END SELECT"),
+    ] {
+        let source = format!(
+            "{open}\nGOSUB work\nPRINT \"unexpected\"\n{close}\nPRINT \"done\"\nEND\nwork: {exit}\n"
+        );
+        assert_eq!(run_bas(&source), "done\n");
+    }
+}
+
+#[test]
+fn test_indexed_get_put_qbasic_layouts_and_record_arrays() {
+    let (output, directory) = run_bas_with_tmpdir(include_str!("programs/indexed_get_put.bas"));
+    assert_eq!(output, "32\n-123;2147483000;1.25;3.5\néAB;17;xyz;hi\n");
+    let bytes = std::fs::read(directory.path().join("elements.bin")).unwrap();
+    assert_eq!(&bytes[..2], &(-123_i16).to_le_bytes());
+    assert_eq!(&bytes[2..6], &2147483000_i32.to_le_bytes());
+    assert_eq!(&bytes[6..10], &1.25_f32.to_le_bytes());
+    assert_eq!(&bytes[10..18], &3.5_f64.to_le_bytes());
+    assert_eq!(&bytes[18..23], &[3, 0, 233, b'A', b'B']);
+}
+
+#[test]
+fn test_indexed_get_put_ansi_retains_raw_transfer_rules() {
+    let (output, directory) = run_bas_with_tmpdir(
+        r#"
+OPTION DIALECT "ANSI"
+TYPE Item
+    n AS INTEGER
+END TYPE
+DIM words$(2), numbers(2), entries(2) AS Item
+words$(1) = "éZ"
+numbers(1) = 42
+OPEN "{DIR}/raw.bin" FOR BINARY AS #1
+PUT #1, , words$(1)
+PUT #1, , numbers(1)
+PUT #1, , entries(1)
+PRINT LOF(1)
+words$(2) = SPACE$(3)
+numbers(2) = "xx"
+GET #1, 1, words$(2)
+GET #1, , numbers(2)
+GET #1, , entries(2)
+PRINT words$(2); ";"; numbers(2); ";"; entries(2)
+GET #1, , words$(2)
+PRINT LEN(words$(2)); ";"; EOF(1)
+CLOSE #1
+"#,
+    );
+    assert_eq!(output, "11\néZ;42;[ITEM]\n0;1\n");
+    assert_eq!(
+        std::fs::read(directory.path().join("raw.bin")).unwrap(),
+        "éZ42[ITEM]".as_bytes()
+    );
+}
+
+#[test]
+fn test_indexed_get_put_defaults_and_constant_sources() {
+    let (output, directory) = run_bas_with_tmpdir(
+        r#"
+TYPE Item
+    n AS INTEGER
+END TYPE
+DIM records(2) AS Item, values(2), words$(2)
+CONST values_1 = 42
+OPEN "{DIR}/defaults.bin" FOR BINARY AS #1
+OPTION EXPLICIT
+PUT #1, , records(1)
+PUT #1, , words$(1)
+PUT #1, , values(1)
+PUT #1, , values(2)
+PRINT LOF(1)
+GET #1, 1, records(2)
+GET #1, , words$(2)
+GET #1, , values(2)
+PRINT records(2).n; ";"; LEN(words$(2)); ";"; values(2)
+CLOSE #1
+"#,
+    );
+    assert_eq!(output, "20\n0;0;42\n");
+    let bytes = std::fs::read(directory.path().join("defaults.bin")).unwrap();
+    assert_eq!(&bytes[..4], &[0, 0, 0, 0]);
+    assert_eq!(&bytes[4..12], &42_f64.to_le_bytes());
+    assert_eq!(&bytes[12..], &0_f64.to_le_bytes());
+}
+
+#[test]
+fn test_indexed_get_put_evaluation_order_and_channel_availability() {
+    let (output, _) = run_bas_with_tmpdir(
+        r#"
+DIM values(2, 2)
+values(2, 1) = 19
+trace$ = ""
+FUNCTION Mark(BYVAL n)
+    SHARED trace$
+    trace$ = trace$ & STR$(n)
+    Mark = n + 0 * LOF(1)
+END FUNCTION
+OPEN "{DIR}/order.bin" FOR BINARY AS #1
+PUT #Mark(1), Mark(1), values(Mark(2), Mark(1))
+values(2, 1) = 0
+GET #Mark(1), Mark(1), values(Mark(2), Mark(1))
+PRINT trace$; ";"; values(2, 1)
+CLOSE #1
+"#,
+    );
+    assert_eq!(output, "11211121;19\n");
+}
+
+#[test]
+fn test_indexed_get_put_bad_targets_leave_file_cursor_and_values() {
+    for operation in ["GET", "PUT"] {
+        for (setup, target, error_text) in [
+            ("", "values(1 / 0)", "division by zero"),
+            ("", "values(\"bad\")", "type mismatch"),
+            ("OPTION EXPLICIT\n", "unknown(1)", "not declared"),
+            ("CONST locked = 9\n", "locked(1)", "constant"),
+            ("CONST values_2 = 9\n", "values(2)", "constant"),
+        ] {
+            if operation == "PUT" && error_text == "constant" {
+                continue;
+            }
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("unchanged.bin");
+            std::fs::write(&path, 23_f64.to_le_bytes()).unwrap();
+            let name = path.to_str().unwrap().replace('\\', "/");
+            let (mut interpreter, output) = input_session("");
+            interpreter
+                .run_source(&format!(
+                    "DIM values(2)\nvalues(1) = 7\nOPEN \"{name}\" FOR BINARY AS #1\n{setup}"
+                ))
+                .unwrap();
+            let error = interpreter
+                .run_source(&format!("{operation} #1, 3, {target}\n"))
+                .unwrap_err();
+            assert!(
+                error.to_string().to_lowercase().contains(error_text),
+                "{operation} {target}: {error}"
+            );
+            interpreter
+                .run_source("PRINT SEEK(1); \";\"; values(1); \";\"; LOF(1)\nCLOSE #1\n")
+                .unwrap();
+            assert_eq!(output.into_string(), "1;7;8\n", "{operation} {target}");
+            assert_eq!(std::fs::read(path).unwrap(), 23_f64.to_le_bytes());
+        }
+    }
+}
+
+#[test]
+fn test_indexed_get_truncated_record_keeps_destination_and_handle() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("short.bin");
+    std::fs::write(&path, [1, 0, 2]).unwrap();
+    let name = path.to_str().unwrap().replace('\\', "/");
+    let (mut interpreter, output) = input_session("");
+    interpreter
+        .run_source(&format!(
+            r#"
+TYPE Item
+    first AS INTEGER
+    second AS INTEGER
+END TYPE
+DIM records(1) AS Item
+records(1).first = 77
+records(1).second = 88
+OPEN "{name}" FOR INPUT AS #1
+"#
+        ))
+        .unwrap();
+    assert!(interpreter.run_source("GET #1, , records(1)\n").is_err());
+    interpreter
+        .run_source("PRINT records(1).first; \";\"; records(1).second; \";\"; LOC(1)\nCLOSE #1\n")
+        .unwrap();
+    assert_eq!(output.into_string(), "77;88;3\n");
+}
+
+#[test]
+fn test_indexed_get_put_rejects_non_element_operands() {
+    for operation in ["GET", "PUT"] {
+        for target in [
+            "values()",
+            "values(1:2)",
+            "record.field",
+            "values(1).field",
+            "values(1) + 2",
+        ] {
+            let (_, result) = run_bas_may_fail(&format!("{operation} #1, , {target}\n"));
+            assert!(
+                result
+                    .unwrap_err()
+                    .downcast_ref::<rice::error::ParseError>()
+                    .is_some(),
+                "{operation} {target}"
+            );
+        }
+    }
+}

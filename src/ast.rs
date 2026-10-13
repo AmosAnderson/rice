@@ -88,6 +88,8 @@ pub enum Stmt {
     ErrorStmt(Expr),
     ExitFor,
     ExitDo,
+    ExitWhile,
+    ExitSelect,
 
     // Procedures
     SubDef(SubDef),
@@ -413,7 +415,7 @@ pub struct GetPutStmt {
     pub is_get: bool,
     pub file_num: Expr,
     pub record: Option<Expr>,
-    pub var: Option<Variable>,
+    pub var: Option<InputTarget>,
 }
 
 #[derive(Debug, Clone)]

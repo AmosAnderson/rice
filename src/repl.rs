@@ -857,6 +857,8 @@ mod tests {
         for line in [
             "EXIT FOR",
             "EXIT DO",
+            "EXIT WHILE",
+            "EXIT SELECT",
             "EXIT SUB",
             "EXIT FUNCTION",
             "DECLARE SUB Foo()",

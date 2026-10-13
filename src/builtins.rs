@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::ffi::OsString;
 
 use crate::error::RuntimeError;
 use crate::value::{Value, basic_string_to_bytes, bytes_to_basic_string};
@@ -556,20 +557,42 @@ fn builtin_val(args: &[Value]) -> Result<Value, RuntimeError> {
     if let Ok(n) = s.parse::<f64>() {
         return Ok(Value::Numeric(n));
     }
-    // BASIC returns 0 for non-numeric strings after parsing leading digits
-    let mut num_str = String::new();
-    for (i, ch) in s.chars().enumerate() {
-        if ch.is_ascii_digit() || ch == '.' || ((ch == '-' || ch == '+') && i == 0) {
-            num_str.push(ch);
-        } else {
-            break;
+    // Scan the longest valid decimal prefix, including BASIC's D exponent.
+    // All scanned bytes are ASCII, so stopping before Unicode text is safe.
+    let bytes = s.as_bytes();
+    let mut end = usize::from(matches!(bytes.first(), Some(b'+' | b'-')));
+    let integer_start = end;
+    while bytes.get(end).is_some_and(u8::is_ascii_digit) {
+        end += 1;
+    }
+    let mut digits = end - integer_start;
+    if bytes.get(end) == Some(&b'.') {
+        end += 1;
+        let fractional_start = end;
+        while bytes.get(end).is_some_and(u8::is_ascii_digit) {
+            end += 1;
+        }
+        digits += end - fractional_start;
+    }
+    if digits == 0 {
+        return Ok(Value::Numeric(0.0));
+    }
+    let mantissa_end = end;
+    if matches!(bytes.get(end), Some(b'E' | b'e' | b'D' | b'd')) {
+        end += 1;
+        if matches!(bytes.get(end), Some(b'+' | b'-')) {
+            end += 1;
+        }
+        let exponent_start = end;
+        while bytes.get(end).is_some_and(u8::is_ascii_digit) {
+            end += 1;
+        }
+        if end == exponent_start {
+            end = mantissa_end;
         }
     }
-    if num_str.is_empty() {
-        Ok(Value::Numeric(0.0))
-    } else {
-        Ok(Value::Numeric(num_str.parse::<f64>().unwrap_or(0.0)))
-    }
+    let prefix = s[..end].replace(['D', 'd'], "E");
+    Ok(Value::Numeric(prefix.parse::<f64>().unwrap_or(0.0)))
 }
 
 fn builtin_left(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -904,9 +927,59 @@ pub(crate) fn builtin_time(_args: &[Value]) -> Result<Value, RuntimeError> {
 }
 
 fn builtin_environ(args: &[Value]) -> Result<Value, RuntimeError> {
+    if args[0].is_numeric() {
+        return indexed_environment_value(&args[0], &HashMap::new());
+    }
     let name = args[0].to_string_val()?;
     let val = std::env::var(&name).unwrap_or_default();
     Ok(Value::Str(val))
+}
+
+fn ordered_environment_entries(
+    host: impl IntoIterator<Item = (OsString, OsString)>,
+    overrides: &HashMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut entries = BTreeMap::new();
+    for (name, value) in host {
+        if let (Ok(name), Ok(value)) = (name.into_string(), value.into_string()) {
+            let name = if cfg!(windows) {
+                name.to_uppercase()
+            } else {
+                name
+            };
+            entries.insert(name, value);
+        }
+    }
+    for (name, value) in overrides {
+        let name = if cfg!(windows) {
+            name.to_uppercase()
+        } else {
+            name.clone()
+        };
+        entries.insert(name, value.clone());
+    }
+    entries
+}
+
+pub(crate) fn indexed_environment_value(
+    index: &Value,
+    overrides: &HashMap<String, String>,
+) -> Result<Value, RuntimeError> {
+    let index = index.to_i64()?;
+    if index < 1 {
+        return Err(RuntimeError::IllegalFunctionCall {
+            msg: "ENVIRON$ index must be at least 1".into(),
+        });
+    }
+    let Ok(index) = usize::try_from(index - 1) else {
+        return Ok(Value::Str(String::new()));
+    };
+    let entries = ordered_environment_entries(std::env::vars_os(), overrides);
+    let entry = entries
+        .into_iter()
+        .nth(index)
+        .map(|(name, value)| format!("{name}={value}"));
+    Ok(Value::Str(entry.unwrap_or_default()))
 }
 
 fn builtin_curdir(_args: &[Value]) -> Result<Value, RuntimeError> {
@@ -1086,6 +1159,187 @@ mod tests {
                 .unwrap(),
                 Value::Numeric(expected),
             );
+        }
+    }
+
+    #[test]
+    fn val_parses_scientific_prefixes_and_stops_at_invalid_characters() {
+        for (text, expected) in [
+            ("1E2tail", 100.0),
+            ("-2.5d+2🙂", -250.0),
+            (".5D-1", 0.05),
+            ("+12.e+1rest", 120.0),
+            ("1.2.3", 1.2),
+            ("1..2", 1.0),
+            (".3.4", 0.3),
+            ("1E", 1.0),
+            ("2D+", 2.0),
+            ("3e-words", 3.0),
+            ("4D+-2", 4.0),
+            ("5E.2", 5.0),
+            ("6E2D3", 600.0),
+            ("  -7.5D1 trailing  ", -75.0),
+            ("1 2", 1.0),
+            ("", 0.0),
+            (".", 0.0),
+            ("+.", 0.0),
+            ("E2", 0.0),
+            ("é123", 0.0),
+            ("--2", 0.0),
+            ("2é3", 2.0),
+        ] {
+            assert_eq!(
+                builtin_val(&[Value::Str(text.into())]).unwrap(),
+                Value::Numeric(expected),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn val_preserves_radix_nonfinite_and_type_rules() {
+        for (text, expected) in [
+            ("&HFFtail", 255.0),
+            ("&O778", 63.0),
+            ("-&H10", 0.0),
+            ("&HFFFFFFFFFFFFFFFF", 0.0),
+            ("&H7FFFFFFFFFFFFFFF", i64::MAX as f64),
+            ("&H", 0.0),
+            ("inf", f64::INFINITY),
+            ("-inf", f64::NEG_INFINITY),
+            ("1D999tail", f64::INFINITY),
+            ("1E-999tail", 0.0),
+        ] {
+            assert_eq!(
+                builtin_val(&[Value::Str(text.into())]).unwrap(),
+                Value::Numeric(expected),
+                "{text}"
+            );
+        }
+        assert!(
+            builtin_val(&[Value::Str("NaN".into())])
+                .unwrap()
+                .to_f64()
+                .unwrap()
+                .is_nan()
+        );
+        assert!(
+            builtin_val(&[Value::Str("-0D1tail".into())])
+                .unwrap()
+                .to_f64()
+                .unwrap()
+                .is_sign_negative()
+        );
+        let registry = BuiltinRegistry::new();
+        for args in [vec![], vec![Value::Str("1".into()), Value::Str("2".into())]] {
+            assert!(matches!(
+                registry.call("VAL", &args),
+                Err(RuntimeError::ArityMismatch { .. })
+            ));
+        }
+        for value in [
+            Value::Numeric(1.0),
+            Value::Record {
+                type_name: "R".into(),
+                fields: HashMap::new(),
+            },
+        ] {
+            assert!(matches!(
+                registry.call("VAL", &[value]),
+                Err(RuntimeError::TypeMismatch { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn environment_entries_are_sorted_and_overrides_replace_host_values() {
+        let host = [
+            ("Z_LAST", "last"),
+            ("A_FIRST", "first"),
+            ("M_MIDDLE", "old"),
+        ]
+        .map(|(name, value)| (OsString::from(name), OsString::from(value)));
+        let overrides = HashMap::from([
+            ("M_MIDDLE".into(), "new=value".into()),
+            ("B_ADDED".into(), String::new()),
+        ]);
+        assert_eq!(
+            ordered_environment_entries(host, &overrides)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![
+                ("A_FIRST".into(), "first".into()),
+                ("B_ADDED".into(), String::new()),
+                ("M_MIDDLE".into(), "new=value".into()),
+                ("Z_LAST".into(), "last".into()),
+            ]
+        );
+        let host = [(OsString::from("mixed"), OsString::from("lower"))];
+        let overrides = HashMap::from([("MIXED".into(), "upper".into())]);
+        let entries = ordered_environment_entries(host, &overrides);
+        assert_eq!(entries.len(), if cfg!(windows) { 1 } else { 2 });
+        assert_eq!(entries["MIXED"], "upper");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn environment_entries_skip_non_unicode_names_and_values() {
+        use std::os::unix::ffi::OsStringExt;
+        let invalid = OsString::from_vec(vec![255]);
+        let entries = ordered_environment_entries(
+            [
+                (invalid.clone(), OsString::from("value")),
+                (OsString::from("INVALID_VALUE"), invalid),
+                (OsString::from("VALID"), OsString::from("é🙂")),
+            ],
+            &HashMap::new(),
+        );
+        assert_eq!(entries, BTreeMap::from([("VALID".into(), "é🙂".into())]));
+    }
+
+    #[test]
+    fn environment_index_checks_boundaries_and_registry_aliases() {
+        let registry = BuiltinRegistry::new();
+        for name in ["ENVIRON$", "ENVIRON"] {
+            for index in [0.0, -1.0, 0.9, i64::MIN as f64] {
+                assert!(matches!(
+                    registry.call(name, &[Value::Numeric(index)]),
+                    Err(RuntimeError::IllegalFunctionCall { .. })
+                ));
+            }
+            for index in [
+                f64::NAN,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                9_223_372_036_854_775_808.0,
+            ] {
+                assert!(matches!(
+                    registry.call(name, &[Value::Numeric(index)]),
+                    Err(RuntimeError::Overflow { .. })
+                ));
+            }
+            assert_eq!(
+                registry.call(name, &[Value::Numeric(1e15)]).unwrap(),
+                Some(Value::Str(String::new()))
+            );
+            assert!(matches!(
+                registry.call(name, &[]),
+                Err(RuntimeError::ArityMismatch { .. })
+            ));
+            assert!(matches!(
+                registry.call(name, &[Value::Numeric(1.0), Value::Numeric(2.0)]),
+                Err(RuntimeError::ArityMismatch { .. })
+            ));
+            assert!(matches!(
+                registry.call(
+                    name,
+                    &[Value::Record {
+                        type_name: "R".into(),
+                        fields: HashMap::new()
+                    }]
+                ),
+                Err(RuntimeError::TypeMismatch { .. })
+            ));
         }
     }
 }

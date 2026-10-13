@@ -1,6 +1,6 @@
 # Running Rice, the REPL, and editor integration
 
-This page describes Rice BASIC 0.15.1. See the [quick start](quickstart.md), [language specification](language-reference.md), and [dialect selection rules](dialects.md).
+This page describes Rice BASIC 0.16.0. See the [quick start](quickstart.md), [language specification](language-reference.md), and [dialect selection rules](dialects.md).
 
 ## Build and command line
 
@@ -65,7 +65,7 @@ Each native runner installs stable Rust, runs `cargo test --locked`, and builds 
 To release a tag that predates this workflow, or retry a release, use **Actions → Release → Run workflow** on `master` and supply the existing tag. The equivalent CLI command is:
 
 ```sh
-gh workflow run release.yml --ref master -f tag=v0.15.1
+gh workflow run release.yml --ref master -f tag=v0.16.0
 ```
 
 Manual runs enforce the same master-history check and build the tagged source. A new release is staged as a draft until all assets are uploaded. Retries resume uploads to an existing draft; an already published release is left unchanged. Publish a new tag to distribute changed binaries. Push release tags individually: [GitHub does not emit tag-push events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#push) when more than three tags are pushed together; use manual runs for those tags.

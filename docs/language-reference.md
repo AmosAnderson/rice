@@ -317,7 +317,7 @@ DO
 LOOP UNTIL x = 0
 ```
 
-WHILE checks before each iteration and accepts either `WEND` or `END WHILE` in both modes. There is no EXIT WHILE.
+WHILE checks before each iteration and accepts either `WEND` or `END WHILE` in both modes. `EXIT WHILE` immediately leaves the nearest active WHILE loop and resumes after its terminator, without checking the condition again. It can appear inside an IF, SELECT, DO, FOR, or exception block nested within that WHILE. An inner WHILE consumes its own exit, leaving outer loops active. EXIT WHILE is a Rice extension in both dialects; it cannot leave a caller's loop from inside a SUB or FUNCTION. Executing it without an active WHILE in the current procedure or top-level execution raises an error.
 
 DO supports `DO WHILE condition ... LOOP`, `DO UNTIL condition ... LOOP`, `DO ... LOOP WHILE condition`, `DO ... LOOP UNTIL condition`, and unconditional `DO ... LOOP`. A bottom-tested loop executes at least once; a top-tested loop can execute zero times. Use only one test, at either the top or bottom. `EXIT DO` exits the enclosing active DO loop. `CONTINUE` is an exception-handler operation, not a loop-continue statement.
 
@@ -336,7 +336,9 @@ CASE ELSE
 END SELECT
 ```
 
-The selector is evaluated once. Cases are tested in source order, with a comma-separated test list acting as alternatives. Ranges are inclusive. `CASE IS` accepts any comparison operator. The first matching branch executes, with no fallthrough. CASE ELSE must be last and is optional. String values and string ranges are supported; `EXIT SELECT` is not.
+The selector is evaluated once. Cases are tested in source order, with a comma-separated test list acting as alternatives. Ranges are inclusive. `CASE IS` accepts any comparison operator. The first matching branch executes, with no fallthrough. CASE ELSE must be last and is optional. String values and string ranges are supported.
+
+`EXIT SELECT` immediately leaves the nearest active SELECT CASE and resumes after END SELECT, including when used in CASE ELSE or a nested IF, loop, or exception block. It skips the remainder of the branch; no later cases are tested. An inner SELECT consumes its own exit, leaving the outer SELECT active. EXIT SELECT is a Rice extension in both dialects. It cannot leave a caller's SELECT from inside a SUB or FUNCTION, and executing it without an active SELECT in the current procedure or top-level execution raises an error.
 
 CASE comparisons use value equality/ordering directly, unlike expression comparisons: mixed types generally fail to match rather than raising a type mismatch, and `CASE IS <>` can match unequal mixed types. CASE equality can compare records structurally; record ordering is unavailable. Do not depend on these differences when porting a program.
 

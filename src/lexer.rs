@@ -527,15 +527,6 @@ impl Lexer {
                     return Some(Token::KwLineInput);
                 }
             }
-            "SELECT" => {
-                self.skip_whitespace();
-                if let Some(next_word) = self.peek_word()
-                    && next_word.to_uppercase() == "CASE"
-                {
-                    self.consume_word();
-                    return Some(Token::KwSelect);
-                }
-            }
             "OPTION" => {
                 self.skip_whitespace();
                 if let Some(next_word) = self.peek_word()
@@ -810,6 +801,26 @@ mod tests {
         assert_eq!(tokenize("END IF"), vec![Token::KwEndIf]);
         assert_eq!(tokenize("END SUB"), vec![Token::KwEndSub]);
         assert_eq!(tokenize("LINE INPUT"), vec![Token::KwLineInput]);
+    }
+
+    #[test]
+    fn test_select_and_case_remain_separate_for_exit_validation() {
+        assert_eq!(
+            tokenize("SELECT CASE 1"),
+            vec![Token::KwSelect, Token::KwCase, Token::NumericLiteral(1.0)]
+        );
+        assert_eq!(
+            tokenize("EXIT SELECT CASE"),
+            vec![Token::KwExit, Token::KwSelect, Token::KwCase]
+        );
+        let tokens = Lexer::new("SELECT\tCASE 1\nEXIT SELECT")
+            .tokenize()
+            .unwrap();
+        assert_eq!(tokens[0].span, Span { line: 1, col: 1 });
+        assert_eq!(tokens[1].span, Span { line: 1, col: 8 });
+        assert_eq!(tokens[2].span, Span { line: 1, col: 13 });
+        assert_eq!(tokens[4].span, Span { line: 2, col: 1 });
+        assert_eq!(tokens[5].span, Span { line: 2, col: 6 });
     }
 
     #[test]

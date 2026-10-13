@@ -1,6 +1,6 @@
 # Built-in functions
 
-This is the function reference for Rice BASIC 0.15.1. Unless stated otherwise, functions are available in **both** QBasic and ANSI modes. Names such as “ANSI math additions” in the source do not restrict a function to that dialect. The [language reference](language-reference.md) defines expression operators and the [dialect guide](dialects.md) defines truth values.
+This is the function reference for Rice BASIC 0.16.0. Unless stated otherwise, functions are available in **both** QBasic and ANSI modes. Names such as “ANSI math additions” in the source do not restrict a function to that dialect. The [language reference](language-reference.md) defines expression operators and the [dialect guide](dialects.md) defines truth values.
 
 ## Calling conventions and types
 
@@ -89,10 +89,25 @@ Text uses Unicode strings. `LEN(string)`, positions, substrings, and most string
 | `CHR$(code)` | Character U+0000..U+00FF; integer-converted code must be `0..255`. |
 | `ASC(s$)` | Unicode scalar value of the first character, possibly above 255. Empty input raises illegal function call. |
 | `STR$(x)` | Numeric text with no leading/trailing positive-number space. Uses integer text for integral magnitudes below `1e15`, otherwise Rust floating-point formatting. |
-| `VAL(s$)` | Trims surrounding whitespace; parses a number, or a leading decimal prefix, or leading `&H` hex/`&O` octal digits. Empty/invalid input returns `0`. |
+| `VAL(s$)` | Trims surrounding whitespace; parses a leading decimal number with optional E/D exponent, or leading `&H` hex/`&O` octal digits. Empty/invalid input returns `0`. |
 | `HEX$(x)`, `OCT$(x)` | Uppercase hexadecimal / octal text after direct truncating signed 64-bit cast. Out-of-range inputs saturate and NaN becomes zero. Negative values use unsigned 64-bit two's-complement representation; this is not QBasic's 16/32-bit formatting. |
 
-`VAL` first tries to parse the whole decimal string, including an exponent. Its fallback prefix scan accepts digits, decimal points, and an initial sign, but not an exponent: `VAL("1E2")` is `100`, while `VAL("1E2tail")` is `1`. Hex/octal overflow returns `0`; a leading minus before `&H`/`&O` is not supported. Unlike source literals, VAL does not recognize D exponents (`VAL("1D2")` is `1`) and uses signed `i64` for radix conversion (`VAL("&HFFFFFFFFFFFFFFFF")` is `0`). Whole-string host float parsing also accepts `"NaN"` and `"inf"`. This is permissive parsing, not a full QBasic numeric-literal parser.
+`VAL` accepts an optional sign, digits with at most one decimal point, and an
+optional `E`, `e`, `D`, or `d` exponent with optional sign and at least one digit.
+At least one mantissa digit is required. A second decimal point or other text
+ends the numeric prefix: `VAL("1.2.3")` returns `1.2`. Scientific prefixes work
+before trailing text: `VAL("1E2tail")` is `100`, and `VAL("-.5D+2kg")` is `-50`.
+An incomplete exponent is excluded from the prefix, so `VAL("2D-")` returns `2`.
+Internal whitespace ends the prefix (`VAL("1 2")` is `1`); only surrounding
+whitespace is trimmed. Parsing is independent of the selected dialect.
+
+Radix behavior is unchanged: `&H`/`&O` digits use signed `i64` conversion, overflow
+returns `0`, and a leading sign before the radix prefix is unsupported.
+For example, `VAL("&HFFFFFFFFFFFFFFFF")` and `VAL("-&H10")` are both `0`.
+Whole-string host float parsing also accepts `"NaN"` and `"inf"`; decimal
+overflow/underflow can produce infinity or zero. Numeric suffixes do not impose
+declared types: trailing text ends the prefix instead. This is Rice's permissive
+conversion behavior, not a full QBasic numeric-literal parser.
 
 Large string counts can exhaust host memory; there is no documented BASIC string-size limit. Unicode behavior is not a DOS code-page emulation. See [compatibility notes](compatibility.md).
 
@@ -138,13 +153,40 @@ These functions work in both modes. Binary strings map each byte to a character 
 | `TIMER` | Local seconds since midnight. Windows includes milliseconds; the non-Windows implementation has whole-second resolution. |
 | `DATE$` or `DATE$()` | Local date as `MM-DD-YYYY`, unless overridden by assignment. |
 | `TIME$` or `TIME$()` | Local time as `HH:MM:SS`, unless overridden by assignment. |
-| `ENVIRON$(name$)` | Interpreter override, if present, otherwise host environment value; absent/unreadable value gives `""`. Numeric environment-index lookup is unsupported. Names are case-sensitive on Unix; override names are uppercased on Windows. |
+| `ENVIRON$(name$)` | Interpreter override, if present, otherwise host environment value; absent/unreadable value gives `""`. Names are case-sensitive on Unix; override names are uppercased on Windows. |
+| `ENVIRON$(index)` | The 1-based environment entry as `NAME=value`, with interpreter overrides merged into host entries and sorted by name. An index past the end returns `""`. See ordering and index rules below. |
 | `CURDIR$()` | Host process working directory; `""` if it cannot be obtained. No drive argument. |
 | `COMMAND$()` or `COMMAND()` | Program arguments joined by single spaces, excluding the source filename and interpreter options. No arguments produce `""`. Case, Unicode, internal whitespace, and empty argument fields are preserved; shell quoting and original argument boundaries are not reconstructed. Parentheses are required; bare COMMAND$ is an ordinary variable. |
 
 Pass arguments as `rice program.bas First "two words"`; use `rice program.bas -- --flag` for dash-leading arguments. Interpreter flags remain active before `--`, even after the filename. For example, `rice --dialect ansi program.bas First --compat Second` selects QB and gives COMMAND$() the text `First Second`. See the [CLI contract](runtime.md#build-and-command-line).
 
 REPL and library interpreters start with empty program arguments instead of reading host process arguments. Library callers can use `interpreter.set_command_line_args(["First", "two words"])` to replace them; they persist across execution and CLEAR. A standalone builtin registry returns an empty string. Both aliases require zero arguments and are available in both dialects.
+
+Numeric `ENVIRON$` indices use the usual checked integer conversion: fractional
+values truncate toward zero, values below 1 raise illegal function call, and
+NaN/infinity or values outside signed 64-bit range raise overflow. Each call
+rebuilds the current entry list. Host entries whose names or values cannot be
+represented as Unicode are skipped; interpreter overrides replace matching host
+names and can add entries. Sorting is lexical by name, not the host's original
+environment order or a locale-specific order. Names are case-sensitive on Unix;
+Windows enumeration uppercases names before merging and sorting. Changing an
+override during enumeration can change subsequent positions.
+
+The numeric form works in both modes and does not mutate the host environment.
+An empty value returns `"NAME="`, distinct from the `""` end-of-list result.
+As with the existing string form, the alias `ENVIRON(...)` and standalone builtin
+registry calls read only the host environment; use `ENVIRON$(...)` to include
+interpreter-local overrides.
+
+```basic
+i = 1
+DO
+    entry$ = ENVIRON$(i)
+    IF entry$ = "" THEN EXIT DO
+    PRINT entry$
+    i = i + 1
+LOOP
+```
 
 **QB-only setters:** `DATE$ = expression` accepts `MM-DD-YYYY` or `MM/DD/YYYY` after trimming for validation. It checks month `1..12`, day `1..31`, and year `0..9999`, but not month lengths or leap years. `TIME$ = expression` checks `HH:MM:SS`, hours `0..23`, minutes/seconds `0..59`. Both store the original string, including surrounding whitespace; they override subsequent reads without changing the OS clock. The time override does not tick and does not change `TIMER`.
 
