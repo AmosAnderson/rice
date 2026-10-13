@@ -6,6 +6,10 @@ These are Rice dialects, not claims of complete QBasic 1.1 or ANSI conformance. 
 
 ## Start here
 
+Download prebuilt `rice` and `rice-lsp` binaries for Linux, Windows, and macOS from [GitHub Releases](https://github.com/AmosAnderson/rice/releases). Each archive includes both executables, the documentation, and the MIT license. See [release downloads and publishing](docs/runtime.md#release-downloads-and-publishing) for platforms, checksums, and the tag-based release process.
+
+To build from source:
+
 ```sh
 cargo build
 cargo run                         # REPL, QBasic mode

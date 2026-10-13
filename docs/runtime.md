@@ -35,6 +35,38 @@ cargo run -- --compat
 
 The CLI runs the interpreter on an 8 MiB stack thread to accommodate large debug-mode interpreter frames. This is not an unlimited recursion guarantee. Host stack/memory exhaustion is not a catchable BASIC exception.
 
+## Release downloads and publishing
+
+[GitHub Releases](https://github.com/AmosAnderson/rice/releases) provides archives containing `rice`, `rice-lsp`, the documentation, and the MIT license. Extract the archive for your platform and put the executables on your `PATH`, or run them by their full paths.
+
+| Platform | Archive suffix | Build host |
+|---|---|---|
+| Linux x64 | `x86_64-unknown-linux-gnu.tar.gz` | Ubuntu 22.04 (glibc; not a static/musl build) |
+| Windows x64 | `x86_64-pc-windows-msvc.zip` | Windows Server 2022 |
+| macOS Apple Silicon | `aarch64-apple-darwin.tar.gz` | macOS 15 |
+| macOS Intel | `x86_64-apple-darwin.tar.gz` | macOS 15 |
+
+Archives are named `rice-<Cargo-version>-<target>.<extension>`. Each release includes `SHA256SUMS`; after downloading the archives, verify them with `sha256sum --check --ignore-missing SHA256SUMS` on Linux. On macOS use `shasum -a 256 <archive>`; on Windows use `Get-FileHash <archive> -Algorithm SHA256` and compare the result with the matching entry.
+
+The [Release workflow](../.github/workflows/release.yml) runs when a tag is pushed. Tags identify commits rather than belonging to branches, so it checks that the tagged commit is in `origin/master` history; tags outside that history are skipped. Both annotated and lightweight tags work. Push the version commit to `master` before the tag, or push the branch and tag together:
+
+```sh
+# After updating Cargo.toml, Cargo.lock, and versioned documentation,
+# and committing the release on master (replace X.Y.Z):
+git tag -a vX.Y.Z -m "Rice BASIC X.Y.Z"
+git push --atomic origin master vX.Y.Z
+```
+
+Each native runner installs stable Rust, runs `cargo test --locked`, and builds both optimized binaries from the validated commit using the lockfile. A release is published with generated notes and checksummed archives only after all four builds pass. The workflow checks the tag again before publication. It uses the repository's automatic `GITHUB_TOKEN`; no extra secret is required. Only the publishing job has write permission.
+
+To release a tag that predates this workflow, or retry a release, use **Actions → Release → Run workflow** on `master` and supply the existing tag. The equivalent CLI command is:
+
+```sh
+gh workflow run release.yml --ref master -f tag=v0.15.0
+```
+
+Manual runs enforce the same master-history check and build the tagged source. A new release is staged as a draft until all assets are uploaded. Retries resume uploads to an existing draft; an already published release is left unchanged. Publish a new tag to distribute changed binaries. Push release tags individually: [GitHub does not emit tag-push events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#push) when more than three tags are pushed together; use manual runs for those tags.
+
 ## REPL state and program editing
 
 Immediate unnumbered input executes as soon as a complete statement/block is entered. Variables, procedures, types, options, and open files persist between immediate inputs. A leading decimal line number stores or replaces a program line; the line is not executed until `RUN`. Stored lines are sorted numerically. The parser currently rejects labels on block terminators such as `NEXT` and `END IF`, so a conventional stored multiline numbered loop cannot run as written. Enter such blocks immediately without numbers, or use unnumbered terminators in a source file. Colon-separated block headers/terminators are not a workaround. File execution, by contrast, follows source order, even when numeric labels are out of order.
