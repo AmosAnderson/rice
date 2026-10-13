@@ -220,6 +220,10 @@ fn collect_symbols(
             Stmt::Let { var, .. } => {
                 add_variable(syms, &var.name, ls.line, seen_vars);
             }
+            Stmt::Swap { a, b } => {
+                add_variable(syms, &a.name, ls.line, seen_vars);
+                add_variable(syms, &b.name, ls.line, seen_vars);
+            }
             Stmt::Dim { decls, .. } | Stmt::Redim { decls, .. } => {
                 let tag = if matches!(&ls.stmt, Stmt::Redim { .. }) {
                     "REDIM"
@@ -335,7 +339,7 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("LET", "Assign a value to a variable"),
         ("DIM", "Declare a variable or array"),
         ("CONST", "Declare a constant"),
-        ("SWAP", "Swap two variables"),
+        ("SWAP", "Swap scalar variables or indexed array elements"),
         ("OPTION BASE", "Set default array lower bound"),
         ("OPTION EXPLICIT", "Require variable declarations"),
         ("OPTION DIALECT", "Select ANSI or QBasic compatibility mode"),
@@ -371,7 +375,10 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("END SELECT", "End of SELECT CASE"),
         ("GOTO", "Jump to a label"),
         ("GOSUB", "Jump to a subroutine label in QuickBasic mode"),
-        ("RETURN", "Return from GOSUB in QuickBasic mode"),
+        (
+            "RETURN",
+            "Return from GOSUB, optionally to a label, in QuickBasic mode",
+        ),
         ("ON GOTO", "Computed GOTO in QuickBasic mode"),
         ("ON GOSUB", "Computed GOSUB in QuickBasic mode"),
         ("ON ERROR", "Classic error handler in QuickBasic mode"),
@@ -392,7 +399,10 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("CALL", "Call a SUB"),
         ("DECLARE", "Forward-declare a SUB or FUNCTION"),
         ("BYVAL", "Pass argument by value"),
-        ("BYREF", "Copy parameter back to a plain variable argument"),
+        (
+            "BYREF",
+            "Copy parameter back to a scalar or array element argument",
+        ),
         (
             "DEF FN",
             "Define a single-expression or multiline QBasic function",
@@ -403,7 +413,10 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("DEFDBL", "Set default numeric type for variable letters"),
         ("DEFSTR", "Set default string type for variable letters"),
         // Data
-        ("DATA", "Define inline data"),
+        (
+            "DATA",
+            "Define literal data, including signed numbers and empty fields",
+        ),
         ("READ", "Read DATA into scalars or array elements"),
         ("RESTORE", "Reset DATA pointer"),
         // User-defined types
@@ -536,7 +549,10 @@ static BUILTIN_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("MAXNUM", "MAXNUM() — Largest finite f64 value"),
         ("PI", "PI() — Value of pi (3.14159...)"),
         // String
-        ("LEN", "LEN(s$) — Unicode scalar-value count"),
+        (
+            "LEN",
+            "LEN(value) — String character count or record binary byte size",
+        ),
         ("LEFT$", "LEFT$(s$, n) — Left n characters"),
         ("RIGHT$", "RIGHT$(s$, n) — Right n characters"),
         ("MID$", "MID$(s$, start[, len]) — Substring"),
@@ -590,6 +606,10 @@ static BUILTIN_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         // Array
         ("LBOUND", "LBOUND(array[, dim]) — Lower bound of array"),
         ("UBOUND", "UBOUND(array[, dim]) — Upper bound of array"),
+        (
+            "DET",
+            "DET(array) — Matrix determinant; DET() — Last inverse determinant",
+        ),
     ]
     .iter()
     .map(|(name, doc)| CompletionItem {
@@ -732,7 +752,7 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         // String
         (
             "LEN",
-            "```basic\nLEN(s$)\n```\nCounts Unicode scalar values, not UTF-8 bytes or grapheme clusters. Only string arguments are supported.",
+            "```basic\nLEN(string_expression)\nLEN(record_expression)\n```\nFor a string, counts Unicode scalar values, not UTF-8 bytes or grapheme clusters. For a record, returns its current QB binary PUT payload size in bytes, including nested fields, fixed string widths, and dynamic string length prefixes; this is a Rice extension in both dialects. Numeric arguments are rejected. Exactly one argument is required.",
         ),
         (
             "LEFT$",
@@ -870,6 +890,10 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
             "```basic\nUBOUND(array[, dim])\n```\nReturns the upper bound of `array` for the given dimension (default 1).",
         ),
         (
+            "DET",
+            "```basic\nDET(array)\nDET(array())\nDET()\n```\nWith a named array, computes the determinant of its current square, two-dimensional MAT shape using partial-pivot floating-point elimination. Returns zero for an exactly singular matrix. This Rice extension works in both dialects; indexed elements and other expressions are not matrix references. With no arguments, or as bare DET, returns the cached determinant from the latest successful MAT inverse. DET(array) does not change that cache.",
+        ),
+        (
             "CINT",
             "```basic\nCINT(n)\n```\nRounds `n` to the nearest integer (round half to even).",
         ),
@@ -954,7 +978,7 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "SWAP",
-            "```basic\nSWAP var1, var2\n```\nExchanges the values of two variables.",
+            "```basic\nSWAP target1, target2\nSWAP values(i, j), replacement\n```\nExchanges scalar variables or array elements in either dialect. Both destinations resolve from left to right with each index evaluated once, before reading or writing either value. Missing values use ordinary numeric, string, or declared record-array defaults. A target error leaves both destinations unwritten, apart from index-expression side effects. Record fields and slices are unsupported; no bounds or rank checks are added.",
         ),
         (
             "OPTION BASE",
@@ -1047,7 +1071,7 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "RETURN",
-            "```basic\nRETURN\n```\nQuickBasic compatibility mode only. Returns to the statement after the most recent GOSUB.",
+            "```basic\nRETURN [label_or_line]\n```\nQuickBasic compatibility mode only. Ends the most recent GOSUB, then continues after its call or jumps to the optional label in the caller's active scope. RETURN with a label still requires an active GOSUB and unwinds exactly one call. Procedure-local use is a Rice extension; it cannot cross a SUB or FUNCTION boundary.",
         ),
         (
             "ON",
@@ -1104,7 +1128,7 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "BYREF",
-            "```basic\nSUB name (BYREF x AS NUMERIC)\n```\nCopies a value in and writes it back on exit only for a plain variable argument. Array elements, fields, parentheses, and other expressions are not written back. Default in QBasic mode; array parameters do not bind arrays.",
+            "```basic\nSUB name (BYREF x AS NUMERIC)\nCALL name(values(i))\n```\nCopies a value in and writes it back on exit for a scalar variable or array element argument, including record-valued elements. Array indices are evaluated once when the argument is read. Constants, function results, fields, parentheses, and other expressions are not written back. This is copy-in/copy-out, not a live reference; later aliased parameters write back last, including when the procedure errors. Default in QBasic mode; explicit BYREF is supported in ANSI mode. Array parameters declared with () still do not bind whole arrays.",
         ),
         (
             "DEF",
@@ -1133,11 +1157,11 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         // Data
         (
             "DATA",
-            "```basic\nDATA value[, value...]\nDATA \"She said \"\"hi\"\"\", 42\n```\nDefines literal data to be read with READ. In either dialect, doubled quotes inside a string literal represent one quote.",
+            "```basic\nDATA value[, value...]\nDATA +42, -3, , \"She said \"\"hi\"\"\",\n```\nDefines literal data in either dialect. Numeric literals accept one leading + or -; expressions are not allowed. Omitted fields between commas or at either end are empty items; DATA , supplies two, while bare DATA supplies none. READ converts an empty item to zero or an empty string according to the target's current/default type; MAT READ uses zero. Doubled quotes inside a string literal represent one quote.",
         ),
         (
             "READ",
-            "```basic\nREAD target[, target...]\nREAD values(i, j), names$(i)\n```\nReads DATA into scalar names or array elements in either dialect; record fields and slices are unsupported. Targets are resolved and assigned left to right without coercing DATA types; READ i, values(i) uses the newly read i. Earlier assignments and consumed DATA are retained if a later target fails.",
+            "```basic\nREAD target[, target...]\nREAD values(i, j), names$(i)\n```\nReads DATA into scalar names or array elements in either dialect; record fields and slices are unsupported. Targets are resolved and assigned left to right; READ i, values(i) uses the newly read i. Explicit DATA values are not coerced. Empty DATA fields become zero or an empty string according to the current/default target type; a record target rejects an empty item without consuming it. Earlier assignments and consumed DATA are retained if a later target fails.",
         ),
         (
             "RESTORE",
@@ -1230,7 +1254,7 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         // Matrix
         (
             "MAT",
-            "```basic\nMAT C = A + B\nMAT C = A * B\nMAT B = INV(A)\nMAT B = TRN(A)\nMAT A = ZER\nMAT A = CON\nMAT A = IDN\nMAT PRINT A\nMAT PRINT #1, A\nMAT INPUT #2, A\n```\nTwo-dimensional numeric matrix operations in both dialects. Declare destination bounds to match the result; MAT does not resize metadata. File MAT PRINT writes comma-separated rows; file MAT INPUT reads numeric fields in row-major order without console prompts. Each channel expression is evaluated once. Input replaces the matrix only after all fields succeed; errors leave consumed fields consumed. Console MAT PRINT uses spaces.",
+            "```basic\nMAT C = A + B\nMAT C = A * B\nMAT B = INV(A)\nMAT B = TRN(A)\nMAT A = ZER\nMAT A = CON\nMAT A = IDN\nMAT READ A\nMAT PRINT A\nMAT PRINT #1, A\nMAT INPUT #2, A\nPRINT DET(A)\n```\nTwo-dimensional numeric matrix operations in both dialects. Declare destination bounds to match the result; MAT does not resize metadata. DET(A) computes a square matrix determinant without inversion. MAT READ converts empty DATA fields to zero. File MAT PRINT writes comma-separated rows; file MAT INPUT reads numeric fields in row-major order without console prompts. Each channel expression is evaluated once. Input replaces the matrix only after all fields succeed; errors leave consumed fields consumed. Console MAT PRINT uses spaces.",
         ),
         // System
         (
@@ -1317,6 +1341,7 @@ fn token_name(tok: &rice::token::Token) -> Option<String> {
         rice::token::Token::LineNumber(n) => Some(n.to_string()),
         rice::token::Token::Backslash => Some("\\".into()),
         rice::token::Token::KwPrint => Some("PRINT".into()),
+        rice::token::Token::KwLen => Some("LEN".into()),
         rice::token::Token::KwInput => Some("INPUT".into()),
         rice::token::Token::KwLineInput => Some("LINE INPUT".into()),
         rice::token::Token::KwDim => Some("DIM".into()),
@@ -1656,6 +1681,167 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indexed_swap_registers_targets_and_preserves_index_references() {
+        for dialect in ["QB", "ANSI"] {
+            let state = analyze_source(
+                format!(
+                    "OPTION DIALECT \"{dialect}\"\nDIM index\nSWAP first(index, 2), second$(index)\n"
+                ),
+                1,
+            );
+            assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+            for (column, name, definition_line) in
+                [(5, "FIRST", 3), (11, "INDEX", 2), (22, "SECOND$", 3)]
+            {
+                assert_eq!(
+                    resolve_token_name(&state, Position::new(2, column)).as_deref(),
+                    Some(name)
+                );
+                assert_eq!(
+                    find_symbol(&state.symbols, name).unwrap().line,
+                    definition_line
+                );
+            }
+            assert_eq!(state.symbols.variables.len(), 3);
+            for invalid in ["SWAP a(), b", "SWAP a(1:2), b", "SWAP a.x, b"] {
+                let state = analyze_source(format!("OPTION DIALECT \"{dialect}\"\n{invalid}\n"), 1);
+                assert_eq!(state.diagnostics.len(), 1, "{invalid}");
+                assert_eq!(state.diagnostics[0].range.start.line, 1);
+            }
+        }
+        assert!(
+            keyword_hover("SWAP")
+                .unwrap()
+                .contains("each index evaluated once")
+        );
+        assert!(
+            KEYWORD_COMPLETIONS
+                .iter()
+                .find(|item| item.label == "SWAP")
+                .unwrap()
+                .detail
+                .as_ref()
+                .unwrap()
+                .contains("array elements")
+        );
+    }
+
+    #[test]
+    fn data_fields_and_return_targets_have_diagnostics_and_hover() {
+        for dialect in ["QB", "ANSI"] {
+            let state = analyze_source(
+                format!("OPTION DIALECT \"{dialect}\"\nDATA +2, -3, , \"😀\",\nREAD n, m, s$\n"),
+                1,
+            );
+            assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+            for data in ["DATA +", "DATA 1 + 2", "DATA --1"] {
+                let state = analyze_source(format!("OPTION DIALECT \"{dialect}\"\n{data}\n"), 1);
+                assert_eq!(state.diagnostics.len(), 1, "{data}");
+            }
+        }
+        let state = analyze_source(
+            "RETURN destination\nRETURN 30\ndestination: PRINT 1\n30 END\n".into(),
+            1,
+        );
+        assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+        for (line, name, definition_line) in [(0, "DESTINATION", 3), (1, "30", 4)] {
+            assert_eq!(
+                resolve_token_name(&state, Position::new(line, 7)).as_deref(),
+                Some(name)
+            );
+            assert_eq!(
+                find_symbol(&state.symbols, name).unwrap().line,
+                definition_line
+            );
+        }
+        let ansi = analyze_source("OPTION DIALECT \"ANSI\"\nRETURN destination\n".into(), 1);
+        assert_eq!(ansi.diagnostics.len(), 1);
+        assert_eq!(ansi.diagnostics[0].range.start.line, 1);
+        assert!(
+            keyword_hover("RETURN")
+                .unwrap()
+                .contains("unwinds exactly one call")
+        );
+        assert!(
+            keyword_hover("DATA")
+                .unwrap()
+                .contains("bare DATA supplies none")
+        );
+        assert!(
+            keyword_hover("READ")
+                .unwrap()
+                .contains("without consuming it")
+        );
+    }
+
+    #[test]
+    fn record_len_and_matrix_det_have_builtin_hover_and_completion() {
+        let line = "PRINT \"😀\"; LEN(record), DET(matrix), DET(matrix()) ' LEN DET";
+        for dialect in ["QB", "ANSI"] {
+            let state = analyze_source(format!("OPTION DIALECT \"{dialect}\"\n{line}\n"), 1);
+            assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+            for (name, expected) in [
+                ("LEN", "record_expression"),
+                ("DET", "two-dimensional MAT shape"),
+            ] {
+                let column = line[..line.find(name).unwrap()].encode_utf16().count() as u32;
+                assert_eq!(
+                    resolve_token_name(&state, Position::new(1, column)).as_deref(),
+                    Some(name)
+                );
+                assert!(builtin_hover(name).unwrap().contains(expected));
+                assert_eq!(
+                    BUILTIN_COMPLETIONS
+                        .iter()
+                        .find(|item| item.label == name)
+                        .unwrap()
+                        .kind,
+                    Some(CompletionItemKind::FUNCTION)
+                );
+                let comment_column =
+                    line[..line.rfind(name).unwrap()].encode_utf16().count() as u32;
+                assert_eq!(
+                    resolve_token_name(&state, Position::new(1, comment_column)),
+                    None
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn byref_element_arguments_preserve_array_and_index_references() {
+        for dialect in ["QB", "ANSI"] {
+            let state = analyze_source(
+                format!(
+                    "OPTION DIALECT \"{dialect}\"\nDIM values(2), index\nSUB Update(BYREF item)\nitem = 3\nEND SUB\nCALL Update(values(index))\n"
+                ),
+                1,
+            );
+            assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+            for (column, name) in [(12, "VALUES"), (19, "INDEX")] {
+                assert_eq!(
+                    resolve_token_name(&state, Position::new(5, column)).as_deref(),
+                    Some(name)
+                );
+                assert_eq!(find_symbol(&state.symbols, name).unwrap().line, 2);
+            }
+        }
+        let hover = keyword_hover("BYREF").unwrap();
+        assert!(hover.contains("including record-valued elements"));
+        assert!(hover.contains("evaluated once"));
+        assert!(
+            KEYWORD_COMPLETIONS
+                .iter()
+                .find(|item| item.label == "BYREF")
+                .unwrap()
+                .detail
+                .as_ref()
+                .unwrap()
+                .contains("array element")
+        );
+    }
 
     #[test]
     fn cursor_resolution_uses_utf16_and_excludes_comments_and_whitespace() {

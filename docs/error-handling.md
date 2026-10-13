@@ -108,6 +108,8 @@ A handler is marked active until `RESUME` or `ON ERROR GOTO 0`; another error wh
 
 Mapping follows the runtime error category: for example, a Rice validation failure such as an unopened channel can report general code 5 rather than a historical QB file error number. Diagnostic wording from host filesystem errors varies by platform.
 
+`RETURN` and `RETURN label` without an active GOSUB in the current program/procedure produce the general runtime-error category (5). An executed targeted RETURN first ends one GOSUB invocation; an unknown or unreachable destination then produces the undefined-label category (8). These are category mappings, not a guarantee that ON ERROR traps the failure: unmatched RETURN and unresolved transfers handled at the top-level program boundary can bypass the handler, following the existing GOTO behavior. Reading an empty DATA item into a record reports type-mismatch code 13 and leaves that item unconsumed. Earlier successful READ destinations remain assigned.
+
 ### Recovery scope and known limits
 
 Top-level handlers and tested `GOSUB` continuations are supported. The saved resume location is an index in the current executing statement list. If an error escapes an `IF`, loop, or procedure, `ERL` and the resume target can refer to the enclosing top-level statement instead of the inner failing operation. Handler lookup also occurs in the current statement list, so a target in an unrelated nested block or procedure is not a general-purpose recovery target.

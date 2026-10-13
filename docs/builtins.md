@@ -1,6 +1,6 @@
 # Built-in functions
 
-This is the function reference for Rice BASIC 0.14.0. Unless stated otherwise, functions are available in **both** QBasic and ANSI modes. Names such as “ANSI math additions” in the source do not restrict a function to that dialect. The [language reference](language-reference.md) defines expression operators and the [dialect guide](dialects.md) defines truth values.
+This is the function reference for Rice BASIC 0.15.0. Unless stated otherwise, functions are available in **both** QBasic and ANSI modes. Names such as “ANSI math additions” in the source do not restrict a function to that dialect. The [language reference](language-reference.md) defines expression operators and the [dialect guide](dialects.md) defines truth values.
 
 ## Calling conventions and types
 
@@ -13,7 +13,7 @@ Arguments are evaluated left to right. Numeric arguments must be numeric values;
 | `TIMER`, `FREEFILE` | Bare keyword forms only; `TIMER()` and `FREEFILE()` are parse errors. |
 | `DATE$`, `TIME$`, `CSRLIN`, `INKEY$`, `DET`, `ERR`, `ERL`, `EXTYPE`, `EXTEXT$` | Bare or parenthesized zero-argument forms. An existing variable/constant of the same name can shadow a bare reference; parentheses force function lookup. DATE$/TIME$ assignment is special. |
 
-Runtime dispatch checks special interpreter functions, the builtin registry, user functions, then arrays. An unrecognized `name(...)` may therefore read an implicit array element rather than report an unknown function. Builtins take precedence over user functions of the same name. `LBOUND` and `UBOUND` examine their first argument as an array name rather than evaluating it.
+Runtime dispatch checks special interpreter functions, the builtin registry, user functions, then arrays. An unrecognized `name(...)` may therefore read an implicit array element rather than report an unknown function. Builtins take precedence over user functions of the same name. `LBOUND`, `UBOUND`, and `DET(matrix)` examine their first argument as an array name rather than evaluating its value; DET requires a bare name or empty array parentheses.
 
 The registry also tries adding `$` to an unmatched name, so `LEFT(...)` aliases `LEFT$(...)`, for example. Prefer canonical names: interpreter-specific overrides are dispatched by exact name, so `ENVIRON(...)`, `DATE()`, and `TIME()` bypass the overrides used by `ENVIRON$(...)`, `DATE$()`, and `TIME$()`. Missing or surplus arguments normally cause an arity error; `EXTYPE(...)` and `EXTEXT$(...)` currently evaluate but ignore supplied arguments.
 
@@ -71,11 +71,12 @@ The implementation uses a 64-bit linear congruential generator. It does not repr
 
 ## Strings
 
-Text uses Unicode strings. `LEN`, positions, substrings, and most string counts use Unicode scalar values, not UTF-8 bytes, grapheme clusters, or terminal display columns. `CHR$` and packed binary functions have separate byte rules.
+Text uses Unicode strings. `LEN(string)`, positions, substrings, and most string counts use Unicode scalar values, not UTF-8 bytes, grapheme clusters, or terminal display columns. `LEN(record)`, `CHR$`, and packed binary functions have separate byte rules.
 
 | Function | Result and restrictions |
 |---|---|
-| `LEN(s$)` | Number of Unicode scalar values; does not accept a numeric value or UDT record. |
+| `LEN(s$)` | Number of Unicode scalar values. Numeric arguments are rejected. |
+| `LEN(record)` | Byte size of the record's current QBasic-style binary `PUT` payload, including nested fields and variable-string headers. Available in both modes; see [record sizes](user-defined-types.md#record-byte-length). |
 | `LEFT$(s$, count)` | First `count` characters, clipped at the string end; count must be nonnegative. |
 | `RIGHT$(s$, count)` | Last `count` characters, clipped to the string length; count must be nonnegative. |
 | `MID$(s$, start[, count])` | Substring beginning at 1-based `start`; omitted count means through the end. Start must be at least 1, count nonnegative. Starting past the end returns `""`. See [slice and MID$ assignment](string-slicing.md). |
@@ -123,7 +124,8 @@ These functions work in both modes. Binary strings map each byte to a character 
 | `INKEY$` or `INKEY$()` | Nonblocking key input, empty string if no key; extended keys have a NUL prefix. |
 | `INPUT$(count[, handle])` | Reads up to the positive integer count of bytes from console or file, stopping on EOF/read error; decodes as lossy UTF-8. `#` before the file argument is optional. See [console](console.md) and [file I/O](file-io.md) for byte and EOF behavior. |
 | `SCREEN(row, column[, flag])` | Character byte from Rice's screen buffer; the optional flag is evaluated but ignored, so attributes are not returned. |
-| `DET` or `DET()` | Determinant saved by the latest successful `MAT ... = INV(...)`; initially zero. It is not `DET(matrix)`. See [MAT](mat-operations.md). |
+| `DET` or `DET()` | Determinant saved by the latest successful `MAT ... = INV(...)`; initially zero. See [MAT](mat-operations.md). |
+| `DET(matrix)` or `DET(matrix())` | Independently computes a nonempty square matrix's determinant, returning zero for an exactly singular matrix. Accepts a bare array name or empty array parentheses, with no index expressions or value evaluation; leaves the saved `DET()` unchanged. Both-mode Rice extension; see [MAT](mat-operations.md#determinants). |
 | `ERR`, `ERL` (or zero-argument calls) | Last classic error code and numbered BASIC line, initially zero. Queries exist in both modes, although classic handler statements require QB. |
 | `EXTYPE`, `EXTEXT$` (or zero-argument calls) | Structured exception code and description, initially zero/empty and cleared on normal handler completion. Early control transfers can leave stale state. See [errors](error-handling.md). |
 

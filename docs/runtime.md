@@ -1,6 +1,6 @@
 # Running Rice, the REPL, and editor integration
 
-This page describes Rice BASIC 0.14.0. See the [quick start](quickstart.md), [language specification](language-reference.md), and [dialect selection rules](dialects.md).
+This page describes Rice BASIC 0.15.0. See the [quick start](quickstart.md), [language specification](language-reference.md), and [dialect selection rules](dialects.md).
 
 ## Build and command line
 

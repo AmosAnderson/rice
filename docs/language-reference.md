@@ -156,7 +156,9 @@ Names count as declared through executed `DIM`, `REDIM`, `SHARED`, `STATIC`, `CO
 
 ### SWAP, CLEAR, and scope declarations
 
-`SWAP a, b` exchanges two **bare variable names**. Array elements and record members are not accepted as targets. Values need not have matching types. Missing operands default to numeric `0` even if their names end in `$`; initialize strings before swapping them.
+`SWAP target, target` exchanges scalar variables or array elements in either dialect, for example `SWAP items(i, j), replacement` or `SWAP names$(1), names$(2)`. Record members and string slices are not accepted as targets. Values need not have matching types. Missing operands use the ordinary numeric `0` or string `""` default (including `$` and DEFSTR); uninitialized elements of a declared record array use a default record. This also corrects the previous behavior where a missing string scalar in SWAP became numeric zero.
+
+Both destinations are resolved from left to right, evaluating each index exactly once, before either value is read or written. Thus `SWAP i, items(i)` selects the element using the old `i`; swapping a location with itself leaves its value unchanged. A target error leaves both destinations unwritten, although side effects from evaluating indices remain. Constants and `OPTION EXPLICIT` follow the same checks as INPUT targets. Array targets retain the usual flattened storage and do not add bounds or rank checks.
 
 `CLEAR` removes variable values in the current environment and resets the DATA cursor to the start. It retains constants, declaration flags, procedure/type definitions, options, and array bounds metadata. It does not close files or fully recreate the interpreter. Compatibility arguments after CLEAR are parsed and ignored.
 
@@ -360,7 +362,19 @@ PRINT "working"
 RETURN
 ```
 
-GOSUB executes from the target until RETURN and then resumes at the call site, preserving the caller's active blocks. Targets are collected within the current program or procedure, including nested blocks; they do not cross a procedure boundary. Unlike GOTO, GOSUB can reach a label in an inactive nested block. Falling off the target block without RETURN ends execution rather than acting as an implicit RETURN. RETURN has no label argument. RETURN without GOSUB is an error.
+GOSUB executes from the target until RETURN and then resumes at the call site, preserving the caller's active blocks. Targets are collected within the current program or procedure, including nested blocks; they do not cross a procedure boundary. Unlike GOTO, GOSUB can reach a label in an inactive nested block. Falling off the target block without RETURN ends execution rather than acting as an implicit RETURN.
+
+`RETURN [label]` ends exactly the most recent active GOSUB. With no target it resumes at the following statement. With a named label or literal line number it instead transfers control using that caller's GOTO resolution: active enclosing blocks can receive the jump, and an outward jump abandons intervening blocks. If the caller itself is inside another GOSUB, that still-active GOSUB can also resolve the jump through its collected label targets; otherwise inactive/sibling blocks cannot be entered. The target uses the same literal-number rules as GOTO; expressions are rejected. An unknown or unreachable target raises an undefined-label error. Both forms require an active GOSUB in the current program or procedure; RETURN without GOSUB is an error, including inside SUB and FUNCTION.
+
+```basic
+GOSUB work
+PRINT "skipped"
+done: PRINT "done"
+END
+work: RETURN done
+```
+
+Rice also permits targeted RETURN inside a SUB or FUNCTION, using that procedure's local labels. It cannot transfer into the module or another procedure. This procedure-local form is a Rice extension beyond the historical QuickBASIC restriction to module-level targets. RETURN does not replace EXIT SUB or EXIT FUNCTION. ANSI rejects both forms of RETURN.
 
 `ON expression GOTO label [, label ...]` and `ON expression GOSUB label [, label ...]` are QB-only. The selector is truncated toward zero to a checked signed 64-bit integer; 1 selects the first target. Zero, negative values, and values beyond the list continue with the next statement.
 
@@ -382,7 +396,11 @@ READ title$
 stock: DATA "Rice", 2, 3.5
 ```
 
-`DATA [item [, item ...]]` accepts numeric literals (including a leading minus), quoted strings, or single unquoted identifiers. It does not evaluate expressions. Unquoted identifiers are uppercased, so `DATA Rice` stores `"RICE"`; keywords, strings containing spaces/commas, and case-sensitive text should be quoted. Leading plus and empty fields are not supported. An empty DATA statement and a trailing comma are accepted but add no extra item.
+`DATA [item [, item ...]]` accepts numeric literals with an optional leading `+` or `-`, quoted strings, or single unquoted identifiers. It does not evaluate expressions or named constants. Unquoted identifiers are uppercased, so `DATA Rice` stores `"RICE"`; keywords, strings containing spaces/commas, and case-sensitive text should be quoted. Items require commas between them. Signs apply only to a numeric literal: `DATA +2, -3.5E1` is valid, while `DATA 1 + 2` and `DATA +name` are rejected.
+
+Missing comma-separated fields are empty DATA items in both modes. Leading, consecutive, and trailing commas all count: `DATA ,7,,` stores four items (empty, `7`, empty, empty), and `DATA ,` stores two empty items. A bare DATA statement stores no items. A trailing comma therefore adds an item, unlike earlier Rice versions, which discarded it. Comments and statement-ending colons do not remove a preceding empty field.
+
+When READ consumes an empty item, a destination whose current/default value is numeric receives `0`, and one whose current/default value is a string receives `""`. Existing values take precedence over suffix/declaration defaults. Record destinations raise a type mismatch and leave that item unconsumed. This differs from a quoted `""` item, which always assigns an actual empty string under the ordinary permissive READ rules. MAT READ treats an empty item as numeric zero. Array defaults and destination checks follow the same rules as INPUT, described below.
 
 DATA is collected before execution in textual traversal order, including data in nested branches/loops whether or not the branch executes. The prescan does not enter SUB/FUNCTION bodies, and calls do not prescan them later: DATA inside a procedure is not added to the DATA stream. Keep DATA at module level. All READ operations use one interpreter DATA cursor.
 

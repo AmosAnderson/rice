@@ -65,7 +65,7 @@ CONST name = expr
 OPTION BASE {0 | 1}
 REDIM [PRESERVE] declaration [, declaration ...]
 ERASE name [, name ...]
-SWAP name, name
+SWAP target, target
 CLEAR
 ```
 
@@ -81,7 +81,7 @@ PRINT LBOUND(table, 1); UBOUND(table, 2)
 REDIM PRESERVE values(20)
 ```
 
-Rice's initial OPTION BASE is **1 in both modes**. Ordinary array access does not enforce declared bounds/rank. Arrays use flattened variable keys; AS STRING does not determine untouched primitive element defaults, so use `$` names for string arrays. REDIM/ERASE have prefix-based removal and metadata limitations. SWAP accepts bare names only. See [Arrays](docs/language-reference.md#arrays) and [Values, variables, and assignment](docs/language-reference.md#values-variables-and-assignment).
+Rice's initial OPTION BASE is **1 in both modes**. Ordinary array access does not enforce declared bounds/rank. Arrays use flattened variable keys; AS STRING does not determine untouched primitive element defaults, so use `$` names for string arrays. REDIM/ERASE have prefix-based removal and metadata limitations. SWAP accepts scalar names and array elements, resolves both locations once before exchanging their values, and uses ordinary numeric/string/record defaults for missing values. Members and slices are not SWAP targets. See [Arrays](docs/language-reference.md#arrays) and [Values, variables, and assignment](docs/language-reference.md#values-variables-and-assignment).
 
 QB-only declaration forms:
 
@@ -143,11 +143,11 @@ QB-only legacy jumps:
 ```text
 IF expr THEN line-number [ELSE line-number]
 GOSUB label
-RETURN
+RETURN [label]
 ON expr {GOTO | GOSUB} label [, label ...]
 ```
 
-Numeric targets at the start of a single-line THEN or ELSE branch abbreviate GOTO; either branch can instead contain ordinary statements. Named targets use explicit GOTO. RETURN takes no target. Computed jumps use 1-based, truncated integer selectors and fall through outside the target list. See [Control flow](docs/language-reference.md#control-flow) for label scope, nested-block jumps, loop variable behavior, and termination.
+Numeric targets at the start of a single-line THEN or ELSE branch abbreviate GOTO; either branch can instead contain ordinary statements. Named targets use explicit GOTO. `RETURN label` unwinds one GOSUB and then transfers to a named or numeric label using the caller's existing GOTO resolution; plain RETURN resumes after the call. Either form requires an active GOSUB in the current program/procedure. Computed jumps use 1-based, truncated integer selectors and fall through outside the target list. See [Control flow](docs/language-reference.md#control-flow) for label scope, nested-block jumps, loop variable behavior, and termination.
 
 ## Procedures and scope
 
@@ -168,7 +168,7 @@ SHARED name [, name ...]
 STATIC declaration [, declaration ...]
 ```
 
-A `parameter` is `[BYVAL | BYREF] name[()] [AS type]`. QB parameters default to BYREF; ANSI defaults to BYVAL. Assign to the function name to provide its result. Array parameter annotations do not implement whole-array passing, and primitive return/parameter type clauses do not guarantee coercion. Use explicit CALL syntax with parentheses for multiple arguments; QB `name (x)` makes its argument an expression and suppresses BYREF writeback. The [Procedures reference](docs/procedures.md) specifies available call forms, copy-in/copy-out behavior, scope, STATIC, declaration limits, and QB `DEF FN` syntax.
+A `parameter` is `[BYVAL | BYREF] name[()] [AS type]`. QB parameters default to BYREF; ANSI defaults to BYVAL. BYREF copies modified values back to variables and individual array elements, capturing each destination during argument evaluation; indices run once, and later aliases win on writeback. Assign to the function name to provide its result. Array parameter annotations do not implement whole-array passing, and primitive return/parameter type clauses do not guarantee coercion. Use explicit CALL syntax with parentheses for multiple arguments; QB `name (x)` makes its argument an expression and suppresses BYREF writeback. The [Procedures reference](docs/procedures.md) specifies available call forms, copy-in/copy-out behavior, scope, STATIC, declaration limits, and QB `DEF FN` syntax.
 
 ## Records and strings
 
@@ -212,7 +212,7 @@ PRINT items are expressions, `TAB(expr)`, or `SPC(expr)`, separated by `;` or `,
 
 An input `target` is a scalar `name` or an array element `name(expr [, expr ...])`, including string arrays such as `names$(i)`. Record members, slices, and empty subscripts are rejected. INPUT resolves all indices once before reading and keeps them across retries; READ resolves and assigns each target in order. Existing integer conversion, declaration, and array-storage rules apply. These destinations work in both modes and in the file forms below.
 
-DATA contains literal numbers, negative numbers, strings, or single unquoted identifiers; unquoted text is uppercased. RESTORE labels must be attached directly to DATA; unknown labels silently rewind. See [DATA / READ / RESTORE](docs/language-reference.md#data--read--restore), [Input and output](docs/language-reference.md#input-and-output), and [PRINT USING](docs/print-using.md).
+DATA contains literal numbers with optional leading `+`/`-`, strings, or single unquoted identifiers; unquoted text is uppercased. Empty comma-separated fields, including leading/trailing fields, supply numeric zero or an empty string according to the READ destination's current/default value. Bare DATA has no items; `DATA ,` has two empty items. Empty fields cannot initialize a record; MAT READ treats them as zero. RESTORE labels must be attached directly to DATA; unknown labels silently rewind. See [DATA / READ / RESTORE](docs/language-reference.md#data--read--restore), [Input and output](docs/language-reference.md#input-and-output), and [PRINT USING](docs/print-using.md).
 
 Text-console statements:
 
@@ -296,7 +296,7 @@ MAT target = source {+ | - | *} source
 MAT target = (scalar-expression) * source
 ```
 
-DET returns the last inverse operation's determinant; use it as a bare special value as specified in [MAT operations](docs/mat-operations.md). MAT has a restricted expression grammar, not arbitrary nesting or general scalar-array arithmetic. `MAT PRINT #n, a` writes comma-separated numeric rows; `MAT INPUT #n, a` reads numeric fields in row-major order into an existing two-dimensional shape, storing the matrix only on success. Both evaluate the channel once and use the file instead of console streams. Console MAT PRINT retains space-separated rows. See the guide for errors, consumed input, and dimension/shape behavior.
+`DET`/`DET()` returns the last inverse operation's determinant. `DET(matrix)` or `DET(matrix())` calculates a square matrix's determinant directly, returning zero for an exactly singular matrix and preserving the cached determinant. See [MAT operations](docs/mat-operations.md). MAT has a restricted expression grammar, not arbitrary nesting or general scalar-array arithmetic. `MAT PRINT #n, a` writes comma-separated numeric rows; `MAT INPUT #n, a` reads numeric fields in row-major order into an existing two-dimensional shape, storing the matrix only on success. Both evaluate the channel once and use the file instead of console streams. Console MAT PRINT retains space-separated rows. See the guide for errors, consumed input, and dimension/shape behavior.
 
 ## System statements and builtins
 
@@ -324,5 +324,7 @@ ENVIRON string-expression
 See [System and filesystem statements](docs/language-reference.md#system-and-filesystem-statements) for host behavior and no-op cases. ENVIRON and date/time assignments set interpreter-local overrides.
 
 The complete [Built-in function reference](docs/builtins.md) lists every implemented function, alias, argument count, type expectation, and known limitation. `MIN(number [, number ...])` and `MAX(number [, number ...])` select numeric extrema in both modes; each requires at least one numeric argument. Call spelling matters: use `RND()`, `PI()`, and `MAXNUM()` with parentheses; use bare `TIMER` and `FREEFILE`. An unknown `name(args)` may resolve as an array element instead of producing an unknown-function error.
+
+`LEN(string)` counts Unicode scalar values. `LEN(record)` returns its current typed binary PUT byte count, including nested records and variable-string length headers; this size query works in both modes, while typed PUT serialization remains QB-specific.
 
 `COMMAND$()` (alias `COMMAND()`) returns program arguments joined with spaces. Run `rice program.bas -- argument ...` to pass them; `--` protects dash-leading arguments from Rice option parsing. New library and REPL interpreters default to empty arguments. See [runtime](docs/runtime.md) for the complete CLI and library contract.

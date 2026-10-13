@@ -105,11 +105,36 @@ An exactly zero pivot reports a singular-matrix error. There is no tolerance-bas
 near-singularity test, so an ill-conditioned matrix can produce inaccurate values
 without an error.
 
+### Determinants
+
+`DET(matrix)` and `DET(matrix())` independently compute a matrix's determinant in
+both modes. This is a Rice extension. The argument is a bare matrix name, optionally
+followed by empty parentheses; indexed elements, additional arguments, and other
+expressions are rejected without evaluating them. A same-named scalar variable or
+function is not read or called to resolve this matrix reference.
+
+The matrix must have a nonempty square shape. Two-dimensional DIM metadata or the
+usual local-element inference defines that shape; existing MAT lower-bound and
+numeric-extraction rules apply. `OPTION EXPLICIT` also checks the array's base
+name. Calculation uses Gaussian elimination with partial pivoting and `f64`
+arithmetic; an exactly zero pivot returns determinant `0`. No tolerance is applied
+to small pivots. The input cells, array metadata, and saved determinant are unchanged.
+As with inversion, ill-conditioned matrices and non-finite values have no special
+accuracy or compatibility guarantee; arithmetic can overflow or produce NaN.
+
+```basic
+DIM a(1 TO 2, 1 TO 2)
+DATA 1, 2, 2, 4
+MAT READ a
+PRINT DET(a)                 ' 0: singular matrices are accepted
+PRINT DET(a())               ' Same calculation
+```
+
 After a successful `MAT target = INV(source)`, `DET` or `DET()` reports that
-source matrix's determinant. It is initially `0`; a failed inverse leaves the
-previous value, and `CLEAR` does not reset it. `DET` does not accept a matrix
-argument or independently calculate a determinant. An ordinary variable named
-`DET` shadows the bare form; `DET()` explicitly requests the built-in value.
+source matrix's saved determinant. It is initially `0`; a failed inverse leaves
+the previous value, and `CLEAR` does not reset it. Calling `DET(matrix)` does not
+update this saved value. An ordinary variable named `DET` shadows the bare form;
+`DET()` explicitly requests the saved value.
 
 ## Matrix I/O
 
@@ -121,8 +146,9 @@ option.
 `MAT READ a` consumes the global `DATA` stream in row-major order: all columns of
 the first row, then the next row. It shares its cursor with ordinary `READ` and
 `RESTORE`. Numeric DATA values are used directly; string DATA values are parsed as
-numbers, and an unparseable string becomes `0`. On insufficient DATA, the statement
-errors after consuming available items but does not store a partial matrix.
+numbers, and an unparseable string becomes `0`. Empty DATA fields also become `0`.
+On insufficient DATA, the statement errors after consuming available items but
+does not store a partial matrix.
 
 ```basic
 DIM a(1 TO 2, 1 TO 3)

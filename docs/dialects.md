@@ -39,7 +39,7 @@ The **first recognized directive** in source order selects the mode for the enti
 | Hex/octal literals | `&H...`, `&O...` | Not recognized as numeric literal syntax |
 | Initial `OPTION BASE` | **1 in the current implementation** | 1 |
 | Default procedure arguments | `BYREF` | `BYVAL` |
-| `GOSUB`, `RETURN`, `ON expression GOTO/GOSUB` | Supported | Rejected |
+| `GOSUB`, `RETURN [label]`, `ON expression GOTO/GOSUB` | Supported; targeted RETURN unwinds one GOSUB before transfer | Rejected |
 | Single-line `IF expr THEN line-number [ELSE line-number]` | Numeric branch targets abbreviate GOTO; either branch may instead contain statements | Rejected; write explicit GOTO |
 | `ON ERROR GOTO`, `RESUME`, `ERROR` | Supported with limits below | Rejected |
 | `DEFINT`, `DEFLNG`, `DEFSNG`, `DEFDBL`, `DEFSTR`; `DEF FN` | Supported | Rejected |
@@ -58,6 +58,10 @@ The QBasic initial array base of 1 differs from the usual expectation for older 
 Unless a row above explicitly rejects a construct, do not infer that its historical origin restricts its use. Both modes accept:
 
 - Structured control flow, numeric/named labels and `GOTO`, `SUB`/`FUNCTION`, `DIM`, `CONST`, `SHARED`, `STATIC`, and user-defined records.
+- Individual array elements as BYREF arguments, with indices captured once before the call. Explicit BYREF is needed in ANSI. Whole-array binding and record-field writeback remain unsupported.
+- SWAP of scalar variables and array elements, with both destinations resolved once before exchanging values.
+- DATA with leading-plus numbers and empty comma-separated fields. READ empty fields supply numeric zero or an empty string according to the destination; records reject empty fields, and MAT READ uses zero.
+- LEN(record) for the current QB typed binary payload size, and DET(matrix) for independent square-matrix determinants, as Rice extensions. LEN(string) and cached DET()/bare DET retain their existing meanings.
 - `WHEN EXCEPTION IN ... USE ... END WHEN`, `RETRY`, and `CONTINUE`; `EXTYPE`/`EXTEXT$` provide structured exception information. `ERR` and `ERL` can be read in either mode, though only QB installs classic handlers.
 - ANSI-style string slicing, MAT operations including file-channel PRINT/INPUT, and `PRINT USING`.
 - Comma-separated NEXT lists such as `NEXT j, i`, closing nested FOR loops from innermost to outermost. Their availability in ANSI mode is a Rice extension.

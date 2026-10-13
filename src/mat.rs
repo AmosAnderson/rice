@@ -80,6 +80,43 @@ pub fn mat_scalar_mul(k: f64, a: &[Vec<f64>]) -> Vec<Vec<f64>> {
         .collect()
 }
 
+/// Determinant using Gaussian elimination with partial pivoting.
+/// Singular matrices return zero; empty and nonsquare matrices are errors.
+pub fn mat_det(a: &[Vec<f64>]) -> Result<f64, RuntimeError> {
+    let n = a.len();
+    if n == 0 || a.iter().any(|row| row.len() != n) {
+        return Err(RuntimeError::General {
+            msg: "DET: matrix must be nonempty and square".into(),
+        });
+    }
+    let mut work = a.to_vec();
+    let mut determinant = 1.0;
+    for col in 0..n {
+        let mut pivot_row = col;
+        for row in col + 1..n {
+            if work[row][col].abs() > work[pivot_row][col].abs() {
+                pivot_row = row;
+            }
+        }
+        let pivot = work[pivot_row][col];
+        if pivot == 0.0 {
+            return Ok(0.0);
+        }
+        if pivot_row != col {
+            work.swap(col, pivot_row);
+            determinant = -determinant;
+        }
+        determinant *= pivot;
+        for row in col + 1..n {
+            let factor = work[row][col] / pivot;
+            for column in col + 1..n {
+                work[row][column] -= factor * work[col][column];
+            }
+        }
+    }
+    Ok(determinant)
+}
+
 /// Matrix inverse using Gaussian elimination with partial pivoting.
 /// Returns (inverse, determinant). Errors if the matrix is singular or not square.
 pub fn mat_inv(a: &[Vec<f64>]) -> Result<(Vec<Vec<f64>>, f64), RuntimeError> {
@@ -262,6 +299,45 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_mat_det_pivots_singular_and_small_values() {
+        assert_eq!(mat_det(&[vec![7.0]]).unwrap(), 7.0);
+        assert_eq!(mat_det(&[vec![0.0, 2.0], vec![3.0, 4.0]]).unwrap(), -6.0);
+        assert_eq!(mat_det(&[vec![1.0, 2.0], vec![2.0, 4.0]]).unwrap(), 0.0);
+        assert_eq!(
+            mat_det(&[
+                vec![0.0, 1.0, 0.0],
+                vec![0.0, 0.0, 1.0],
+                vec![1.0, 0.0, 0.0]
+            ])
+            .unwrap(),
+            1.0
+        );
+        let small = mat_det(&[vec![1e-15, 0.0], vec![0.0, 2e-15]]).unwrap();
+        assert!((small / 2e-30 - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_mat_det_rejects_invalid_shapes_and_preserves_source() {
+        for invalid in [
+            vec![],
+            vec![vec![]],
+            vec![vec![1.0, 2.0]],
+            vec![vec![1.0], vec![2.0, 3.0]],
+        ] {
+            assert!(mat_det(&invalid).is_err());
+        }
+        let matrix = vec![
+            vec![3.0, 2.0, 1.0],
+            vec![1.0, 0.0, 2.0],
+            vec![4.0, 1.0, 5.0],
+        ];
+        let original = matrix.clone();
+        let (_, inverse_det) = mat_inv(&matrix).unwrap();
+        assert!((mat_det(&matrix).unwrap() - inverse_det).abs() < 1e-12);
+        assert_eq!(matrix, original);
     }
 
     #[test]

@@ -87,10 +87,11 @@ PRINT Greeting$("world")
 
 Use `EXIT FUNCTION` for an early return. `RETURN` belongs to `GOSUB` in QBasic
 mode and is not a function-return statement. `END` inside a `SUB` stops the whole
-program. A current implementation limitation is that function evaluation discards
-non-error control-flow results, so `END` inside a `FUNCTION` does not stop the
-caller; do not use it for program termination. Labels and `GOSUB` targets in a
-procedure are local to that invocation. See [Error Handling](error-handling.md)
+program. A current implementation limitation is that `END` inside a `FUNCTION`
+does not stop the caller; do not use it for program termination. Unmatched RETURN
+and unresolved GOTO/RETURN targets at a function boundary report runtime errors.
+Labels and `GOSUB` targets in a procedure are local to that invocation.
+See [Error Handling](error-handling.md)
 for the limitations of error handlers in procedures.
 
 ## DEF functions
@@ -137,14 +138,24 @@ even though `FUNCTION` itself accepts it. Type clauses on parameters are accepte
 | Unqualified parameter | `BYREF` | `BYVAL` |
 | Explicit `BYREF` / `BYVAL` | Accepted | Accepted |
 | Scalar `AS type` | Parsed, not enforced at runtime | Same |
-| Whole record argument | Copied in; copied back for a plain `BYREF` variable | Copied in; copied back only with explicit `BYREF` |
+| Whole record argument | Copied in; copied back for a `BYREF` variable or array element | Copied in; copied back only with explicit `BYREF` |
 | Array parameter `a()` | Syntax accepted; array binding is not implemented | Same |
 
 Arguments are evaluated left to right in the caller, before entering the procedure.
 Each value is copied into a parameter. At exit, parameters marked `BYREF` are
-copied back only when the corresponding argument is a **plain variable**.
-Parenthesized expressions, arithmetic expressions, array elements, member accesses,
-and slices have no write-back destination, even with explicit `BYREF`.
+copied back when the corresponding argument is a **variable or array element**,
+including a string or record-valued element and multidimensional subscripts.
+Each index is evaluated exactly once during that argument's evaluation. The
+destination is then fixed: a later argument or the procedure body changing an
+index variable does not redirect the write-back.
+
+Parenthesized expressions, arithmetic expressions, function results, member
+accesses, and slices have no write-back destination, even with explicit `BYREF`.
+For ambiguous `name(args)` expressions, builtin and user-function lookup still
+take precedence over arrays. Constants, including constant aliases of flattened
+element keys and constant array base names, are passed without write-back.
+Index conversion, declaration checks, defaults, and scope lookup follow ordinary
+array reads; this does not add bounds/rank enforcement or whole-array binding.
 
 ```basic
 SUB Change(BYREF x)
@@ -161,13 +172,17 @@ PRINT n                            ' 10 in both modes
 DIM a(1 TO 2)
 a(1) = 7
 CALL Change(a(1))
-PRINT a(1)                         ' 7: array elements are not written back
+PRINT a(1)                         ' 42 in both modes
+CALL Change((a(1)))                ' Explicit expression: no write-back
 ```
 
-This is copy-in/copy-out, not a live alias. When one caller variable is passed to
-two parameters, they start with independent values, and later parameters win on
-write-back. Changes are also copied back when a procedure exits with a runtime
-error. Parameter `AS` declarations do not coerce values or reject mismatched types.
+This is copy-in/copy-out, not a live alias. When the same variable or element is
+passed to two parameters, they start with independent values, and later
+parameters win on write-back. Changes are also copied back when a procedure exits
+with a runtime error. Parameter `AS` declarations do not coerce values or reject
+mismatched types. Invalid index evaluation prevents entering the procedure;
+earlier argument-evaluation side effects are not rolled back. These rules apply
+to SUB, FUNCTION, and DEF calls.
 
 ### Array parameter limitation
 

@@ -103,7 +103,7 @@ CALL Greet("World")
 PRINT Square(5)
 ```
 
-A function returns by assigning to its own name. Explicit BYVAL avoids the dialect-dependent default. Rice implements BYREF as copy-in/copy-out for bare variable arguments, with limitations for arrays and fields; read [procedures and scope](procedures.md) before using shared state.
+A function returns by assigning to its own name. Explicit BYVAL avoids the dialect-dependent default. Rice implements BYREF as copy-in/copy-out for variables and individual array elements, with indices evaluated once before the call. Whole-array parameters and record-field write-back remain unsupported; read [procedures and scope](procedures.md) before using shared state.
 
 ## Text files
 

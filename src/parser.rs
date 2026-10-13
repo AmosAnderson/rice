@@ -115,7 +115,19 @@ impl Parser {
             Token::KwReturn => {
                 if self.dialect == crate::Dialect::QuickBasic {
                     self.advance();
-                    Ok(Stmt::Return)
+                    let target = if self.at_stmt_end() {
+                        None
+                    } else {
+                        Some(self.parse_label()?)
+                    };
+                    if !self.at_stmt_end() {
+                        return Err(ParseError::Expected {
+                            line: self.current_line(),
+                            expected: "end of statement after RETURN target".into(),
+                            found: format!("{:?}", self.peek()),
+                        });
+                    }
+                    Ok(Stmt::Return(target))
                 } else {
                     Err(ParseError::General {
                         line: self.current_line(),
@@ -1620,15 +1632,18 @@ impl Parser {
 
     fn parse_swap(&mut self) -> Result<Stmt, ParseError> {
         self.advance(); // consume SWAP
-        let a = self.parse_variable()?;
+        let a = self.parse_input_target()?;
         self.expect(Token::Comma)?;
-        let b = self.parse_variable()?;
+        let b = self.parse_input_target()?;
         Ok(Stmt::Swap { a, b })
     }
 
     fn parse_data(&mut self) -> Result<Stmt, ParseError> {
         self.advance(); // consume DATA
         let mut items = Vec::new();
+        if self.at_stmt_end() {
+            return Ok(Stmt::Data(items));
+        }
         loop {
             match self.peek() {
                 Token::StringLiteral(s) => {
@@ -1639,17 +1654,18 @@ impl Parser {
                     items.push(DataItem::Number(*n));
                     self.advance();
                 }
-                Token::Minus => {
+                Token::Plus | Token::Minus => {
+                    let negative = matches!(self.peek(), Token::Minus);
                     self.advance();
                     match self.peek() {
                         Token::NumericLiteral(n) => {
-                            items.push(DataItem::Number(-*n));
+                            items.push(DataItem::Number(if negative { -*n } else { *n }));
                             self.advance();
                         }
                         _ => {
                             return Err(ParseError::Expected {
                                 line: self.current_line(),
-                                expected: "number after minus in DATA".into(),
+                                expected: "numeric literal after sign in DATA".into(),
                                 found: format!("{:?}", self.peek()),
                             });
                         }
@@ -1660,12 +1676,26 @@ impl Parser {
                     items.push(DataItem::Str(name.clone()));
                     self.advance();
                 }
-                _ => break,
+                Token::Comma => items.push(DataItem::Empty),
+                _ if self.at_stmt_end() => items.push(DataItem::Empty),
+                _ => {
+                    return Err(ParseError::Expected {
+                        line: self.current_line(),
+                        expected: "literal or empty field in DATA".into(),
+                        found: format!("{:?}", self.peek()),
+                    });
+                }
             }
             if matches!(self.peek(), Token::Comma) {
                 self.advance();
-            } else {
+            } else if self.at_stmt_end() {
                 break;
+            } else {
+                return Err(ParseError::Expected {
+                    line: self.current_line(),
+                    expected: "comma or end of statement after DATA item".into(),
+                    found: format!("{:?}", self.peek()),
+                });
             }
         }
         Ok(Stmt::Data(items))
@@ -2746,13 +2776,13 @@ impl Parser {
         if matches!(self.peek(), Token::Dot) {
             return Err(ParseError::General {
                 line: self.current_line(),
-                msg: "READ and INPUT targets do not support record members".into(),
+                msg: "READ, INPUT, and SWAP targets do not support record members".into(),
             });
         }
         if !self.at_stmt_end() && !matches!(self.peek(), Token::Comma) {
             return Err(ParseError::Expected {
                 line: self.current_line(),
-                expected: "comma or end of statement after input target".into(),
+                expected: "comma or end of statement after target".into(),
                 found: format!("{:?}", self.peek()),
             });
         }
@@ -3313,6 +3343,94 @@ mod tests {
     }
 
     #[test]
+    fn test_data_signed_literals_and_empty_fields() {
+        for dialect in [crate::Dialect::QuickBasic, crate::Dialect::Ansi] {
+            let tokens = Lexer::with_dialect("DATA ,+2,,-3.5,\"\",rice,", dialect)
+                .tokenize()
+                .unwrap();
+            let program = Parser::with_dialect(tokens, dialect)
+                .parse_program()
+                .unwrap();
+            let Stmt::Data(items) = &program.statements[0].stmt else {
+                panic!("expected DATA");
+            };
+            assert!(matches!(items.as_slice(), [
+                DataItem::Empty, DataItem::Number(2.0), DataItem::Empty,
+                DataItem::Number(-3.5), DataItem::Str(empty), DataItem::Str(word),
+                DataItem::Empty,
+            ] if empty.is_empty() && word == "RICE"));
+        }
+        for (source, count) in [("DATA", 0), ("DATA ,", 2), ("DATA ,, ' tail", 3)] {
+            let program = parse(source);
+            let Stmt::Data(items) = &program.statements[0].stmt else {
+                panic!("expected DATA");
+            };
+            assert_eq!(items.len(), count, "{source}");
+        }
+        assert!(parse_result("DATA +&HF,-&O10").is_ok());
+        assert!(parse_result("IF 1 THEN DATA , ELSE DATA +2,").is_ok());
+        assert!(parse_result("WHEN EXCEPTION IN\nDATA , USE\nDATA +2, END WHEN").is_ok());
+    }
+
+    #[test]
+    fn test_data_rejects_expressions_and_missing_separators() {
+        for source in [
+            "DATA +",
+            "DATA -",
+            "DATA ++1",
+            "DATA +-1",
+            "DATA +rice",
+            "DATA +\"1\"",
+            "DATA 1 + 2",
+            "DATA (1)",
+            "DATA RND()",
+            "DATA 1 extra",
+            "DATA rice other",
+            "DATA 1 x = 2",
+            "DATA , PRINT 1",
+        ] {
+            assert!(parse_result(source).is_err(), "accepted {source}");
+        }
+    }
+
+    #[test]
+    fn test_return_optional_targets_and_boundaries() {
+        let program =
+            parse("RETURN\nRETURN 100\nRETURN done: PRINT 1\nIF 1 THEN RETURN done ELSE RETURN");
+        assert!(matches!(program.statements[0].stmt, Stmt::Return(None)));
+        assert!(matches!(
+            program.statements[1].stmt,
+            Stmt::Return(Some(Label::Number(100)))
+        ));
+        assert!(
+            matches!(&program.statements[2].stmt, Stmt::Return(Some(Label::Name(name))) if name == "DONE")
+        );
+        for source in [
+            "RETURN -1",
+            "RETURN 1.5",
+            "RETURN 4294967296",
+            "RETURN +1",
+            "RETURN (100)",
+            "RETURN 100 + 1",
+            "RETURN target()",
+            "RETURN one two",
+            "RETURN one, two",
+            "RETURN one value = 1",
+        ] {
+            assert!(parse_result(source).is_err(), "accepted {source}");
+        }
+        for source in ["RETURN", "RETURN 100", "RETURN done"] {
+            let tokens = Lexer::with_dialect(source, crate::Dialect::Ansi)
+                .tokenize()
+                .unwrap();
+            let error = Parser::with_dialect(tokens, crate::Dialect::Ansi)
+                .parse_program()
+                .unwrap_err();
+            assert!(error.to_string().contains("RETURN is not supported"));
+        }
+    }
+
+    #[test]
     fn test_next_lists_reject_missing_mismatched_and_excess_counters() {
         for ending in [
             "NEXT i, j",
@@ -3466,6 +3584,39 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn test_swap_accepts_scalar_and_indexed_targets() {
+        for dialect in [crate::Dialect::QuickBasic, crate::Dialect::Ansi] {
+            let tokens = Lexer::with_dialect(
+                "SWAP a(i + 1, j), b$\nIF 1 THEN SWAP a(1, 2), a(2, 1) ELSE PRINT 0\n",
+                dialect,
+            )
+            .tokenize()
+            .unwrap();
+            let program = Parser::with_dialect(tokens, dialect)
+                .parse_program()
+                .unwrap();
+            let Stmt::Swap { a, b } = &program.statements[0].stmt else {
+                panic!("expected SWAP");
+            };
+            assert_eq!(a.name, "A");
+            assert_eq!(a.indices.len(), 2);
+            assert_eq!(b.name, "B$");
+            assert!(b.indices.is_empty());
+        }
+        for source in [
+            "SWAP a(), b",
+            "SWAP a(1:2), b",
+            "SWAP a.x, b",
+            "SWAP a(1).x, b",
+            "SWAP a, b + 1",
+            "SWAP a(1,), b",
+        ] {
+            let tokens = Lexer::new(source).tokenize().unwrap();
+            assert!(Parser::new(tokens).parse_program().is_err(), "{source}");
+        }
     }
 
     #[test]

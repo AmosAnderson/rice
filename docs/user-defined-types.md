@@ -170,12 +170,13 @@ CALL MovePoint(point, 3, 4)
 PRINT point.x; ","; point.y         ' 3,4
 ```
 
-The runtime copies a record into the parameter and, for a plain variable `BYREF`
-argument, copies it back on exit. Unqualified parameters default to `BYREF` in
-QBasic and `BYVAL` in ANSI. Parenthesizing the argument as
-`CALL MovePoint((point), 3, 4)` prevents write-back. Array elements and nested
-record fields can be read as arguments, but passing `points(1)` or
-`person.Position` does not write changes back, even with a `BYREF` parameter.
+The runtime copies a record into the parameter and, for a variable or array-element
+`BYREF` argument, copies it back on exit. Unqualified parameters default to `BYREF`
+in QBasic and `BYVAL` in ANSI. `CALL MovePoint(points(1), 3, 4)` writes the changed
+record back to that element, evaluating its indices once before the call.
+Parenthesizing the argument as `CALL MovePoint((point), 3, 4)` or
+`CALL MovePoint((points(1)), 3, 4)` prevents write-back. Nested record fields such
+as `person.Position` can be read as arguments but do not receive write-back.
 
 `AS PointType` on a parameter does not perform runtime validation. Functions can
 return a record assigned to their function-name variable, but `AS PointType` on the
@@ -185,6 +186,57 @@ to `0` (or `""` for a `$` name).
 `STATIC state AS PointType` retains a record between calls, and a shared scalar
 record's field writes update its shared value. See the scope and static-storage
 limitations in [Procedures and Scope](procedures.md).
+
+## Record byte length
+
+`LEN(record_expression)` reports the number of bytes that QBasic-mode `PUT` would
+write for the current record value. This Rice extension is available in both
+dialects; ANSI `GET`/`PUT` still use their separate raw-string behavior. It counts
+the payload only, without record-position gaps, a RANDOM record stride, or host
+structure alignment.
+
+The expression is evaluated once. Scalar records, array elements, nested record
+fields, and record-valued function results are accepted. `LEN(string)` continues
+to count Unicode scalar values; `LEN(number)` remains a type mismatch.
+
+| Declared field type | Bytes counted |
+| --- | --- |
+| `INTEGER` | 2 |
+| `LONG`, `SINGLE` | 4 |
+| `DOUBLE`, `NUMERIC` | 8 |
+| `STRING * n` | Exactly `n`, regardless of the string's current length |
+| `STRING` | 2-byte length header plus the current Unicode scalar count |
+| Another record type | Recursively count that declared type's fields in declaration order |
+
+Binary strings encode one byte per Unicode scalar, with characters above U+00FF
+mapped to byte 255. The size therefore differs from the UTF-8 byte length.
+Variable-length fields longer than 65535 characters raise illegal function call,
+matching `PUT`; fixed-length fields do not have that limit. Empty records have
+length zero, and checked size sums raise overflow if they exceed the host size
+range. No payload is allocated or file accessed to compute the length.
+
+```basic
+TYPE Entry
+    id AS INTEGER
+    tag AS STRING * 4
+    description AS STRING
+END TYPE
+DIM item AS Entry
+item.description = "é🙂"
+PRINT LEN(item)              ' 10: 2 + 4 + (2 + 2)
+```
+
+Length calculation checks the same stored value kinds and required fields as
+binary serialization. A string assigned to a numeric field, a number assigned to
+a string field, or a primitive assigned to a nested record field causes a type
+mismatch. These checks do not add assignment-time type enforcement. The current
+schema defines the layout: duplicate declared fields are counted repeatedly, and
+redefining a type affects existing records' reported size or can cause a missing
+field error. A nested record uses its parent's declared nested schema, as `PUT`
+does, even if loose assignment stored a record with a different type name.
+
+Record lengths require the interpreter's type definitions; a standalone
+`BuiltinRegistry` only supports the string form of `LEN`.
 
 ## Binary records and compatibility limits
 

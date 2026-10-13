@@ -47,7 +47,7 @@ enum ControlFlow {
     ExitSub,
     ExitFunction,
     Goto(Label),
-    Return,
+    Return(Option<Label>),
     End,
     Retry,
     Continue,
@@ -469,7 +469,10 @@ impl Interpreter {
                 self.exec_block_from(&destination.statements, destination.index)?
             };
             match result {
-                ControlFlow::Return => return Ok(ControlFlow::Normal),
+                ControlFlow::Return(target) => {
+                    // Unwind this GOSUB before resolving a targeted return in the caller.
+                    return Ok(target.map_or(ControlFlow::Normal, ControlFlow::Goto));
+                }
                 ControlFlow::Goto(label) => target = label,
                 // Falling off the program ends execution; it is not an implicit RETURN.
                 ControlFlow::Normal => return Ok(ControlFlow::End),
@@ -526,9 +529,9 @@ impl Interpreter {
                         return Ok(ControlFlow::Goto(label));
                     }
                 }
-                ControlFlow::Return => {
+                ControlFlow::Return(target) => {
                     if is_gosub {
-                        return Ok(ControlFlow::Return);
+                        return Ok(ControlFlow::Return(target));
                     }
                     return Err(RuntimeError::General {
                         msg: "RETURN without GOSUB".into(),
@@ -697,7 +700,7 @@ impl Interpreter {
             Stmt::SelectCase(select) => self.exec_select(select),
             Stmt::Goto(label) => Ok(ControlFlow::Goto(label.clone())),
             Stmt::Gosub(label) => self.exec_gosub(label),
-            Stmt::Return => Ok(ControlFlow::Return),
+            Stmt::Return(target) => Ok(ControlFlow::Return(target.clone())),
             Stmt::OnGoto {
                 expr,
                 labels,
@@ -739,20 +742,12 @@ impl Interpreter {
             }
             Stmt::Call { name, args } => self.exec_sub_call(name, args),
             Stmt::Swap { a, b } => {
-                self.require_writable(&a.name)?;
-                self.require_writable(&b.name)?;
-                let va = self
-                    .env
-                    .borrow()
-                    .get(&a.name)
-                    .unwrap_or(Value::Numeric(0.0));
-                let vb = self
-                    .env
-                    .borrow()
-                    .get(&b.name)
-                    .unwrap_or(Value::Numeric(0.0));
-                self.env.borrow_mut().set(&a.name, vb);
-                self.env.borrow_mut().set(&b.name, va);
+                let a_key = self.resolve_input_target(a)?;
+                let b_key = self.resolve_input_target(b)?;
+                let va = self.input_target_value(a, &a_key)?;
+                let vb = self.input_target_value(b, &b_key)?;
+                self.env.borrow_mut().set(&a_key, vb);
+                self.env.borrow_mut().set(&b_key, va);
                 Ok(ControlFlow::Normal)
             }
             Stmt::Read(vars) => self.exec_read(vars),
@@ -1319,11 +1314,20 @@ impl Interpreter {
                 });
             }
             let item = &self.data_values[self.data_pos];
-            self.data_pos += 1;
             let val = match item {
                 DataItem::Number(n) => Value::Numeric(*n),
                 DataItem::Str(s) => Value::Str(s.clone()),
+                DataItem::Empty => match self.input_target_value(var, &key)? {
+                    Value::Numeric(_) => Value::Numeric(0.0),
+                    Value::Str(_) => Value::Str(String::new()),
+                    Value::Record { .. } => {
+                        return Err(RuntimeError::TypeMismatch {
+                            msg: "cannot READ an empty DATA item into a record".into(),
+                        });
+                    }
+                },
             };
+            self.data_pos += 1;
             self.env.borrow_mut().set(&key, val);
         }
         Ok(ControlFlow::Normal)
@@ -1846,11 +1850,8 @@ impl Interpreter {
         name: &str,
         arg_exprs: &[Expr],
     ) -> Result<ControlFlow, RuntimeError> {
-        // Evaluate arguments
-        let args: Vec<Value> = arg_exprs
-            .iter()
-            .map(|e| self.eval_expr(e))
-            .collect::<Result<Vec<_>, _>>()?;
+        // Capture direct variable/element destinations during the original evaluation.
+        let (args, argument_targets) = self.eval_call_arguments(arg_exprs)?;
 
         // Check for user-defined sub
         let sub = self.subs.get(name).cloned();
@@ -1911,7 +1912,7 @@ impl Interpreter {
             }
             self.current_static_vars = prev_static;
 
-            self.byref_writeback(&sub.params, arg_exprs, &child_env);
+            self.byref_writeback(&sub.params, &argument_targets, &child_env);
 
             match result? {
                 ControlFlow::Normal | ControlFlow::ExitSub => Ok(ControlFlow::Normal),
@@ -1919,7 +1920,7 @@ impl Interpreter {
                 ControlFlow::Goto(label) => Err(RuntimeError::UndefinedLabel {
                     label: label.to_string(),
                 }),
-                ControlFlow::Return => Err(RuntimeError::General {
+                ControlFlow::Return(_) => Err(RuntimeError::General {
                     msg: "RETURN without GOSUB in current procedure".into(),
                 }),
                 _ => Err(RuntimeError::General {
@@ -1933,19 +1934,33 @@ impl Interpreter {
         }
     }
 
-    /// BYREF write-back: copy modified parameter values back to caller variables.
-    /// Skips BYVAL params, array params, and non-variable argument expressions.
-    fn byref_writeback(&self, params: &[Param], arg_exprs: &[Expr], child_env: &EnvRef) {
+    fn eval_call_arguments(
+        &mut self,
+        expressions: &[Expr],
+    ) -> Result<(Vec<Value>, Vec<Option<String>>), RuntimeError> {
+        let mut values = Vec::with_capacity(expressions.len());
+        let mut targets = Vec::with_capacity(expressions.len());
+        for expression in expressions {
+            let mut target = None;
+            values.push(self.eval_expr_with_target(expression, Some(&mut target))?);
+            targets.push(target);
+        }
+        Ok((values, targets))
+    }
+
+    /// BYREF remains copy-in/copy-out, using locations frozen before the call.
+    /// Expressions, BYVAL parameters, and whole-array parameters have no write-back.
+    fn byref_writeback(&self, params: &[Param], targets: &[Option<String>], child_env: &EnvRef) {
         for (i, param) in params.iter().enumerate() {
             if param.by_val || param.is_array {
                 continue;
             }
-            if let Some(Expr::Variable(caller_var)) = arg_exprs.get(i) {
+            if let Some(Some(key)) = targets.get(i) {
                 let val = child_env
                     .borrow()
                     .get(&param.name)
                     .unwrap_or(Value::Numeric(0.0));
-                self.env.borrow_mut().set(&caller_var.name, val);
+                self.env.borrow_mut().set(key, val);
             }
         }
     }
@@ -2016,12 +2031,23 @@ impl Interpreter {
     }
 
     pub fn eval_expr(&mut self, expr: &Expr) -> Result<Value, RuntimeError> {
+        self.eval_expr_with_target(expr, None)
+    }
+
+    /// Only the outermost expression can supply a BYREF destination. Recursive
+    /// evaluations use eval_expr, so parentheses, members, and arithmetic suppress it.
+    fn eval_expr_with_target(
+        &mut self,
+        expr: &Expr,
+        target: Option<&mut Option<String>>,
+    ) -> Result<Value, RuntimeError> {
         match expr {
             Expr::NumericLit(n) => Ok(Value::Numeric(*n)),
             Expr::StringLit(s) => Ok(Value::Str(s.clone())),
             Expr::Variable(var) => {
                 // Auto-initialize undefined variables (classic BASIC behavior)
                 if let Some(val) = self.env.borrow().get(&var.name) {
+                    self.capture_argument_target(&var.name, &var.name, target);
                     Ok(val)
                 } else {
                     // Some 0-arg builtins are commonly used like variables in BASIC (e.g. DATE$, TIME$).
@@ -2081,6 +2107,7 @@ impl Interpreter {
                     self.require_declared(&var.name)?;
                     let default = self.default_for_var(&var.name);
                     self.env.borrow_mut().set(&var.name, default.clone());
+                    self.capture_argument_target(&var.name, &var.name, target);
                     Ok(default)
                 }
             }
@@ -2091,7 +2118,11 @@ impl Interpreter {
                     .collect::<Result<Vec<_>, _>>()?;
                 // Simplified array lookup using flattened key
                 let key = Self::array_key(name, &idx_vals);
-                self.get_or_init_array_element(name, &key)
+                let value = self.get_or_init_array_element(name, &key)?;
+                if !indices.is_empty() {
+                    self.capture_argument_target(name, &key, target);
+                }
+                Ok(value)
             }
             Expr::BinaryOp { left, op, right } => {
                 let lval = self.eval_expr(left)?;
@@ -2107,13 +2138,31 @@ impl Interpreter {
                 if name == "LBOUND" || name == "UBOUND" {
                     return self.eval_array_bound(name, args);
                 }
-                let arg_vals: Vec<Value> = args
-                    .iter()
-                    .map(|e| self.eval_expr(e))
-                    .collect::<Result<Vec<_>, _>>()?;
+                if name == "DET" {
+                    return self.eval_determinant(args);
+                }
+                let (arg_vals, argument_targets) = if self.functions.contains_key(name) {
+                    self.eval_call_arguments(args)?
+                } else {
+                    // Builtins and array indices never copy their arguments back.
+                    let values = args
+                        .iter()
+                        .map(|expr| self.eval_expr(expr))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    (values, Vec::new())
+                };
 
                 // Stateful functions (need access to interpreter state)
                 match name.as_str() {
+                    "LEN" if arg_vals.len() == 1 => {
+                        if let Value::Record { type_name, .. } = &arg_vals[0] {
+                            let size = self.serialized_value_size(
+                                &arg_vals[0],
+                                &BasicType::UserDefined(type_name.clone()),
+                            )?;
+                            return Ok(Value::Numeric(size as f64));
+                        }
+                    }
                     "COMMAND$" | "COMMAND" => {
                         if !arg_vals.is_empty() {
                             return Err(RuntimeError::ArityMismatch {
@@ -2173,15 +2222,6 @@ impl Interpreter {
                             });
                         }
                         return Ok(Value::Numeric(self.print_row as f64));
-                    }
-                    "DET" => {
-                        if !arg_vals.is_empty() {
-                            return Err(RuntimeError::ArityMismatch {
-                                expected: 0,
-                                got: arg_vals.len(),
-                            });
-                        }
-                        return Ok(Value::Numeric(self.last_det));
                     }
                     "ERR" => {
                         if !arg_vals.is_empty() {
@@ -2418,7 +2458,7 @@ impl Interpreter {
                 // Try user-defined function
                 let func = self.functions.get(name).cloned();
                 if let Some(func) = func {
-                    return self.call_user_function(&func, &arg_vals, args);
+                    return self.call_user_function(&func, &arg_vals, &argument_targets);
                 }
 
                 // Fall through to array access
@@ -2427,7 +2467,11 @@ impl Interpreter {
                     .map(|v| v.to_i64())
                     .collect::<Result<Vec<_>, _>>()?;
                 let key = Self::array_key(name, &idx_vals);
-                self.get_or_init_array_element(name, &key)
+                let value = self.get_or_init_array_element(name, &key)?;
+                if !args.is_empty() {
+                    self.capture_argument_target(name, &key, target);
+                }
+                Ok(value)
             }
             Expr::StringSlice { name, start, end } => {
                 self.require_declared(name)?;
@@ -2466,6 +2510,50 @@ impl Interpreter {
                         msg: "member access on non-record value".into(),
                     }),
                 }
+            }
+        }
+    }
+
+    fn eval_determinant(&self, args: &[Expr]) -> Result<Value, RuntimeError> {
+        if args.is_empty() {
+            return Ok(Value::Numeric(self.last_det));
+        }
+        if args.len() != 1 {
+            return Err(RuntimeError::ArityMismatch {
+                expected: 1,
+                got: args.len(),
+            });
+        }
+        let name = match &args[0] {
+            Expr::Variable(var) => &var.name,
+            Expr::FunctionCall { name, args } if args.is_empty() => name,
+            _ => {
+                return Err(RuntimeError::IllegalFunctionCall {
+                    msg: "DET expects a matrix name or empty array parentheses".into(),
+                });
+            }
+        };
+        self.require_declared(name)?;
+        let (rows, cols) = self
+            .matrix_dims(name)
+            .ok_or_else(|| RuntimeError::General {
+                msg: format!("DET: array '{name}' must have a two-dimensional shape"),
+            })?;
+        if rows == 0 || rows != cols {
+            return Err(RuntimeError::General {
+                msg: "DET: matrix must be nonempty and square".into(),
+            });
+        }
+        Ok(Value::Numeric(crate::mat::mat_det(
+            &self.extract_matrix(name)?,
+        )?))
+    }
+
+    fn capture_argument_target(&self, name: &str, key: &str, target: Option<&mut Option<String>>) {
+        if let Some(target) = target {
+            let env = self.env.borrow();
+            if !env.is_const(name) && !env.is_const(key) {
+                *target = Some(key.to_owned());
             }
         }
     }
@@ -2511,7 +2599,7 @@ impl Interpreter {
         &mut self,
         func: &UserFunction,
         args: &[Value],
-        arg_exprs: &[Expr],
+        argument_targets: &[Option<String>],
     ) -> Result<Value, RuntimeError> {
         if args.len() != func.params.len() {
             return Err(RuntimeError::ArityMismatch {
@@ -2580,9 +2668,21 @@ impl Interpreter {
         }
         self.current_static_vars = prev_static;
 
-        self.byref_writeback(&func.params, arg_exprs, &child_env);
+        self.byref_writeback(&func.params, argument_targets, &child_env);
 
-        result?;
+        match result? {
+            ControlFlow::Goto(label) => {
+                return Err(RuntimeError::UndefinedLabel {
+                    label: label.to_string(),
+                });
+            }
+            ControlFlow::Return(_) => {
+                return Err(RuntimeError::General {
+                    msg: "RETURN without GOSUB in current procedure".into(),
+                });
+            }
+            _ => {}
+        }
         // Return value is stored in the function name variable
         Ok(child_env
             .borrow()
@@ -3367,6 +3467,7 @@ impl Interpreter {
                         *cell = match item {
                             DataItem::Number(n) => *n,
                             DataItem::Str(s) => s.parse::<f64>().unwrap_or(0.0),
+                            DataItem::Empty => 0.0,
                         };
                     }
                 }
@@ -4332,6 +4433,69 @@ impl Interpreter {
         }
     }
 
+    /// Count the same payload that serialize_value writes, without allocating it.
+    fn serialized_value_size(&self, val: &Value, ty: &BasicType) -> Result<usize, RuntimeError> {
+        match ty {
+            BasicType::Integer => {
+                val.to_f64()?;
+                Ok(2)
+            }
+            BasicType::Long | BasicType::Single => {
+                val.to_f64()?;
+                Ok(4)
+            }
+            BasicType::Double | BasicType::Numeric => {
+                val.to_f64()?;
+                Ok(8)
+            }
+            BasicType::FixedLengthString(_) | BasicType::String => {
+                let Value::Str(s) = val else {
+                    return Err(RuntimeError::TypeMismatch {
+                        msg: "expected string".into(),
+                    });
+                };
+                if let BasicType::FixedLengthString(len) = ty {
+                    Ok(*len)
+                } else {
+                    let len = u16::try_from(s.chars().count()).map_err(|_| {
+                        RuntimeError::IllegalFunctionCall {
+                            msg: "binary string exceeds the maximum length of 65535 bytes".into(),
+                        }
+                    })?;
+                    Ok(usize::from(len) + 2)
+                }
+            }
+            BasicType::UserDefined(type_name) => {
+                let Value::Record { fields, .. } = val else {
+                    return Err(RuntimeError::TypeMismatch {
+                        msg: format!("expected record of type {type_name}"),
+                    });
+                };
+                let definitions =
+                    self.type_defs
+                        .get(type_name)
+                        .ok_or_else(|| RuntimeError::General {
+                            msg: format!("undefined TYPE: {type_name}"),
+                        })?;
+                let mut total = 0usize;
+                for field in definitions {
+                    let value = fields
+                        .get(&field.name)
+                        .ok_or_else(|| RuntimeError::General {
+                            msg: format!("missing field in record: {}", field.name),
+                        })?;
+                    let size = self.serialized_value_size(value, &field.field_type)?;
+                    total = total
+                        .checked_add(size)
+                        .ok_or_else(|| RuntimeError::Overflow {
+                            msg: "binary record size exceeds the host size range".into(),
+                        })?;
+                }
+                Ok(total)
+            }
+        }
+    }
+
     fn serialize_value(
         &self,
         writer: &mut BufWriter<File>,
@@ -4757,5 +4921,49 @@ mod file_io_tests {
             Err(RuntimeError::IllegalFunctionCall { .. })
         ));
         assert_eq!(writer.stream_position().unwrap(), 0);
+    }
+
+    #[test]
+    fn record_size_counts_without_allocating_payload_and_checks_overflow() {
+        let mut interpreter =
+            Interpreter::with_io(Box::new(Vec::new()), Box::new(Cursor::new(Vec::new())));
+        let ty = BasicType::UserDefined("LARGE".into());
+        let record = Value::Record {
+            type_name: "LARGE".into(),
+            fields: HashMap::from([
+                ("A".into(), Value::Str(String::new())),
+                ("B".into(), Value::Numeric(0.0)),
+                ("C".into(), Value::Str(String::new())),
+            ]),
+        };
+        interpreter.type_defs.insert(
+            "LARGE".into(),
+            vec![
+                TypeField {
+                    name: "A".into(),
+                    field_type: BasicType::FixedLengthString(usize::MAX - 2),
+                },
+                TypeField {
+                    name: "B".into(),
+                    field_type: BasicType::Integer,
+                },
+            ],
+        );
+        assert_eq!(
+            interpreter.serialized_value_size(&record, &ty).unwrap(),
+            usize::MAX
+        );
+        interpreter
+            .type_defs
+            .get_mut("LARGE")
+            .unwrap()
+            .push(TypeField {
+                name: "C".into(),
+                field_type: BasicType::FixedLengthString(1),
+            });
+        assert!(matches!(
+            interpreter.serialized_value_size(&record, &ty),
+            Err(RuntimeError::Overflow { .. })
+        ));
     }
 }

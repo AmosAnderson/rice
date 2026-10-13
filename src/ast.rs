@@ -75,7 +75,7 @@ pub enum Stmt {
     SelectCase(SelectCaseStmt),
     Goto(Label),
     Gosub(Label),
-    Return,
+    Return(Option<Label>),
     OnGoto {
         expr: Expr,
         labels: Vec<Label>,
@@ -109,8 +109,8 @@ pub enum Stmt {
     OptionBase(i32),
     OptionExplicit,
     Swap {
-        a: Variable,
-        b: Variable,
+        a: InputTarget,
+        b: InputTarget,
     },
 
     // Data
@@ -362,6 +362,7 @@ pub struct DeclareStmt {
 pub enum DataItem {
     Number(f64),
     Str(String),
+    Empty,
 }
 
 #[derive(Debug, Clone)]
