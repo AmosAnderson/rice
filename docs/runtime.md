@@ -15,18 +15,23 @@ cargo test
 The executables are `target/release/rice` and `target/release/rice-lsp` (`.exe` on Windows). For development, `cargo build` builds the package binaries, `cargo run` selects the `rice` binary, and output goes in `target/debug/`.
 
 ```text
-rice [--compat] [--dialect ansi|qb|qbasic|quickbasic] [source-file]
+rice [--compat] [--dialect ansi|qb|qbasic|quickbasic] [--] [source-file [program-argument ...]]
 ```
 
 With no file, Rice starts the REPL. With a file, it reads UTF-8 source and executes it once. The extension is not enforced. Default dialect is QB. Options may precede or follow the filename, and the last CLI dialect option wins. Dialect argument values are case-insensitive; option names are case-sensitive. A recognized `OPTION DIALECT` in source overrides the CLI selection for the entire source unit.
 
+The first positional argument is the source filename; subsequent positional arguments are BASIC program arguments. `--` stops interpreter option processing. After that marker, even `--dialect`, `--compat`, and another `--` are passed as ordinary arguments; if no filename has appeared yet, the first argument after the marker is the filename. Use the marker to pass arguments beginning with `-`, or to open a filename such as `-program.bas` with `rice -- -program.bas`.
+
 ```sh
 cargo run -- program.bas
 cargo run -- --dialect ansi program.bas
+cargo run -- program.bas First "two words" -- --flag
 cargo run -- --compat
 ```
 
-Only one positional filename is accepted. Extra program arguments, `--` as an end-of-options marker, `--help`, and `--version` are not implemented. Missing/unknown dialect values, unknown options, extra filenames, source read failures, and BASIC errors exit with status 1; successful file execution exits with 0. A source filename beginning with `-` needs a path prefix such as `./`.
+`COMMAND$()` returns only the program arguments, joined with one space between arguments. In the third example it returns `First two words --flag`. Case, Unicode, and whitespace inside arguments are preserved; shell quoting is not reconstructed. Empty arguments contribute empty fields, so `one`, an empty argument, and `two` become `one  two`. A single empty argument and no arguments both produce `""`. This string cannot recover the original argument boundaries. `COMMAND()` is an alias; bare `COMMAND$` remains an ordinary variable.
+
+`--help` and `--version` are not implemented. Missing/unknown dialect values, unknown options before `--`, source read failures, and BASIC errors exit with status 1; successful file execution exits with 0. Extra positional arguments are passed to the program rather than treated as additional files. A missing dialect value remains an error even after a filename or program arguments; `--dialect --` reports an unknown dialect value rather than treating that `--` as a separator.
 
 The CLI runs the interpreter on an 8 MiB stack thread to accommodate large debug-mode interpreter frames. This is not an unlimited recursion guarantee. Host stack/memory exhaustion is not a catchable BASIC exception.
 
@@ -46,13 +51,13 @@ Immediate unnumbered input executes as soon as a complete statement/block is ent
 
 These commands are REPL operations, not BASIC statements in source files. There is no `LOAD`, `SAVE`, `RENUM`, `RUN "file"`, or resumable debugger. Use an editor and file execution for persistent programs.
 
-Block detection accumulates `FOR`, `WHILE`, `DO`, block `IF`, `SELECT CASE`, `SUB`, `FUNCTION`, block `DEF`, `TYPE`, and `WHEN` until their closing keywords. The continuation prompt is `. ` with suggested indentation. Numbered lines bypass block accumulation. Detection is a lexical nesting heuristic; it is not a second full parser. While a block is being entered, text is part of the block and REPL commands are not intercepted.
+Block detection accumulates `FOR`, `WHILE`, `DO`, block `IF`, `SELECT CASE`, `SUB`, `FUNCTION`, block `DEF`, `TYPE`, and `WHEN` until their closing keywords. A comma-separated NEXT list closes one FOR per listed variable, so `NEXT j, i` closes two nested FOR blocks. The continuation prompt is `. ` with suggested indentation. Numbered lines bypass block accumulation. Detection is a lexical nesting heuristic; it is not a second full parser. While a block is being entered, text is part of the block and REPL commands are not intercepted.
 
 Top-level immediate `SYSTEM`/`QUIT` or `END` causes the REPL to exit after successful execution. `STOP` ends that submission but leaves the REPL open. Exit detection scans top-level parsed statements rather than the actual executed path: an unreachable top-level `END`/`SYSTEM` can still close the REPL; an `END` inside a nested block ends execution without closing it. `END`/`SYSTEM` in a stored `RUN` program returns to the prompt. Ctrl+D and Ctrl+C during line editing exit the REPL, including while entering a block; Ctrl+C is not a “discard block” command.
 
 History is loaded/saved at `$HOME/.rice_history`, falling back to `$USERPROFILE/.rice_history`, then `./.rice_history`; history I/O failures are ignored. Syntax highlighting uses 24-bit ANSI terminal colors. Terminal behavior depends on the host terminal; see [console](console.md).
 
-Every immediate submission uses `Interpreter::run_source`; it is parsed independently and prescanned for definitions and DATA before execution. Definitions persist, and new DATA is appended to the existing DATA pool. Labels should be kept within one complete submission or stored program. `RUN` resets this accumulated state; `NEW` does not. An immediate dialect directive changes the dialect for subsequent submissions. For predictable block highlighting, enter that directive separately before starting a block.
+Every immediate submission uses `Interpreter::run_source`; it is parsed independently and prescanned for definitions and DATA before execution. Definitions persist, and new DATA is appended to the existing DATA pool. Labels should be kept within one complete submission or stored program. `RUN` resets this accumulated state; `NEW` does not. An immediate dialect directive changes the dialect for subsequent submissions. For predictable block highlighting, enter that directive separately before starting a block. REPL interpreters have no program arguments, so `COMMAND$()` returns `""`, including during stored `RUN` execution.
 
 ## Host statements and paths
 
@@ -72,7 +77,7 @@ Both dialects expose these host operations except the QB-only setters marked bel
 | `DATE$ = value$`, `TIME$ = value$` (QB only) | Set interpreter read overrides, not the OS clock. See [builtins](builtins.md). |
 | `SLEEP [seconds]` | Truncate to a checked integer and sleep only if positive. Missing, zero, and negative values return immediately; it is not a wait-for-key operation. |
 
-Filesystem errors map to BASIC error codes where implemented; see [error handling](error-handling.md). `COMMAND$()` reads raw process arguments, but the CLI does not support passing arbitrary program arguments; see [builtins](builtins.md).
+Filesystem errors map to BASIC error codes where implemented; see [error handling](error-handling.md). `COMMAND$()` reads the program arguments described above, excluding the filename and interpreter options; see [builtins](builtins.md).
 
 ## Language server
 
@@ -110,4 +115,6 @@ Use a stdio language-server configuration pointing at the compiled executable an
 
 The public Rust modules expose `Interpreter::new()`, `Interpreter::with_io(output, input)`, `run_source`, `run_file`, and lower-level lexer/parser APIs. Set `interpreter.dialect` before `run_source` for a default; an explicit source directive can override it. `run_file` reads a UTF-8 file; `run_source` runs a string; `run_program` accepts a parsed AST and does not itself select a lexer/parser dialect. `with_io` is useful for deterministic input and captured output and defaults to noninteractive console behavior.
 
-Useful checks are `cargo test --lib`, `cargo test --test integration`, and `cargo test --bin rice-lsp`. Integration fixtures are in [`tests/programs`](../tests/programs), with assertions in [`tests/integration.rs`](../tests/integration.rs). Passing these tests establishes Rice regression behavior, not complete QBasic 1.1 or ANSI conformance.
+New interpreters return `""` from `COMMAND$()` and do not inspect the embedding process's arguments. Configure them explicitly with `interpreter.set_command_line_args(["First", "two words"]);`. The setter accepts an iterator of string-like values and replaces the joined argument text. These arguments are local to the interpreter and survive subsequent `run_source`, `run_file`, and BASIC `CLEAR` calls. Passing an empty iterator clears them. A standalone builtin registry has no program context and returns `""` for COMMAND$()/COMMAND() too; both calls require zero arguments.
+
+Useful checks are `cargo test --lib`, `cargo test --test integration`, `cargo test --test cli`, and `cargo test --bin rice-lsp`. Integration fixtures are in [`tests/programs`](../tests/programs), with assertions in [`tests/integration.rs`](../tests/integration.rs); [`tests/cli.rs`](../tests/cli.rs) covers process argument handling. Passing these tests establishes Rice regression behavior, not complete QBasic 1.1 or ANSI conformance.

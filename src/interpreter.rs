@@ -144,6 +144,8 @@ pub struct Interpreter {
     time_override: Option<String>,
     /// ENVIRON changes are local to this interpreter and inherited by SHELL.
     environment_overrides: HashMap<String, String>,
+    /// Program arguments explicitly supplied by the host, excluding interpreter options.
+    command_line: String,
     /// Classic ON ERROR handler target (None = no handler / disabled).
     on_error_label: Option<Label>,
     /// Most recent BASIC error code (ERR) and line (ERL).
@@ -222,12 +224,28 @@ impl Interpreter {
             date_override: None,
             time_override: None,
             environment_overrides: HashMap::new(),
+            command_line: String::new(),
             on_error_label: None,
             err_code: 0,
             err_line: 0,
             err_resume_pc: None,
             handling_error: false,
         }
+    }
+
+    /// Set the text returned by COMMAND$()/COMMAND() by joining arguments with spaces.
+    /// Arguments are empty by default and persist across executions and CLEAR.
+    /// Shell quoting is not reconstructed; empty arguments contribute empty fields.
+    pub fn set_command_line_args<I, S>(&mut self, args: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.command_line = args
+            .into_iter()
+            .map(|arg| arg.as_ref().to_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
     }
 
     pub fn run_source(&mut self, source: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -648,7 +666,7 @@ impl Interpreter {
                 Ok(ControlFlow::Normal)
             }
             Stmt::LineInput { prompt, var } => {
-                self.require_writable(&var.name)?;
+                let key = self.resolve_input_target(var)?;
                 if let Some(p) = prompt {
                     write!(self.output, "{}", p)
                         .map_err(|e| RuntimeError::from_io("LINE INPUT", e))?;
@@ -669,7 +687,7 @@ impl Interpreter {
                     .trim_end_matches('\n')
                     .trim_end_matches('\r')
                     .to_string();
-                self.env.borrow_mut().set(&var.name, Value::Str(line));
+                self.env.borrow_mut().set(&key, Value::Str(line));
                 Ok(ControlFlow::Normal)
             }
             Stmt::If(if_stmt) => self.exec_if(if_stmt),
@@ -1258,8 +1276,43 @@ impl Interpreter {
         Ok(ControlFlow::Normal)
     }
 
-    fn exec_read(&mut self, vars: &[Variable]) -> Result<ControlFlow, RuntimeError> {
+    /// Resolve an input destination once, before consuming input or prompting.
+    fn resolve_input_target(&mut self, target: &InputTarget) -> Result<String, RuntimeError> {
+        self.require_writable(&target.name)?;
+        if target.indices.is_empty() {
+            return Ok(target.name.clone());
+        }
+        let indices = target
+            .indices
+            .iter()
+            .map(|expr| self.eval_expr(expr)?.to_i64())
+            .collect::<Result<Vec<_>, _>>()?;
+        let key = Self::array_key(&target.name, &indices);
+        // Flattened array keys can alias scalar constants; never silently discard input.
+        if self.env.borrow().is_const(&key) {
+            return Err(RuntimeError::General {
+                msg: format!("cannot assign to constant: {key}"),
+            });
+        }
+        Ok(key)
+    }
+
+    fn input_target_value(&self, target: &InputTarget, key: &str) -> Result<Value, RuntimeError> {
+        if let Some(value) = self.env.borrow().get(key) {
+            return Ok(value);
+        }
+        if !target.indices.is_empty()
+            && let Some(type_name) = self.array_type_map.get(&target.name)
+        {
+            return self.create_default_record(type_name);
+        }
+        Ok(self.default_for_var(&target.name))
+    }
+
+    fn exec_read(&mut self, vars: &[InputTarget]) -> Result<ControlFlow, RuntimeError> {
         for var in vars {
+            // READ assigns in order, so READ i, a(i) uses the newly read i.
+            let key = self.resolve_input_target(var)?;
             if self.data_pos >= self.data_values.len() {
                 return Err(RuntimeError::General {
                     msg: "READ past end of DATA".into(),
@@ -1271,8 +1324,7 @@ impl Interpreter {
                 DataItem::Number(n) => Value::Numeric(*n),
                 DataItem::Str(s) => Value::Str(s.clone()),
             };
-            self.require_writable(&var.name)?;
-            self.env.borrow_mut().set(&var.name, val);
+            self.env.borrow_mut().set(&key, val);
         }
         Ok(ControlFlow::Normal)
     }
@@ -1461,9 +1513,20 @@ impl Interpreter {
     }
 
     fn exec_input(&mut self, input: &InputStmt) -> Result<(), RuntimeError> {
-        for var in &input.vars {
-            self.require_writable(&var.name)?;
-        }
+        let keys = input
+            .vars
+            .iter()
+            .map(|var| self.resolve_input_target(var))
+            .collect::<Result<Vec<_>, _>>()?;
+        let string_targets = input
+            .vars
+            .iter()
+            .zip(&keys)
+            .map(|(var, key)| {
+                self.input_target_value(var, key)
+                    .map(|v| matches!(v, Value::Str(_)))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         loop {
             if let Some(p) = &input.prompt {
                 write!(self.output, "{}? ", p).map_err(|e| RuntimeError::from_io("INPUT", e))?;
@@ -1498,13 +1561,8 @@ impl Interpreter {
             }
 
             let mut values = Vec::new();
-            for (var, part) in input.vars.iter().zip(parts.iter()) {
-                let current = self
-                    .env
-                    .borrow()
-                    .get(&var.name)
-                    .unwrap_or_else(|| self.default_for_var(&var.name));
-                let val = if matches!(current, Value::Str(_)) {
+            for (is_string, part) in string_targets.iter().zip(parts.iter()) {
+                let val = if *is_string {
                     Value::Str(part.to_string())
                 } else {
                     if let Ok(n) = part.trim().parse::<f64>()
@@ -1522,8 +1580,8 @@ impl Interpreter {
                     .map_err(|e| RuntimeError::from_io("INPUT", e))?;
                 continue;
             }
-            for (var, val) in input.vars.iter().zip(values) {
-                self.env.borrow_mut().set(&var.name, val);
+            for (key, val) in keys.iter().zip(values) {
+                self.env.borrow_mut().set(key, val);
             }
             break;
         }
@@ -2056,6 +2114,15 @@ impl Interpreter {
 
                 // Stateful functions (need access to interpreter state)
                 match name.as_str() {
+                    "COMMAND$" | "COMMAND" => {
+                        if !arg_vals.is_empty() {
+                            return Err(RuntimeError::ArityMismatch {
+                                expected: 0,
+                                got: arg_vals.len(),
+                            });
+                        }
+                        return Ok(Value::Str(self.command_line.clone()));
+                    }
                     "ENVIRON$" => {
                         if arg_vals.len() != 1 {
                             return Err(RuntimeError::ArityMismatch {
@@ -2648,6 +2715,8 @@ impl Interpreter {
                     }))
                 }
             }
+            BinOp::Eqv => Ok(Value::Numeric((!((a as i64) ^ (b as i64))) as f64)),
+            BinOp::Imp => Ok(Value::Numeric((!(a as i64) | (b as i64)) as f64)),
             BinOp::Concat => unreachable!("Concat handled above"),
         }
     }
@@ -3146,10 +3215,125 @@ impl Interpreter {
         }
     }
 
+    fn exec_mat_file_print(&mut self, file_num: i64, name: &str) -> Result<(), RuntimeError> {
+        self.require_declared(name)?;
+        let matrix = self.extract_matrix(name)?;
+        let fh = self
+            .file_handles
+            .get_mut(&file_num)
+            .ok_or_else(|| RuntimeError::General {
+                msg: format!("file #{file_num} is not open"),
+            })?;
+        let writer = fh.writer.as_mut().ok_or_else(|| RuntimeError::General {
+            msg: format!("file #{file_num} is not open for writing"),
+        })?;
+        for row in matrix {
+            for (column, value) in row.into_iter().enumerate() {
+                if column > 0 {
+                    writer
+                        .write_all(b",")
+                        .map_err(|e| RuntimeError::from_io("MAT PRINT", e))?;
+                }
+                writer
+                    .write_all(Value::Numeric(value).format_for_print().as_bytes())
+                    .map_err(|e| RuntimeError::from_io("MAT PRINT", e))?;
+            }
+            writer
+                .write_all(b"\n")
+                .map_err(|e| RuntimeError::from_io("MAT PRINT", e))?;
+            fh.print_col = 0;
+        }
+        writer
+            .flush()
+            .map_err(|e| RuntimeError::from_io("MAT PRINT", e))?;
+        Ok(())
+    }
+
+    fn exec_mat_file_input(&mut self, file_num: i64, name: &str) -> Result<(), RuntimeError> {
+        self.require_writable(name)?;
+        let (rows, cols) = self
+            .matrix_dims(name)
+            .ok_or_else(|| RuntimeError::General {
+                msg: format!("MAT INPUT: array '{name}' must be DIMed first"),
+            })?;
+        let (row_base, col_base) = self
+            .array_dim_info
+            .get(name)
+            .filter(|bounds| bounds.len() == 2)
+            .map(|bounds| (bounds[0].0, bounds[1].0))
+            .unwrap_or_else(|| {
+                let base = self.env.borrow().option_base as i64;
+                (base, base)
+            });
+        // Validate every destination before reading, including flattened constant aliases.
+        for row in 0..rows {
+            for column in 0..cols {
+                let key = Self::array_key(name, &[row_base + row as i64, col_base + column as i64]);
+                if self.env.borrow().is_const(&key) {
+                    return Err(RuntimeError::General {
+                        msg: format!("cannot assign to constant: {key}"),
+                    });
+                }
+            }
+        }
+        let fields = {
+            let fh = self
+                .file_handles
+                .get_mut(&file_num)
+                .ok_or_else(|| RuntimeError::General {
+                    msg: format!("file #{file_num} is not open"),
+                })?;
+            let reader = fh.reader.as_mut().ok_or_else(|| RuntimeError::General {
+                msg: format!("file #{file_num} is not open for reading"),
+            })?;
+            let mut fields = Vec::with_capacity(rows);
+            for _ in 0..rows {
+                let mut row = Vec::with_capacity(cols);
+                for _ in 0..cols {
+                    let Some(field) = Self::read_next_field(reader)? else {
+                        fh.eof_flag = true;
+                        return Err(RuntimeError::IoError {
+                            msg: "MAT INPUT past end of file".into(),
+                            code: 62,
+                        });
+                    };
+                    row.push(field);
+                }
+                fields.push(row);
+            }
+            fh.eof_flag = reader
+                .fill_buf()
+                .map_err(|e| RuntimeError::from_io("MAT INPUT", e))?
+                .is_empty();
+            fields
+        };
+        let matrix = fields
+            .into_iter()
+            .map(|row| {
+                row.into_iter()
+                    .map(|field| {
+                        field
+                            .parse::<f64>()
+                            .map_err(|_| RuntimeError::TypeMismatch {
+                                msg: format!("MAT INPUT expected a number for {name}"),
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.store_matrix(name, &matrix);
+        Ok(())
+    }
+
     fn exec_mat(&mut self, op: &MatOp) -> Result<ControlFlow, RuntimeError> {
         use crate::mat;
         match op {
-            MatOp::Print { channel: _, name } => {
+            MatOp::Print { channel, name } => {
+                if let Some(channel) = channel {
+                    let file_num = self.eval_expr(channel)?.to_i64()?;
+                    self.exec_mat_file_print(file_num, name)?;
+                    return Ok(ControlFlow::Normal);
+                }
                 let m = self.extract_matrix(name)?;
                 for row in &m {
                     let formatted: Vec<String> = row
@@ -3189,7 +3373,12 @@ impl Interpreter {
                 self.store_matrix(name, &m);
                 Ok(ControlFlow::Normal)
             }
-            MatOp::Input { channel: _, name } => {
+            MatOp::Input { channel, name } => {
+                if let Some(channel) = channel {
+                    let file_num = self.eval_expr(channel)?.to_i64()?;
+                    self.exec_mat_file_input(file_num, name)?;
+                    return Ok(ControlFlow::Normal);
+                }
                 let (rows, cols) = self
                     .matrix_dims(name)
                     .ok_or_else(|| RuntimeError::General {
@@ -3912,9 +4101,11 @@ impl Interpreter {
 
     fn exec_file_input(&mut self, fi: &FileInputStmt) -> Result<(), RuntimeError> {
         let file_num = self.eval_expr(&fi.file_num)?.to_i64()?;
-        for var in &fi.vars {
-            self.require_writable(&var.name)?;
-        }
+        let keys = fi
+            .vars
+            .iter()
+            .map(|var| self.resolve_input_target(var))
+            .collect::<Result<Vec<_>, _>>()?;
 
         let mut fields = Vec::with_capacity(fi.vars.len());
         {
@@ -3947,13 +4138,10 @@ impl Interpreter {
         let values = fi
             .vars
             .iter()
+            .zip(&keys)
             .zip(fields)
-            .map(|(var, field)| {
-                let existing = self
-                    .env
-                    .borrow()
-                    .get(&var.name)
-                    .unwrap_or_else(|| self.default_for_var(&var.name));
+            .map(|((var, key), field)| {
+                let existing = self.input_target_value(var, key)?;
                 match existing {
                     Value::Str(_) => Ok(Value::Str(field)),
                     Value::Numeric(_) => field.parse::<f64>().map(Value::Numeric).map_err(|_| {
@@ -3967,8 +4155,8 @@ impl Interpreter {
                 }
             })
             .collect::<Result<Vec<_>, _>>()?;
-        for (var, value) in fi.vars.iter().zip(values) {
-            self.env.borrow_mut().set(&var.name, value);
+        for (key, value) in keys.iter().zip(values) {
+            self.env.borrow_mut().set(key, value);
         }
         Ok(())
     }
@@ -4063,15 +4251,11 @@ impl Interpreter {
     fn exec_line_input_file(
         &mut self,
         file_num_expr: &Expr,
-        var: &Variable,
+        var: &InputTarget,
     ) -> Result<(), RuntimeError> {
         let file_num = self.eval_expr(file_num_expr)?.to_i64()?;
-        self.require_writable(&var.name)?;
-        let existing = self
-            .env
-            .borrow()
-            .get(&var.name)
-            .unwrap_or_else(|| self.default_for_var(&var.name));
+        let key = self.resolve_input_target(var)?;
+        let existing = self.input_target_value(var, &key)?;
         if !matches!(existing, Value::Str(_)) {
             return Err(RuntimeError::TypeMismatch {
                 msg: "LINE INPUT requires a string variable".into(),
@@ -4115,7 +4299,7 @@ impl Interpreter {
                 .to_string()
         };
 
-        self.env.borrow_mut().set(&var.name, Value::Str(line));
+        self.env.borrow_mut().set(&key, Value::Str(line));
         Ok(())
     }
 

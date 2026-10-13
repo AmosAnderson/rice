@@ -132,6 +132,8 @@ pub enum Token {
     KwOr,
     KwNot,
     KwXor,
+    KwEqv,
+    KwImp,
     KwMod,
 
     KwRem,

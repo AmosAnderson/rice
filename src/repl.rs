@@ -528,8 +528,27 @@ fn compute_depth_delta(line: &str, dialect: crate::Dialect) -> i32 {
                 | Token::KwWhen => 1,
                 Token::KwIf if statement.last().is_some_and(|st| st.token == Token::KwThen) => 1,
                 Token::KwDef if !statement.iter().any(|st| st.token == Token::Equal) => 1,
-                Token::KwNext
-                | Token::KwWend
+                Token::KwNext => {
+                    let mut count = 1;
+                    let mut pos = 2;
+                    if statement
+                        .get(1)
+                        .is_some_and(|st| matches!(st.token, Token::Identifier(_)))
+                    {
+                        while statement
+                            .get(pos)
+                            .is_some_and(|st| st.token == Token::Comma)
+                            && statement
+                                .get(pos + 1)
+                                .is_some_and(|st| matches!(st.token, Token::Identifier(_)))
+                        {
+                            count += 1;
+                            pos += 2;
+                        }
+                    }
+                    -count
+                }
+                Token::KwWend
                 | Token::KwLoop
                 | Token::KwEndIf
                 | Token::KwEndSub
@@ -925,6 +944,56 @@ mod tests {
         assert_eq!(
             super::compute_depth_delta("IF 1 THEN 100 ELSE 200", dialect),
             0
+        );
+    }
+
+    #[test]
+    fn test_doubled_quote_highlighting_preserves_literal_and_comment_boundaries() {
+        let line = r#"PRINT "é ""' REM 😀"""; value ' 日本語"#;
+        let literal = r#""é ""' REM 😀""""#;
+        assert_eq!(find_comment_start(line), line.find("' 日本語"));
+        for dialect in [crate::Dialect::QuickBasic, crate::Dialect::Ansi] {
+            let highlighted = super::highlight_line(line, dialect);
+            assert!(highlighted.contains(&format!("{COLOR_STRING}{literal}{COLOR_RESET}")));
+            assert!(highlighted.contains(&format!("{COLOR_COMMENT}' 日本語{COLOR_RESET}")));
+            assert_eq!(
+                super::compute_depth_delta(r#"PRINT """THEN"": FOR i = 1 TO 3""""#, dialect),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn test_eqv_imp_highlight_as_keywords() {
+        let highlighted = super::highlight_line("PRINT 1 EQV 2 IMP 3", crate::Dialect::QuickBasic);
+        for operator in ["EQV", "IMP"] {
+            assert!(highlighted.contains(&format!("{COLOR_KEYWORD}{operator}{COLOR_RESET}")));
+        }
+    }
+
+    #[test]
+    fn test_depth_next_lists_close_each_named_loop() {
+        for dialect in [crate::Dialect::QuickBasic, crate::Dialect::Ansi] {
+            for (source, expected) in [
+                ("NEXT", -1),
+                ("NEXT inner, outer", -2),
+                ("NEXT k, J, I ' comment", -3),
+                ("100 NEXT k, j, i", -3),
+                ("NEXT k, j: NEXT i", -3),
+                ("NEXT j, i: FOR n = 1 TO 2", -1),
+                ("RESUME NEXT", 0),
+                ("PRINT \"NEXT j, i\"", 0),
+            ] {
+                assert_eq!(
+                    super::compute_depth_delta(source, dialect),
+                    expected,
+                    "{source}"
+                );
+            }
+        }
+        assert_eq!(
+            super::compute_depth_delta("NEXT J%, I%", crate::Dialect::QuickBasic),
+            -2
         );
     }
 }

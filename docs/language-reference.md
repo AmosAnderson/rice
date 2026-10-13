@@ -42,6 +42,7 @@ Accepted source values are `ANSI`, `QB`, `QBASIC`, `QBASIC 1.1`, `QBASIC1.1`, an
 |---|---|---|
 | Comparison true / false | `-1` / `0` | `1` / `0` |
 | `AND`, `OR`, `XOR`, `NOT` | Signed 64-bit bitwise operations | Logical operations on nonzero/zero |
+| `EQV`, `IMP` | Signed 64-bit bitwise equivalence and implication | Rejected |
 | String concatenation | `+` or `&` | `&` |
 | Identifier suffixes | `$`, `%`, `!`, `#`, `&` | `$` |
 | Hexadecimal/octal literals | `&H...`, `&O...` | Not supported |
@@ -72,7 +73,9 @@ In QB, leave whitespace before a concatenation `&` following an unsuffixed ident
 
 Signs are unary operators, not part of a number token. Decimal numeric-literal suffixes such as `1%` or `1#`, binary literals, digit separators, and hexadecimal signed-width reinterpretation are not implemented. Radix literals must fit `u64`; large integers can lose precision when stored as `f64`.
 
-String literals have **no escape syntax**: neither `\n` nor doubled double quotes represent escaped characters. To include a quote, use `CHR$(34)`, for example `"She said " & CHR$(34) & "hi" & CHR$(34)`. `PRINT "a""b"` happens to print `ab` because PRINT accepts adjacent expressions; it does not demonstrate quote escaping.
+Inside a string literal, two consecutive double quotes (`""`) represent one quote character in both modes. For example, `PRINT "She said ""hi"""` prints `She said "hi"`, and `""""` is a string containing one quote. This Rice extension works wherever a string literal is accepted, including DATA and input prompts. Backslashes remain literal: `\n` is two characters, not a newline. `CHR$(34)` also produces a quote. A string must close before the physical line ends; an unterminated string reports the opening quote's location.
+
+This changes adjacent-quote behavior: `PRINT "a""b"` now prints `a"b`. To print two separate strings consecutively, write `PRINT "a"; "b"`.
 
 ### Lines, comments, labels, and separators
 
@@ -165,7 +168,7 @@ Parentheses group expressions. Named calls use `name(argument [, argument ...])`
 
 Only specifically supported functions may be written without parentheses. In particular use `RND()`, `PI()`, and `MAXNUM()`; bare `RND`, `PI`, and `MAXNUM` are ordinary variables. Use bare `TIMER` and `FREEFILE`; the parser does not consume an empty parenthesis pair for them. See [Built-in functions](builtins.md) for all exact call forms, including aliases and special values.
 
-Operands and ordinary argument lists are evaluated left to right. `AND`, `OR`, and `XOR` **do not short-circuit**, in either mode; `0 AND (1 / 0)` raises an error.
+Operands and ordinary argument lists are evaluated left to right. `AND`, `OR`, and `XOR` **do not short-circuit**, in either mode; `0 AND (1 / 0)` raises an error. QB-only `EQV` and `IMP` also evaluate both operands, so `0 IMP (1 / 0)` raises an error.
 
 | Precedence, highest first | Operators | Association |
 |---|---|---|
@@ -181,10 +184,12 @@ Operands and ordinary argument lists are evaluated left to right. `AND`, `OR`, a
 | Conjunction | `AND` | Left |
 | Disjunction | `OR` | Left |
 | Exclusive OR | `XOR` | Left |
+| Equivalence (QB only) | `EQV` | Left |
+| Implication (QB only) | `IMP` | Left |
 
 For example `-2^2 = -4`, `2^-2 = 0.25`, and `2^3^2 = 512`. Chained comparisons are evaluated as successive binary operations: `2 < 1 < 1` means `(2 < 1) < 1`, which is true. Use `(a < b) AND (b < c)` for a range test.
 
-Arithmetic operators require numbers. `/` is real division; division by zero raises an error. `MOD` uses **`a - b * FLOOR(a / b)` in both modes**, including real operands. Examples: `-5 MOD 3 = 1`, `5 MOD -3 = -1`, and `5.5 MOD 2 = 1.5`. A zero divisor raises an error. `IMP` and `EQV` are not implemented.
+Arithmetic operators require numbers. `/` is real division; division by zero raises an error. `MOD` uses **`a - b * FLOOR(a / b)` in both modes**, including real operands. Examples: `-5 MOD 3 = 1`, `5 MOD -3 = -1`, and `5.5 MOD 2 = 1.5`. A zero divisor raises an error.
 
 QB also supports integer division, `a \ b`. Both operands round to the nearest integer, with exact halfway values rounding to the even integer. The rounded operands must fit signed 64-bit integers; division then truncates the quotient toward zero and returns an `f64`. For example, `7 \ 2 = 3`, `-7 \ 2 = -3`, `7.5 \ 2 = 4`, and `6.5 \ 2 = 3`. `*` and `/` bind more tightly than `\`, which binds more tightly than `MOD`: `20 \ 2 * 3 = 3` and `20 \ 3 MOD 2 = 0`. Repeated integer divisions associate left to right.
 
@@ -194,7 +199,18 @@ A divisor that rounds to zero (including `0.5` or `-0.5`) raises division by zer
 
 Comparison works on two numbers or two strings and returns the dialect's numeric true/false values. Mixed string/number expression comparison raises a type mismatch. Strings compare case-sensitively in lexicographic Unicode order; there is no locale collation or case-folding option. Ordinary operators do not compare records.
 
-In QB, `AND`, `OR`, `XOR`, and `NOT` cast numbers to signed 64-bit integers, truncating fractions toward zero, perform the bitwise operation, and return an `f64`. These casts saturate out-of-range values and map NaN to zero; they do not implement QBasic 16-bit integer semantics or consistent overflow checking. ANSI logical operators treat every nonzero number as true and return `0` or `1`.
+In QB, `AND`, `OR`, `XOR`, `NOT`, `EQV`, and `IMP` cast numbers to signed 64-bit integers, truncating fractions toward zero, perform the bitwise operation, and return an `f64`. These casts saturate out-of-range values and map NaN to zero; they do not implement QBasic 16-bit integer semantics or consistent overflow checking. Large integer results may lose precision when stored as `f64`. ANSI logical operators treat every nonzero number as true and return `0` or `1`; ANSI rejects `EQV` and `IMP`.
+
+`EQV` complements the bitwise XOR of the converted operands. `IMP` combines the bitwise complement of its left operand with its right operand using OR. For example, `5 EQV 3` returns `-7`, and `5 IMP 3` returns `-5`. Comparisons bind more tightly, so use `(5 EQV 3) = -7` when testing the result. For QB truth values:
+
+| Left | Right | `EQV` | `IMP` |
+|---|---|---|---|
+| `-1` | `-1` | `-1` | `-1` |
+| `-1` | `0` | `0` | `0` |
+| `0` | `-1` | `0` | `-1` |
+| `0` | `0` | `-1` | `-1` |
+
+`XOR` binds more tightly than `EQV`, which binds more tightly than `IMP`. Repeated operators associate left to right: `1 IMP 2 IMP 4` gives `5`. Strings and records are rejected.
 
 `&` requires two strings in both modes. QB `+` also concatenates two strings, but mixed strings/numbers are rejected. ANSI `+` accepts numbers only.
 
@@ -272,7 +288,16 @@ NEXT
 
 Start, end, and step expressions are evaluated once on entry, in that order. STEP defaults to `1`. End bounds are inclusive. The loop variable is assigned even if the body runs zero times; it is also considered declared for OPTION EXPLICIT. Positive steps stop above the end and negative steps stop below it. **STEP 0 performs zero iterations**. Real steps are supported and subject to floating-point rounding. The current variable value is incremented after the body, so body assignments to it affect subsequent iterations. Normal completion leaves it at the first value beyond the limit; EXIT FOR leaves its current value.
 
-NEXT may omit the variable or name the matching variable. A mismatched name is a parse error. `NEXT j, i` is not supported. EXIT FOR exits the enclosing active FOR; it is not a generic loop exit.
+NEXT may omit the variable or name the matching variable. A comma-separated list closes nested FOR loops from the innermost outward: `NEXT j, i` is equivalent to `NEXT j` followed by `NEXT i`. Every listed variable must match its loop, and each comma requires names on both sides. A list can close some or all enclosing FOR loops, but cannot cross an unclosed IF, DO, WHILE, SELECT, exception, or procedure block. These lists work in QB and as a Rice extension in ANSI mode. Existing restrictions on labels before block terminators still apply. EXIT FOR exits the enclosing active FOR; it is not a generic loop exit.
+
+```basic
+FOR row = 1 TO 2
+    FOR column = 1 TO 3
+        PRINT row; ","; column
+NEXT column, row
+```
+
+Comments may follow the list, and a colon starts the next statement after all listed loops finish. A mismatched, missing, or excess loop variable is a parse error; lists cannot continue onto another physical line.
 
 ### WHILE and DO
 
@@ -361,7 +386,16 @@ stock: DATA "Rice", 2, 3.5
 
 DATA is collected before execution in textual traversal order, including data in nested branches/loops whether or not the branch executes. The prescan does not enter SUB/FUNCTION bodies, and calls do not prescan them later: DATA inside a procedure is not added to the DATA stream. Keep DATA at module level. All READ operations use one interpreter DATA cursor.
 
-`READ name [, name ...]` accepts bare variable names only. It consumes one item per target and assigns the actual item value without coercing it to a suffix or declared type. Reading past the end raises an error. Earlier target writes and consumed items are not rolled back if a later target fails; the current item's cursor advance also precedes its writable-target check.
+`READ target [, target ...]` accepts scalar names and array elements, including multiple indices: `READ count, values(count), grid(1, 2), names$(1)`. Each target is resolved and assigned left to right, so `READ count, values(count)` uses the newly read count as the index. Index expressions are evaluated once per target and truncate through the normal checked integer conversion. READ consumes one item per target and assigns its actual value without coercing it to a suffix or declared type. Reading past the end raises an error. Earlier target writes and consumed items are not rolled back if a later target fails; a destination error, including an invalid index or constant, leaves that target's DATA item unconsumed.
+
+Array destinations use the existing flattened storage and declaration rules: the base name is checked under `OPTION EXPLICIT`, including the usual suffix/DEFtype exceptions, and bounds/rank are not enforced. Constants cannot be overwritten, including a scalar constant that aliases a flattened array key. Empty array subscripts, string slices, and record-member destinations are rejected. These rules apply to READ and console/file INPUT and LINE INPUT in both dialects.
+
+```basic
+DIM values(3), count
+READ count, values(count)
+PRINT values(2)                 ' 42
+DATA 2, 42
+```
 
 `RESTORE` resets the cursor to the first item. `RESTORE label` resets to a label attached **directly to a DATA statement**; a label on a preceding standalone line does not mark that DATA. Unknown/non-DATA labels currently reset to the start silently. The cursor is also reset by CLEAR. Matrix DATA reading is documented in [MAT operations](mat-operations.md).
 
@@ -382,9 +416,11 @@ PRINT writes expressions consecutively. `;` adds no spacing; `,` advances to the
 
 `PRINT USING format$; values` and its file form use the [PRINT USING](print-using.md) formatter. `WRITE` outputs comma-separated values with quoted strings and a final newline; console WRITE does not escape quotes inside strings. File WRITE has its own escaping behavior in [File I/O](file-io.md).
 
-Console INPUT accepts an optional literal prompt followed by `;` or `,` and one or more bare variable names. **Both separators currently append `? ` to the prompt**; there is no comma form that suppresses the question mark. With no prompt it prints `? `. A single target receives the whole line; multiple targets split on commas and trim each field, with no quoted-CSV handling. A target whose current/default value is a string receives text; other targets require a finite numeric input. Incorrect field counts or numeric values print `? Redo from start` and retry without partial assignment. End-of-input raises error 62.
+Console INPUT accepts an optional literal prompt followed by `;` or `,` and one or more scalar or array-element targets. **Both separators currently append `? ` to the prompt**; there is no comma form that suppresses the question mark. With no prompt it prints `? `. A single target receives the whole line; multiple targets split on commas and trim each field, with no quoted-CSV handling. A target whose current/default value is a string receives text; other targets require a finite numeric input. Incorrect field counts or numeric values print `? Redo from start` and retry without partial assignment. End-of-input raises error 62.
 
-LINE INPUT takes an optional literal prompt and one bare target; it removes the input line ending and assigns the remaining text, even to an unsuffixed target. It prints the prompt verbatim without `? `. Array elements and record members are not supported INPUT/LINE INPUT targets. `INPUT$` and `INKEY$`, cursor statements, screen behavior, and output accounting are detailed in [Console](console.md) and [Built-in functions](builtins.md).
+INPUT resolves all destination indices once, left to right, before prompting or consuming file data. Console retries keep those destinations. Values are assigned only after the whole input list succeeds, so `INPUT i, values(i)` uses the value of `i` from before input; this differs from sequential READ. Failed destination resolution consumes no input, though side effects from index expressions are not rolled back. Primitive array defaults follow ordinary element reads; use `$` names for untouched string-array elements, since an unsuffixed array's `AS STRING` metadata alone does not establish their defaults.
+
+LINE INPUT takes an optional literal prompt and one scalar or array-element target; it removes the input line ending and assigns the remaining text, even to an unsuffixed target. It resolves its indices once before reading and prints the prompt verbatim without `? `. Record members and slices remain unsupported. `LINE INPUT #` additionally requires a string target. `INPUT$` and `INKEY$`, cursor statements, screen behavior, and output accounting are detailed in [Console](console.md) and [Built-in functions](builtins.md).
 
 Files have dedicated `OPEN`, `CLOSE`, `RESET`, `PRINT #`, `WRITE #`, `INPUT #`, `LINE INPUT #`, `GET`, `PUT`, `FIELD`, `LSET`, `RSET`, `SEEK`, `SET #...: POINTER`, and `ASK #...: POINTER` forms. Their syntax, mode differences, numbering, encoding, and serialization form part of the specification in [File I/O](file-io.md).
 
@@ -425,9 +461,9 @@ The lexer recognizes the following keyword spellings (some are syntax components
 ```text
 ACCESS AND AS ASK BASE BEEP BYREF BYVAL CALL CASE CHAIN CHDIR CHDRIVE
 CLEAR CLOSE CLS COLOR COMMON CONST CONTINUE DATA DECLARE DEF DEFDBL
-DEFINT DEFLNG DEFSNG DEFSTR DIM DO DOUBLE ELSE ELSEIF END ERASE ERROR
+DEFINT DEFLNG DEFSNG DEFSTR DIM DO DOUBLE ELSE ELSEIF END EQV ERASE ERROR
 EXCEPTION EXIT EXPLICIT FIELD FILES FOR FREEFILE FUNCTION GET GOSUB GOTO
-IF INPUT INTEGER IS KEY KILL LEN LET LOCATE LONG LOOP LPRINT LSET MAT
+IF IMP INPUT INTEGER IS KEY KILL LEN LET LOCATE LONG LOOP LPRINT LSET MAT
 MKDIR MOD NAME NEXT NOT OFF ON OPEN OPTION OR ORGANIZATION OUTIN OUTPUT
 POINTER PRESERVE PRINT PUT QUIT RANDOMIZE READ REDIM REM RESET RESTORE
 RESUME RETRY RMDIR RSET SEEK SELECT SEQUENTIAL SET SHARED SHELL SINGLE

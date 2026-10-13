@@ -893,10 +893,10 @@ impl Parser {
             prompt = Some(s);
         }
 
-        let mut vars = vec![self.parse_variable()?];
+        let mut vars = vec![self.parse_input_target()?];
         while matches!(self.peek(), Token::Comma) {
             self.advance();
-            vars.push(self.parse_variable()?);
+            vars.push(self.parse_input_target()?);
         }
 
         Ok(Stmt::Input(InputStmt { prompt, vars }))
@@ -906,10 +906,10 @@ impl Parser {
         self.advance(); // consume #
         let file_num = self.parse_expr()?;
         self.expect(Token::Comma)?;
-        let mut vars = vec![self.parse_variable()?];
+        let mut vars = vec![self.parse_input_target()?];
         while matches!(self.peek(), Token::Comma) {
             self.advance();
-            vars.push(self.parse_variable()?);
+            vars.push(self.parse_input_target()?);
         }
         Ok(Stmt::InputFile(FileInputStmt { file_num, vars }))
     }
@@ -922,7 +922,7 @@ impl Parser {
             self.advance();
             let file_num = self.parse_expr()?;
             self.expect(Token::Comma)?;
-            let var = self.parse_variable()?;
+            let var = self.parse_input_target()?;
             return Ok(Stmt::LineInputFile { file_num, var });
         }
 
@@ -935,7 +935,7 @@ impl Parser {
             prompt = Some(s);
         }
 
-        let var = self.parse_variable()?;
+        let var = self.parse_input_target()?;
         Ok(Stmt::LineInput { prompt, var })
     }
 
@@ -1061,8 +1061,8 @@ impl Parser {
         let body = self.parse_body_until(&[Token::KwNext])?;
         self.expect(Token::KwNext)?;
 
-        // Optional variable name after NEXT
-        if let Token::Identifier(name) = self.peek() {
+        // Optional variable name after NEXT.
+        let named_next = if let Token::Identifier(name) = self.peek() {
             if name != &var.name {
                 return Err(ParseError::Expected {
                     line: self.current_line(),
@@ -1071,6 +1071,30 @@ impl Parser {
                 });
             }
             self.advance();
+            true
+        } else {
+            false
+        };
+
+        if matches!(self.peek(), Token::Comma) {
+            if !named_next || !matches!(self.peek_at(1), Some(Token::Identifier(_))) {
+                return Err(ParseError::Expected {
+                    line: self.current_line(),
+                    expected: "a loop variable on each side of the NEXT comma".into(),
+                    found: format!("{:?}", self.peek_at(1)),
+                });
+            }
+            // Lower NEXT inner, outer to successive NEXT terminators in this
+            // private token stream. The enclosing FOR parser consumes the next
+            // counter and validates its name; another block cannot consume it.
+            // Retain the comma's span for diagnostics and do not advance yet.
+            self.tokens[self.pos].token = Token::KwNext;
+        } else if !self.at_stmt_end() {
+            return Err(ParseError::Expected {
+                line: self.current_line(),
+                expected: "comma or end of statement after NEXT".into(),
+                found: format!("{:?}", self.peek()),
+            });
         }
 
         Ok(Stmt::For(ForStmt {
@@ -1649,10 +1673,10 @@ impl Parser {
 
     fn parse_read(&mut self) -> Result<Stmt, ParseError> {
         self.advance(); // consume READ
-        let mut vars = vec![self.parse_variable()?];
+        let mut vars = vec![self.parse_input_target()?];
         while matches!(self.peek(), Token::Comma) {
             self.advance();
-            vars.push(self.parse_variable()?);
+            vars.push(self.parse_input_target()?);
         }
         Ok(Stmt::Read(vars))
     }
@@ -2314,7 +2338,47 @@ impl Parser {
     // ==================== Expression parsing ====================
 
     pub fn parse_expr(&mut self) -> Result<Expr, ParseError> {
-        self.parse_xor_expr()
+        self.parse_imp_expr()
+    }
+
+    fn parse_imp_expr(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_eqv_expr()?;
+        while matches!(self.peek(), Token::KwImp) {
+            if self.dialect != crate::Dialect::QuickBasic {
+                return Err(ParseError::General {
+                    line: self.current_line(),
+                    msg: "IMP is not supported in ANSI BASIC".into(),
+                });
+            }
+            self.advance();
+            let right = self.parse_eqv_expr()?;
+            left = Expr::BinaryOp {
+                left: Box::new(left),
+                op: BinOp::Imp,
+                right: Box::new(right),
+            };
+        }
+        Ok(left)
+    }
+
+    fn parse_eqv_expr(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_xor_expr()?;
+        while matches!(self.peek(), Token::KwEqv) {
+            if self.dialect != crate::Dialect::QuickBasic {
+                return Err(ParseError::General {
+                    line: self.current_line(),
+                    msg: "EQV is not supported in ANSI BASIC".into(),
+                });
+            }
+            self.advance();
+            let right = self.parse_xor_expr()?;
+            left = Expr::BinaryOp {
+                left: Box::new(left),
+                op: BinOp::Eqv,
+                right: Box::new(right),
+            };
+        }
+        Ok(left)
     }
 
     fn parse_xor_expr(&mut self) -> Result<Expr, ParseError> {
@@ -2660,6 +2724,41 @@ impl Parser {
         Ok(Variable { name })
     }
 
+    fn parse_input_target(&mut self) -> Result<InputTarget, ParseError> {
+        let name = self.expect_identifier()?;
+        let mut indices = Vec::new();
+        if matches!(self.peek(), Token::LeftParen) {
+            self.advance();
+            if matches!(self.peek(), Token::RightParen) {
+                return Err(ParseError::Expected {
+                    line: self.current_line(),
+                    expected: "at least one array index".into(),
+                    found: format!("{:?}", self.peek()),
+                });
+            }
+            indices.push(self.parse_expr()?);
+            while matches!(self.peek(), Token::Comma) {
+                self.advance();
+                indices.push(self.parse_expr()?);
+            }
+            self.expect(Token::RightParen)?;
+        }
+        if matches!(self.peek(), Token::Dot) {
+            return Err(ParseError::General {
+                line: self.current_line(),
+                msg: "READ and INPUT targets do not support record members".into(),
+            });
+        }
+        if !self.at_stmt_end() && !matches!(self.peek(), Token::Comma) {
+            return Err(ParseError::Expected {
+                line: self.current_line(),
+                expected: "comma or end of statement after input target".into(),
+                found: format!("{:?}", self.peek()),
+            });
+        }
+        Ok(InputTarget { name, indices })
+    }
+
     fn parse_label(&mut self) -> Result<Label, ParseError> {
         match self.peek().clone() {
             Token::NumericLiteral(n) => {
@@ -2967,6 +3066,107 @@ mod tests {
     }
 
     #[test]
+    fn test_read_and_input_targets_support_array_indices() {
+        for dialect in [crate::Dialect::QuickBasic, crate::Dialect::Ansi] {
+            for source in [
+                "READ item, values(2), grid(row + 1, 3)",
+                "INPUT item, values(2), grid(row + 1, 3)",
+                "INPUT #1, item, values(2), grid(row + 1, 3)",
+            ] {
+                let tokens = Lexer::with_dialect(source, dialect).tokenize().unwrap();
+                let program = Parser::with_dialect(tokens, dialect)
+                    .parse_program()
+                    .unwrap();
+                let targets = match &program.statements[0].stmt {
+                    Stmt::Read(targets) => targets,
+                    Stmt::Input(input) => &input.vars,
+                    Stmt::InputFile(input) => &input.vars,
+                    _ => panic!("expected READ or INPUT"),
+                };
+                assert_eq!(targets.len(), 3, "{source}");
+                assert_eq!(targets[0].name, "ITEM");
+                assert!(targets[0].indices.is_empty());
+                assert_eq!(targets[1].name, "VALUES");
+                assert!(matches!(
+                    targets[1].indices.as_slice(),
+                    [Expr::NumericLit(2.0)]
+                ));
+                assert_eq!(targets[2].name, "GRID");
+                assert!(matches!(
+                    targets[2].indices.as_slice(),
+                    [Expr::BinaryOp { op: BinOp::Add, .. }, Expr::NumericLit(3.0)]
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn test_line_input_targets_support_scalar_and_array_destinations() {
+        for dialect in [crate::Dialect::QuickBasic, crate::Dialect::Ansi] {
+            for (source, index_count) in [
+                ("LINE INPUT text$", 0),
+                ("LINE INPUT \"Text: \"; text$(2)", 1),
+                ("LINE INPUT #1, text$", 0),
+                ("LINE INPUT #1, text$(row + 1, 3)", 2),
+            ] {
+                let tokens = Lexer::with_dialect(source, dialect).tokenize().unwrap();
+                let program = Parser::with_dialect(tokens, dialect)
+                    .parse_program()
+                    .unwrap();
+                let target = match &program.statements[0].stmt {
+                    Stmt::LineInput { var, .. } | Stmt::LineInputFile { var, .. } => var,
+                    _ => panic!("expected LINE INPUT"),
+                };
+                assert_eq!(target.name, "TEXT$");
+                assert_eq!(target.indices.len(), index_count, "{source}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_input_targets_reject_empty_indices_members_slices_and_expressions() {
+        for prefix in [
+            "READ ",
+            "INPUT ",
+            "INPUT #1, ",
+            "LINE INPUT ",
+            "LINE INPUT #1, ",
+        ] {
+            for target in [
+                "a()",
+                "person.name",
+                "people(1).name",
+                "text$(1:2)",
+                "a(1,)",
+                "a(,2)",
+                "(a)",
+                "1",
+                "a(1) + 2",
+                "a extra",
+                "a(1) extra",
+                "a Extra(2)",
+                "a(1) Extra(2)",
+                "a b = 42",
+                "a(1) b = 42",
+            ] {
+                let source = format!("{prefix}{target}");
+                assert!(parse_result(&source).is_err(), "accepted {source}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_input_targets_preserve_statement_and_block_delimiters() {
+        for source in [
+            "IF 1 THEN READ a(1) ELSE READ a(2)",
+            "INPUT a(1): LINE INPUT text$(1)",
+            "WHEN EXCEPTION IN\nREAD a(1) USE\nREAD a(2) END WHEN",
+        ] {
+            assert!(parse_result(source).is_ok(), "rejected {source}");
+        }
+    }
+
+    #[test]
     fn test_let_assignment() {
         let prog = parse("LET x = 10");
         assert_eq!(prog.statements.len(), 1);
@@ -3089,6 +3289,81 @@ mod tests {
     }
 
     #[test]
+    fn test_next_list_closes_nested_for_loops_in_both_dialects() {
+        let source =
+            "FOR i = 1 TO 2\nFOR j = 1 TO 2\nFOR k = 1 TO 2\nPRINT i; j; k\nNEXT k, J, I: PRINT 99";
+        for dialect in [crate::Dialect::QuickBasic, crate::Dialect::Ansi] {
+            let tokens = Lexer::with_dialect(source, dialect).tokenize().unwrap();
+            let program = Parser::with_dialect(tokens, dialect)
+                .parse_program()
+                .unwrap();
+            assert_eq!(program.statements.len(), 2);
+            let mut statement = &program.statements[0].stmt;
+            for expected in ["I", "J", "K"] {
+                let Stmt::For(for_stmt) = statement else {
+                    panic!("expected nested FOR {expected}");
+                };
+                assert_eq!(for_stmt.var.name, expected);
+                assert_eq!(for_stmt.body.len(), 1);
+                statement = &for_stmt.body[0].stmt;
+            }
+            assert!(matches!(statement, Stmt::Print(_)));
+            assert!(matches!(program.statements[1].stmt, Stmt::Print(_)));
+        }
+    }
+
+    #[test]
+    fn test_next_lists_reject_missing_mismatched_and_excess_counters() {
+        for ending in [
+            "NEXT i, j",
+            "NEXT j, k",
+            "NEXT j, i, k",
+            "NEXT j,",
+            "NEXT j, i,",
+            "NEXT j,, i",
+            "NEXT , i",
+            "NEXT j,\ni",
+            "NEXT j, ' comment\ni",
+            "NEXT j, i extra",
+            "NEXT j, i()",
+            "NEXT j, i + 1",
+            "NEXT j, i, 1",
+        ] {
+            let source = format!("FOR i = 1 TO 2\nFOR j = 1 TO 2\n{ending}");
+            assert!(parse_result(&source).is_err(), "accepted {ending}");
+        }
+        assert!(parse_result("FOR i = 1 TO 2\n100 NEXT i").is_err());
+        assert!(parse_result("FOR i = 1 TO 2\nFOR j = 1 TO 2\nfinished: NEXT j, i").is_err());
+        assert!(
+            parse_result("IF 1 THEN FOR i = 1 TO 2\nFOR j = 1 TO 2\nNEXT j, i ELSE PRINT 0")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_next_lists_cannot_cross_unclosed_blocks() {
+        for (open, close) in [
+            ("IF 1 THEN", "END IF"),
+            ("DO", "LOOP UNTIL 1"),
+            ("WHILE 1", "WEND"),
+            ("SELECT CASE 1\nCASE 1", "END SELECT"),
+            ("WHEN EXCEPTION IN", "USE\nPRINT 0\nEND WHEN"),
+            ("SUB Worker", "END SUB"),
+            ("FUNCTION Work()", "END FUNCTION"),
+        ] {
+            let source =
+                format!("FOR i = 1 TO 2\n{open}\nFOR j = 1 TO 2\nNEXT j, i\n{close}\nNEXT i");
+            assert!(
+                parse_result(&source).is_err(),
+                "accepted a NEXT list across {open}"
+            );
+        }
+        assert!(parse_result(
+            "FOR i = 1 TO 2\nDO\nFOR j = 1 TO 2\nFOR k = 1 TO 2\nNEXT k, j\nLOOP UNTIL 1\nNEXT i"
+        ).is_ok());
+    }
+
+    #[test]
     fn test_unary_plus_is_preserved_in_call_arguments() {
         let prog = parse("CALL Change(+x)");
         let Stmt::Call { args, .. } = &prog.statements[0].stmt else {
@@ -3206,5 +3481,64 @@ mod tests {
                 .to_string()
                 .contains("Integer division (\\) is not supported in ANSI")
         );
+    }
+
+    #[test]
+    fn test_eqv_and_imp_precedence_and_left_association() {
+        let program = parse("x = 1 XOR 2 EQV 3 IMP 4");
+        let Stmt::Let { expr, .. } = &program.statements[0].stmt else {
+            panic!("expected assignment");
+        };
+        let Expr::BinaryOp {
+            op: BinOp::Imp,
+            left,
+            ..
+        } = expr
+        else {
+            panic!("IMP must have the lowest precedence");
+        };
+        let Expr::BinaryOp {
+            op: BinOp::Eqv,
+            left,
+            ..
+        } = left.as_ref()
+        else {
+            panic!("EQV must bind more tightly than IMP");
+        };
+        assert!(matches!(
+            left.as_ref(),
+            Expr::BinaryOp { op: BinOp::Xor, .. }
+        ));
+
+        for (operator, expected) in [("EQV", BinOp::Eqv), ("IMP", BinOp::Imp)] {
+            let program = parse(&format!("x = 1 {operator} 2 {operator} 3"));
+            let Stmt::Let { expr, .. } = &program.statements[0].stmt else {
+                panic!("expected assignment");
+            };
+            let Expr::BinaryOp { op, left, right } = expr else {
+                panic!("expected binary expression");
+            };
+            assert_eq!(*op, expected);
+            assert!(matches!(left.as_ref(), Expr::BinaryOp { op, .. } if *op == expected));
+            assert!(matches!(right.as_ref(), Expr::NumericLit(3.0)));
+        }
+    }
+
+    #[test]
+    fn test_eqv_and_imp_are_qbasic_only() {
+        for operator in ["EQV", "IMP"] {
+            let source = format!("PRINT 1 {operator} 2");
+            let tokens = Lexer::with_dialect(&source, crate::Dialect::Ansi)
+                .tokenize()
+                .unwrap();
+            let error = Parser::with_dialect(tokens, crate::Dialect::Ansi)
+                .parse_program()
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("{operator} is not supported in ANSI"))
+            );
+        }
     }
 }

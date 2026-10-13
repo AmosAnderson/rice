@@ -32,6 +32,21 @@ fn run_file(path: &str) -> String {
     run_bas(&source)
 }
 
+fn input_session(input: &str) -> (rice::interpreter::Interpreter, SharedOutput) {
+    let output = SharedOutput::new();
+    let interpreter = rice::interpreter::Interpreter::with_io(
+        Box::new(output.clone()),
+        Box::new(Cursor::new(input.as_bytes().to_vec())),
+    );
+    (interpreter, output)
+}
+
+fn run_bas_with_input(source: &str, input: &str) -> String {
+    let (mut interpreter, output) = input_session(input);
+    interpreter.run_source(source).unwrap();
+    output.into_string()
+}
+
 #[test]
 fn test_hello() {
     assert_eq!(run_file("tests/programs/hello.bas"), "Hello, World!\n");
@@ -48,6 +63,39 @@ fn test_arithmetic() {
     assert_eq!(lines[4].trim(), "3");
     assert_eq!(lines[5].trim(), "2");
     assert_eq!(lines[6].trim(), "1024");
+}
+
+#[test]
+fn test_logical_eqv_imp() {
+    assert_eq!(
+        run_file("tests/programs/logical_eqv_imp.bas"),
+        "-1;0;0;-1\n-1;0;-1;-1\n-7;-5;-7;6\n-1;7;5\n-1;-1;-1\n-1;-1\n-1\n01\n-1\n-1-1\n"
+    );
+}
+
+#[test]
+fn test_logical_eqv_imp_errors_and_dialect() {
+    for operator in ["EQV", "IMP"] {
+        let (_, result) = run_bas_may_fail(&format!("PRINT 0 {operator} (1 / 0)\n"));
+        assert!(matches!(
+            result
+                .unwrap_err()
+                .downcast_ref::<rice::error::RuntimeError>(),
+            Some(rice::error::RuntimeError::DivisionByZero)
+        ));
+        for (left, right) in [("\"text\"", "1"), ("1", "\"text\"")] {
+            let (_, result) = run_bas_may_fail(&format!("PRINT {left} {operator} {right}\n"));
+            assert!(matches!(
+                result
+                    .unwrap_err()
+                    .downcast_ref::<rice::error::RuntimeError>(),
+                Some(rice::error::RuntimeError::TypeMismatch { .. })
+            ));
+        }
+        let (_, result) =
+            run_bas_may_fail(&format!("OPTION DIALECT \"ANSI\"\nPRINT 1 {operator} 0\n"));
+        assert!(result.unwrap_err().to_string().contains("ANSI"));
+    }
 }
 
 #[test]
@@ -2232,5 +2280,721 @@ fn test_minmax_rejects_missing_or_nonnumeric_arguments() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn test_doubled_quote_literals_in_both_dialects() {
+    let expected = concat!(
+        "\n\"\n\"\"\nHe said \"hello\".\n",
+        "a\"b|\"start|end\"\n",
+        "1:34\n",
+        "é\"😀:3\n",
+        "quote \" ' REM : remain text\n",
+        "one \"quoted\" value|\"|\n",
+        "OPTION DIALECT \"ANSI\"\n",
+    );
+    assert_eq!(run_file("tests/programs/quoted_strings.bas"), expected);
+    let source = std::fs::read_to_string("tests/programs/quoted_strings.bas").unwrap();
+    for dialect in ["QB", "ANSI"] {
+        assert_eq!(
+            run_bas(&format!(
+                "OPTION DIALECT \"{dialect}\"\r\n{}",
+                source.replace('\n', "\r\n")
+            )),
+            expected,
+        );
+    }
+}
+
+#[test]
+fn test_unterminated_doubled_quote_literal_reports_opening_span() {
+    for dialect in ["QB", "ANSI"] {
+        let (_, result) = run_bas_may_fail(&format!(
+            "OPTION DIALECT \"{dialect}\"\nPRINT \"unfinished\"\"\n"
+        ));
+        assert!(matches!(
+            result.unwrap_err().downcast_ref::<rice::error::LexError>(),
+            Some(rice::error::LexError::UnterminatedString { line: 2, col: 7 })
+        ));
+    }
+}
+
+#[test]
+fn test_indexed_read_in_both_dialects() {
+    let expected = "2|11|22|rice|33|44\n2|11\nfresh|55\n";
+    assert_eq!(run_file("tests/programs/indexed_input.bas"), expected);
+    let source = std::fs::read_to_string("tests/programs/indexed_input.bas").unwrap();
+    assert_eq!(
+        run_bas(&format!("OPTION DIALECT \"ANSI\"\n{source}")),
+        expected
+    );
+}
+
+#[test]
+fn test_indexed_console_input_in_both_dialects() {
+    for dialect in ["QB", "ANSI"] {
+        let source = format!(
+            r#"
+OPTION DIALECT "{dialect}"
+DIM numbers(2, 3), words$(2)
+INPUT "Values"; scalar, numbers(1, 2), words$(1)
+LINE INPUT "Line: "; words$(2)
+LINE INPUT numbers(2, 3)
+PRINT scalar; "|"; numbers(1, 2); "|"; words$(1)
+PRINT "["; words$(2); "]"
+PRINT numbers(2, 3)
+"#
+        );
+        assert_eq!(
+            run_bas_with_input(&source, "7, 4.5, hello\n  with, commas  \r\nconverted\n"),
+            "Values? Line: 7|4.5|hello\n[  with, commas  ]\nconverted\n",
+            "{dialect}"
+        );
+    }
+}
+
+#[test]
+fn test_indexed_input_resolves_indices_once_across_retries() {
+    for dialect in ["QB", "ANSI"] {
+        let source = format!(
+            r#"
+OPTION DIALECT "{dialect}"
+DIM values(2)
+calls = 0
+INPUT values(Pick()), values(Pick())
+PRINT calls; "|"; values(1); "|"; values(2)
+index = 1
+INPUT index, values(index)
+PRINT index; "|"; values(1); "|"; values(2)
+FUNCTION Pick()
+    SHARED calls
+    calls = calls + 1
+    Pick = calls
+END FUNCTION
+"#
+        );
+        assert_eq!(
+            run_bas_with_input(&source, "123,bad\n1\n7,8\n2,99\n"),
+            "? ? Redo from start\n? ? Redo from start\n? 2|7|8\n? 2|99|8\n",
+            "{dialect}"
+        );
+    }
+}
+
+#[test]
+fn test_indexed_input_rejected_line_does_not_partially_assign() {
+    for dialect in ["QB", "ANSI"] {
+        let (mut interpreter, output) = input_session("123,bad\n");
+        let error = interpreter
+            .run_source(&format!(
+                r#"
+OPTION DIALECT "{dialect}"
+DIM values(2)
+values(1) = 10
+values(2) = 20
+calls = 0
+INPUT values(Pick()), values(Pick())
+FUNCTION Pick()
+    SHARED calls
+    calls = calls + 1
+    Pick = calls
+END FUNCTION
+"#
+            ))
+            .unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<rice::error::RuntimeError>()
+                .unwrap()
+                .basic_err_code(),
+            62
+        );
+        interpreter
+            .run_source("PRINT calls; \"|\"; values(1); \"|\"; values(2)\n")
+            .unwrap();
+        assert_eq!(
+            output.into_string(),
+            "? ? Redo from start\n? 2|10|20\n",
+            "{dialect}"
+        );
+    }
+}
+
+#[test]
+fn test_indexed_file_input_in_both_dialects() {
+    for dialect in ["QB", "ANSI"] {
+        let source = r#"
+OPTION DIALECT "{DIALECT}"
+DIM values(2, 2), words$(2)
+OPEN "{DIR}/indexed.txt" FOR OUTPUT AS #1
+WRITE #1, 2, "hello, ""rice""", 12.5
+PRINT #1, "  raw, ""text""  "
+CLOSE #1
+OPEN "{DIR}/indexed.txt" FOR INPUT AS #1
+index = 1
+calls = 0
+INPUT #1, index, words$(Pick()), values(index, 1)
+LINE INPUT #1, words$(Pick())
+PRINT index; "|"; values(1, 1); "|"; values(2, 1); "|"; words$(1)
+PRINT "["; words$(2); "]|"; calls
+CLOSE #1
+FUNCTION Pick()
+    SHARED calls
+    calls = calls + 1
+    Pick = calls
+END FUNCTION
+"#
+        .replace("{DIALECT}", dialect);
+        let (output, _dir) = run_bas_with_tmpdir(&source);
+        assert_eq!(
+            output, "2|12.5|0|hello, \"rice\"\n[  raw, \"text\"  ]|2\n",
+            "{dialect}"
+        );
+    }
+}
+
+#[test]
+fn test_indexed_input_validates_targets_before_consuming_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("unread.txt");
+    std::fs::write(&path, "40,50\n").unwrap();
+    let path = path.to_str().unwrap().replace('\\', "/");
+    for dialect in ["QB", "ANSI"] {
+        let mut cases = vec![
+            ("CONST locked = 5\n", "locked(1)", 5),
+            ("DIM values(2)\nCONST values_1 = 5\n", "values(1)", 5),
+            ("DIM values(2)\n", "values(1 / 0)", 11),
+            ("DIM values(2)\n", "values(VAL(\"NaN\"))", 6),
+            ("DIM values(2)\n", "values(\"bad\")", 13),
+        ];
+        if dialect == "QB" {
+            cases.push(("OPTION EXPLICIT\n", "missing(1)", 5));
+        }
+        for (setup, target, expected_code) in cases {
+            for kind in ["READ", "INPUT", "LINE INPUT", "INPUT #", "LINE INPUT #"] {
+                let statement = match kind {
+                    "READ" => format!("READ {target}"),
+                    "INPUT" => format!("INPUT good, {target}"),
+                    "LINE INPUT" => format!("LINE INPUT {target}"),
+                    "INPUT #" => format!("INPUT #1, good, {target}"),
+                    _ => format!("LINE INPUT #1, {target}"),
+                };
+                let (mut interpreter, output) = input_session("40,50\n");
+                let error = interpreter
+                    .run_source(&format!(
+                        "OPTION DIALECT \"{dialect}\"\n{setup}DIM good\ngood = 10\nDATA 40, 50\nOPEN \"{path}\" FOR INPUT AS #1\n{statement}\n"
+                    ))
+                    .unwrap_err();
+                assert_eq!(
+                    error
+                        .downcast_ref::<rice::error::RuntimeError>()
+                        .unwrap()
+                        .basic_err_code(),
+                    expected_code,
+                    "{dialect} {statement}: {error}"
+                );
+                assert!(
+                    output.clone().into_string().is_empty(),
+                    "{statement} prompted before validation"
+                );
+                let recovery = if kind == "READ" {
+                    "DIM recovered\nREAD recovered\nPRINT recovered\n"
+                } else if kind.ends_with('#') {
+                    "PRINT LOC(1)\nLINE INPUT #1, remaining$\nPRINT remaining$\n"
+                } else {
+                    "LINE INPUT remaining$\nPRINT remaining$\n"
+                };
+                interpreter
+                    .run_source(&format!("{recovery}PRINT good\nCLOSE #1\n"))
+                    .unwrap();
+                let expected = if kind == "READ" {
+                    "40\n10\n"
+                } else if kind.ends_with('#') {
+                    "0\n40,50\n10\n"
+                } else {
+                    "40,50\n10\n"
+                };
+                assert_eq!(output.into_string(), expected, "{dialect} {statement}");
+            }
+        }
+    }
+}
+
+#[test]
+fn test_indexed_read_validates_each_target_before_its_data_item() {
+    for dialect in ["QB", "ANSI"] {
+        let (mut interpreter, output) = input_session("");
+        let error = interpreter
+            .run_source(&format!(
+                "OPTION DIALECT \"{dialect}\"\nDIM values(2)\nDATA 10, 20\nREAD values(1), values(1 / 0)\n"
+            ))
+            .unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<rice::error::RuntimeError>()
+                .unwrap()
+                .basic_err_code(),
+            11
+        );
+        interpreter
+            .run_source("READ values(2)\nPRINT values(1); \"|\"; values(2)\n")
+            .unwrap();
+        assert_eq!(output.into_string(), "10|20\n");
+    }
+}
+
+#[test]
+fn test_indexed_input_eof_preserves_existing_values() {
+    for dialect in ["QB", "ANSI"] {
+        for statement in ["INPUT values(1), values(2)", "LINE INPUT words$(1)"] {
+            let (mut interpreter, output) = input_session("");
+            let error = interpreter
+                .run_source(&format!(
+                    "OPTION DIALECT \"{dialect}\"\nDIM values(2), words$(1)\nvalues(1) = 10\nvalues(2) = 20\nwords$(1) = \"kept\"\n{statement}\n"
+                ))
+                .unwrap_err();
+            assert_eq!(
+                error
+                    .downcast_ref::<rice::error::RuntimeError>()
+                    .unwrap()
+                    .basic_err_code(),
+                62
+            );
+            interpreter
+                .run_source("PRINT values(1); \"|\"; values(2); \"|\"; words$(1)\n")
+                .unwrap();
+            let prompt = if statement.starts_with("INPUT") {
+                "? "
+            } else {
+                ""
+            };
+            assert_eq!(output.into_string(), format!("{prompt}10|20|kept\n"));
+        }
+        for (statement, contents) in [
+            ("INPUT #1, values(1), values(2)", "99"),
+            ("LINE INPUT #1, words$(1)", ""),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("short.txt");
+            std::fs::write(&path, contents).unwrap();
+            let path = path.to_str().unwrap().replace('\\', "/");
+            let (mut interpreter, output) = input_session("");
+            let error = interpreter
+                .run_source(&format!(
+                    "OPTION DIALECT \"{dialect}\"\nDIM values(2), words$(1)\nvalues(1) = 10\nvalues(2) = 20\nwords$(1) = \"kept\"\nOPEN \"{path}\" FOR INPUT AS #1\n{statement}\n"
+                ))
+                .unwrap_err();
+            assert_eq!(
+                error
+                    .downcast_ref::<rice::error::RuntimeError>()
+                    .unwrap()
+                    .basic_err_code(),
+                62
+            );
+            interpreter
+                .run_source("PRINT values(1); \"|\"; values(2); \"|\"; words$(1)\nCLOSE #1\n")
+                .unwrap();
+            assert_eq!(output.into_string(), "10|20|kept\n");
+        }
+    }
+}
+
+#[test]
+fn test_indexed_input_preserves_string_default_rules() {
+    for dialect in ["QB", "ANSI"] {
+        let source = format!(
+            r#"
+OPTION DIALECT "{dialect}"
+DIM words$(2), labels(2) AS STRING
+labels(1) = ""
+INPUT words$(1), labels(1)
+INPUT labels(2)
+PRINT words$(1); "|"; labels(1); "|"; labels(2) + 1
+"#
+        );
+        assert_eq!(
+            run_bas_with_input(&source, "alpha,beta\n7\n"),
+            "? ? alpha|beta|8\n",
+            "{dialect}"
+        );
+    }
+    assert_eq!(
+        run_bas_with_input(
+            "DEFSTR A-A\nINPUT alphabet(1)\nPRINT alphabet(1)\n",
+            "text\n"
+        ),
+        "? text\n"
+    );
+}
+
+#[test]
+fn test_indexed_input_accepts_declared_targets_with_option_explicit() {
+    let source = r#"
+OPTION EXPLICIT
+DIM values(2), words$(2), index
+index = 1
+INPUT values(index), words$(index)
+LINE INPUT words$(2)
+DATA 9
+READ values(2)
+PRINT values(1); "|"; values(2); "|"; words$(1); "|"; words$(2)
+"#;
+    assert_eq!(
+        run_bas_with_input(source, "4,hello\nwhole line\n"),
+        "? 4|9|hello|whole line\n"
+    );
+}
+
+#[test]
+fn test_mat_file_channels_roundtrip_and_preserve_console_input() {
+    let fixture = std::fs::read_to_string("tests/programs/mat_file_channels.bas").unwrap();
+    for dialect in ["QB", "ANSI"] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap().replace('\\', "/");
+        let source = format!(
+            "OPTION DIALECT \"{dialect}\"\n{}",
+            fixture.replace("{DIR}", &path)
+        );
+        let (mut interpreter, output) = input_session("console untouched\n");
+        interpreter.run_source(&source).unwrap();
+        interpreter
+            .run_source("LINE INPUT text$\nPRINT text$\n")
+            .unwrap();
+        assert_eq!(
+            output.into_string(),
+            "11\neof\n2\n1.5 -2\n3 4\n4|5|-2|-1\nconsole untouched\n",
+            "{dialect}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("matrix.csv")).unwrap(),
+            "1.5,-2\n3,4\n"
+        );
+    }
+}
+
+#[test]
+fn test_mat_file_print_uses_current_position_and_resets_column() {
+    for dialect in ["QB", "ANSI"] {
+        let source = r#"
+OPTION DIALECT "{DIALECT}"
+DIM m(1, 2)
+DATA 1, 2
+MAT READ m
+OPEN "{DIR}/matrix.txt" FOR OUTPUT AS #1
+PRINT #1, "prefix:";
+MAT PRINT #1, m
+PRINT #1, TAB(5); "x"
+CLOSE #1
+OPEN "{DIR}/matrix.txt" FOR APPEND AS #1
+MAT PRINT #1, m
+CLOSE #1
+"#
+        .replace("{DIALECT}", dialect);
+        let (output, dir) = run_bas_with_tmpdir(&source);
+        assert!(output.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("matrix.txt")).unwrap(),
+            "prefix:1,2\n    x\n1,2\n"
+        );
+    }
+}
+
+#[test]
+fn test_mat_file_input_uses_numeric_fields_independent_of_rows() {
+    for dialect in ["QB", "ANSI"] {
+        let source = r#"
+OPTION DIALECT "{DIALECT}"
+DIM m(2, 2)
+OPEN "{DIR}/matrix.txt" FOR OUTPUT AS #1
+WRITE #1, "1", 2, 3
+WRITE #1, 4, 99
+CLOSE #1
+OPEN "{DIR}/matrix.txt" FOR INPUT AS #1
+MAT INPUT #1, m
+INPUT #1, remainder
+PRINT remainder
+MAT PRINT m
+PRINT EOF(1)
+CLOSE #1
+"#
+        .replace("{DIALECT}", dialect);
+        let (output, _dir) = run_bas_with_tmpdir(&source);
+        let eof = if dialect == "QB" { -1 } else { 1 };
+        assert_eq!(output, format!("99\n1 2\n3 4\n{eof}\n"));
+    }
+}
+
+#[test]
+fn test_mat_file_input_errors_preserve_matrix_and_consumed_position() {
+    for dialect in ["QB", "ANSI"] {
+        for (contents, code, recovery) in [
+            ("2,bad,4,5,99\n", 13, "INPUT #1, rest\nPRINT rest\n"),
+            ("2,3,4", 62, ""),
+            ("2,\"unfinished", 62, ""),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("matrix.txt");
+            std::fs::write(&path, contents).unwrap();
+            let path = path.to_str().unwrap().replace('\\', "/");
+            let (mut interpreter, output) = input_session("");
+            let error = interpreter.run_source(&format!(
+                "OPTION DIALECT \"{dialect}\"\nDIM m(2, 2)\nMAT m = CON\nOPEN \"{path}\" FOR INPUT AS #1\nMAT INPUT #1, m\n"
+            )).unwrap_err();
+            assert_eq!(
+                error
+                    .downcast_ref::<rice::error::RuntimeError>()
+                    .unwrap()
+                    .basic_err_code(),
+                code
+            );
+            assert!(output.clone().into_string().is_empty());
+            interpreter
+                .run_source(&format!("MAT PRINT m\n{recovery}CLOSE #1\n"))
+                .unwrap();
+            let expected = if code == 13 {
+                "1 1\n1 1\n99\n"
+            } else {
+                "1 1\n1 1\n"
+            };
+            assert_eq!(output.into_string(), expected, "{dialect} {contents:?}");
+        }
+    }
+}
+
+#[test]
+fn test_mat_file_channels_validate_handles_without_console_io() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("matrix.txt");
+    std::fs::write(&path, "1,2\n").unwrap();
+    let path = path.to_str().unwrap().replace('\\', "/");
+    for dialect in ["QB", "ANSI"] {
+        for (setup, statement, message) in [
+            (String::new(), "MAT PRINT #99, m", "file #99 is not open"),
+            (String::new(), "MAT INPUT #99, m", "file #99 is not open"),
+            (
+                format!("OPEN \"{path}\" FOR INPUT AS #1\n"),
+                "MAT PRINT #1, m",
+                "not open for writing",
+            ),
+            (
+                format!("OPEN \"{path}\" FOR OUTPUT AS #1\n"),
+                "MAT INPUT #1, m",
+                "not open for reading",
+            ),
+        ] {
+            let (mut interpreter, output) = input_session("console untouched\n");
+            let error = interpreter
+                .run_source(&format!(
+                    "OPTION DIALECT \"{dialect}\"\nDIM m(1, 2)\n{setup}{statement}\n"
+                ))
+                .unwrap_err();
+            assert!(error.to_string().contains(message), "{error}");
+            assert!(output.clone().into_string().is_empty());
+            interpreter
+                .run_source("LINE INPUT rest$\nPRINT rest$\nCLOSE\n")
+                .unwrap();
+            assert_eq!(output.into_string(), "console untouched\n");
+        }
+    }
+}
+
+#[test]
+fn test_mat_file_input_validates_destinations_before_reading() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("matrix.txt");
+    std::fs::write(&path, "1,2\n").unwrap();
+    let path = path.to_str().unwrap().replace('\\', "/");
+    for dialect in ["QB", "ANSI"] {
+        let mut setups = vec![
+            "DIM m(2)\n",
+            "DIM m(1, 2)\nCONST m = 5\n",
+            "DIM m(1, 2)\nCONST m_1_2 = 5\n",
+        ];
+        if dialect == "QB" {
+            setups.push("OPTION EXPLICIT\nDIM m_1_1\nm_1_1 = 1\n");
+        }
+        for setup in setups {
+            let (mut interpreter, output) = input_session("");
+            let error = interpreter.run_source(&format!(
+                "OPTION DIALECT \"{dialect}\"\n{setup}OPEN \"{path}\" FOR INPUT AS #1\nMAT INPUT #1, m\n"
+            )).unwrap_err();
+            assert_eq!(
+                error
+                    .downcast_ref::<rice::error::RuntimeError>()
+                    .unwrap()
+                    .basic_err_code(),
+                5
+            );
+            interpreter
+                .run_source("PRINT LOC(1)\nLINE INPUT #1, rest$\nPRINT rest$\nCLOSE #1\n")
+                .unwrap();
+            assert_eq!(output.into_string(), "0\n1,2\n", "{dialect} {setup}");
+        }
+    }
+}
+
+#[test]
+fn test_mat_file_channels_preserve_numeric_matrix_storage_rules() {
+    for dialect in ["QB", "ANSI"] {
+        let source = r#"
+OPTION DIALECT "{DIALECT}"
+DIM text$(1, 2)
+text$(1, 1) = "not numeric"
+text$(1, 2) = 5
+OPEN "{DIR}/matrix.txt" FOR OUTPUT AS #1
+MAT PRINT #1, text$
+CLOSE #1
+OPEN "{DIR}/matrix.txt" FOR INPUT AS #1
+MAT INPUT #1, text$
+CLOSE #1
+PRINT text$(1, 1) + 1; "|"; text$(1, 2) + 1
+"#
+        .replace("{DIALECT}", dialect);
+        let (output, dir) = run_bas_with_tmpdir(&source);
+        assert_eq!(output, "1|6\n");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("matrix.txt")).unwrap(),
+            "0,5\n"
+        );
+    }
+}
+
+#[test]
+fn test_command_line_arguments_are_isolated_and_persist_across_execution() {
+    for dialect in [rice::Dialect::QuickBasic, rice::Dialect::Ansi] {
+        let (mut interpreter, output) = input_session("");
+        interpreter.dialect = dialect;
+        interpreter.set_command_line_args(["", "MiXeD Case", "é😀", ""]);
+        interpreter
+            .run_file("tests/programs/command_line.bas")
+            .unwrap();
+        interpreter
+            .run_source("CLEAR\nPRINT \"[\"; COMMAND$(); \"]\"\n")
+            .unwrap();
+
+        let (mut other, other_output) = input_session("");
+        other
+            .run_source("PRINT \"[\"; COMMAND$(); \"]\"\nPRINT \"[\"; COMMAND(); \"]\"\n")
+            .unwrap();
+        assert_eq!(other_output.into_string(), "[]\n[]\n");
+
+        interpreter.set_command_line_args(["replacement"]);
+        interpreter
+            .run_source("PRINT command$()\nPRINT command()\n")
+            .unwrap();
+        interpreter.set_command_line_args(std::iter::empty::<&str>());
+        interpreter
+            .run_source("PRINT \"[\"; COMMAND$(); \"]\"\n")
+            .unwrap();
+        let truth = if dialect == rice::Dialect::QuickBasic {
+            -1
+        } else {
+            1
+        };
+        assert_eq!(
+            output.into_string(),
+            format!(
+                "[ MiXeD Case é😀 ]\n[ MiXeD Case é😀 ]\n{truth}\n[ MiXeD Case é😀 ]\nreplacement\nreplacement\n[]\n"
+            )
+        );
+    }
+}
+
+#[test]
+fn test_command_line_calls_preserve_bare_variables_and_validate_arity() {
+    for dialect in [rice::Dialect::QuickBasic, rice::Dialect::Ansi] {
+        let (mut interpreter, output) = input_session("");
+        interpreter.dialect = dialect;
+        interpreter.set_command_line_args(["payload"]);
+        interpreter
+            .run_source("PRINT LEN(COMMAND$)\nPRINT COMMAND\nCOMMAND$ = \"shadow\"\nPRINT COMMAND$\nPRINT COMMAND$()\nPRINT COMMAND()\n")
+            .unwrap();
+        assert_eq!(output.into_string(), "0\n0\nshadow\npayload\npayload\n");
+        for name in ["COMMAND$", "COMMAND"] {
+            let error = interpreter
+                .run_source(&format!("PRINT {name}(1)\n"))
+                .unwrap_err();
+            assert!(matches!(
+                error.downcast_ref::<rice::error::RuntimeError>(),
+                Some(rice::error::RuntimeError::ArityMismatch {
+                    expected: 0,
+                    got: 1
+                })
+            ));
+        }
+    }
+}
+
+#[test]
+fn test_multi_next_in_both_dialects() {
+    let expected = "111213212223\n927\n1121:done\nskipped\n22211211\n";
+    assert_eq!(run_file("tests/programs/multi_next.bas"), expected);
+    let source = std::fs::read_to_string("tests/programs/multi_next.bas").unwrap();
+    assert_eq!(
+        run_bas(&format!("OPTION DIALECT \"ANSI\"\n{source}")),
+        expected
+    );
+}
+
+#[test]
+fn test_multi_next_three_loops_and_procedure_scope() {
+    for dialect in ["QB", "ANSI"] {
+        let source = format!(
+            r#"
+OPTION DIALECT "{dialect}"
+IF 1 THEN
+    FOR i = 1 TO 2
+        FOR j = 1 TO 2
+            FOR k = 1 TO 2
+                PRINT i * 100 + j * 10 + k; ";";
+    NEXT k, j, i
+ELSE
+    PRINT "unreachable"
+END IF
+PRINT
+CALL Worker
+SUB Worker
+    FOR i = 1 TO 2
+        FOR j = 1 TO 2
+            PRINT i; j;
+    NEXT j, i: PRINT ":sub"
+END SUB
+"#
+        );
+        assert_eq!(
+            run_bas(&source),
+            "111;112;121;122;211;212;221;222;\n11122122:sub\n"
+        );
+    }
+    assert_eq!(
+        run_bas("FOR i% = 1 TO 2\nFOR j% = 1 TO 2\nPRINT i%; j%;\nNEXT J%, I%: PRINT\n"),
+        "11122122\n"
+    );
+}
+
+#[test]
+fn test_multi_next_rejects_malformed_lists_before_execution() {
+    for ending in [
+        "NEXT i, j",
+        "NEXT j, i, k",
+        "NEXT j,",
+        "NEXT j, i,",
+        "NEXT j,, i",
+        "NEXT j, i extra",
+    ] {
+        let (output, result) = run_bas_may_fail(&format!(
+            "PRINT \"unreachable\"\nFOR i = 1 TO 2\nFOR j = 1 TO 2\n{ending}\n"
+        ));
+        assert!(
+            output.is_empty(),
+            "{ending} executed before reporting its syntax error"
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .downcast_ref::<rice::error::ParseError>()
+                .is_some()
+        );
     }
 }

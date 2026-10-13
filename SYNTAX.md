@@ -34,7 +34,7 @@ PRINT "named label"
 
 Keywords and identifiers are case-insensitive. Identifiers begin with an ASCII letter or `_`, followed by ASCII letters, digits, or `_`. `$` is accepted in both modes; QB additionally accepts `%`, `!`, `#`, and `&`. Suffixes distinguish names but do not enforce primitive assignment types. Use spaces around concatenation `&`, especially after an unsuffixed name in QB.
 
-Numbers include `12`, `.5`, `1.5E-3`, and `1D3`. QB additionally accepts unsigned hexadecimal `&HFF` and octal `&O77`, with optional trailing `&`. Decimal numeric suffixes are unsupported. Strings use double quotes with no quote/backslash escape syntax; use `CHR$(34)` to include a double quote. There is no line continuation or `?` PRINT abbreviation.
+Numbers include `12`, `.5`, `1.5E-3`, and `1D3`. QB additionally accepts unsigned hexadecimal `&HFF` and octal `&O77`, with optional trailing `&`. Decimal numeric suffixes are unsupported. Strings use double quotes; a doubled quote inside a literal represents one quote in both modes (`"say ""hi"""`). Backslashes remain literal. There is no line continuation or `?` PRINT abbreviation.
 
 | Precedence, highest first | Operators |
 |---|---|
@@ -50,8 +50,10 @@ Numbers include `12`, `.5`, `1.5E-3`, and `1D3`. QB additionally accepts unsigne
 | Conjunction | `AND` |
 | Disjunction | `OR` |
 | Exclusive OR | `XOR` |
+| Equivalence (QB only) | `EQV` |
+| Implication (QB only) | `IMP` |
 
-QB comparisons return `-1`/`0`; ANSI comparisons return `1`/`0`. QB logical operators are 64-bit bitwise operations; ANSI uses logical nonzero/zero tests. Both eagerly evaluate operands. QB `\` rounds operands to nearest-even signed 64-bit integers and truncates the quotient toward zero, with zero-divisor and overflow checks. MOD uses real-number floor modulus in both modes. `&` concatenates strings in both modes; string `+` is QB-only. `IMP` and `EQV` are unsupported. See [Expressions and operators](docs/language-reference.md#expressions-and-operators).
+QB comparisons return `-1`/`0`; ANSI comparisons return `1`/`0`. QB logical operators are 64-bit bitwise operations; ANSI uses logical nonzero/zero tests. Both eagerly evaluate operands. QB-only EQV complements XOR; IMP combines the complement of the left operand with the right using OR, after integer conversion. QB `\` rounds operands to nearest-even signed 64-bit integers and truncates the quotient toward zero, with zero-divisor and overflow checks. MOD uses real-number floor modulus in both modes. `&` concatenates strings in both modes; string `+` is QB-only. See [Expressions and operators](docs/language-reference.md#expressions-and-operators).
 
 ## Values, declarations, arrays, and assignment
 
@@ -106,7 +108,7 @@ END IF
 
 FOR name = start TO end [STEP expr]
     statements
-NEXT [name]
+NEXT [name [, outer-name ...]]
 
 WHILE expr
     statements
@@ -134,7 +136,7 @@ EXIT {FOR | DO | SUB | FUNCTION}
 {END | STOP | SYSTEM | QUIT}
 ```
 
-A CASE `test` is `expr`, `lower TO upper`, or `IS comparison-operator expr`. CASE uses the first matching branch. FOR evaluates its limit/step once; STEP 0 skips its body. `NEXT j, i`, `EXIT WHILE`, `EXIT SELECT`, and loop-continue are unsupported. Both WEND and END WHILE are accepted in both modes.
+A CASE `test` is `expr`, `lower TO upper`, or `IS comparison-operator expr`. CASE uses the first matching branch. FOR evaluates its limit/step once; STEP 0 skips its body. `NEXT j, i` closes nested FOR loops from innermost to outermost in both modes; names must match, and intervening blocks must already be closed. `EXIT WHILE`, `EXIT SELECT`, and loop-continue are unsupported. Both WEND and END WHILE are accepted in both modes.
 
 QB-only legacy jumps:
 
@@ -195,18 +197,20 @@ Slices use 1-based inclusive endpoints. Slice assignment replaces the selected r
 
 ```text
 DATA [literal [, literal ...]]
-READ name [, name ...]
+READ target [, target ...]
 RESTORE [label]
 
 PRINT [print-items]
 LPRINT [print-items]
 PRINT USING format-expression; value [; value ...]
 WRITE [expr [, expr ...]]
-INPUT ["literal prompt" {; | ,}] name [, name ...]
-LINE INPUT ["literal prompt" {; | ,}] name
+INPUT ["literal prompt" {; | ,}] target [, target ...]
+LINE INPUT ["literal prompt" {; | ,}] target
 ```
 
-PRINT items are expressions, `TAB(expr)`, or `SPC(expr)`, separated by `;` or `,`. A trailing separator suppresses the newline. Commas use 16-column zones; numbers have no automatic leading/trailing spaces in either mode. LPRINT writes to the normal output stream. INPUT prompt commas and semicolons both append `? ` in Rice. READ/INPUT/LINE INPUT targets are bare names, not array elements.
+PRINT items are expressions, `TAB(expr)`, or `SPC(expr)`, separated by `;` or `,`. A trailing separator suppresses the newline. Commas use 16-column zones; numbers have no automatic leading/trailing spaces in either mode. LPRINT writes to the normal output stream. INPUT prompt commas and semicolons both append `? ` in Rice.
+
+An input `target` is a scalar `name` or an array element `name(expr [, expr ...])`, including string arrays such as `names$(i)`. Record members, slices, and empty subscripts are rejected. INPUT resolves all indices once before reading and keeps them across retries; READ resolves and assigns each target in order. Existing integer conversion, declaration, and array-storage rules apply. These destinations work in both modes and in the file forms below.
 
 DATA contains literal numbers, negative numbers, strings, or single unquoted identifiers; unquoted text is uppercased. RESTORE labels must be attached directly to DATA; unknown labels silently rewind. See [DATA / READ / RESTORE](docs/language-reference.md#data--read--restore), [Input and output](docs/language-reference.md#input-and-output), and [PRINT USING](docs/print-using.md).
 
@@ -233,8 +237,8 @@ RESET
 PRINT #number, [print-items]
 PRINT #number, USING format-expression; value [; value ...]
 WRITE #number, expr [, expr ...]
-INPUT #number, name [, name ...]
-LINE INPUT #number, name
+INPUT #number, target [, target ...]
+LINE INPUT #number, target
 GET #number [, [position] [, name]]
 PUT #number [, [position] [, name]]
 SEEK [#]number, position
@@ -292,7 +296,7 @@ MAT target = source {+ | - | *} source
 MAT target = (scalar-expression) * source
 ```
 
-DET returns the last inverse operation's determinant; use it as a bare special value as specified in [MAT operations](docs/mat-operations.md). MAT has a restricted expression grammar, not arbitrary nesting or general scalar-array arithmetic. Channel support and dimension/shape behavior are also specified there.
+DET returns the last inverse operation's determinant; use it as a bare special value as specified in [MAT operations](docs/mat-operations.md). MAT has a restricted expression grammar, not arbitrary nesting or general scalar-array arithmetic. `MAT PRINT #n, a` writes comma-separated numeric rows; `MAT INPUT #n, a` reads numeric fields in row-major order into an existing two-dimensional shape, storing the matrix only on success. Both evaluate the channel once and use the file instead of console streams. Console MAT PRINT retains space-separated rows. See the guide for errors, consumed input, and dimension/shape behavior.
 
 ## System statements and builtins
 
@@ -320,3 +324,5 @@ ENVIRON string-expression
 See [System and filesystem statements](docs/language-reference.md#system-and-filesystem-statements) for host behavior and no-op cases. ENVIRON and date/time assignments set interpreter-local overrides.
 
 The complete [Built-in function reference](docs/builtins.md) lists every implemented function, alias, argument count, type expectation, and known limitation. `MIN(number [, number ...])` and `MAX(number [, number ...])` select numeric extrema in both modes; each requires at least one numeric argument. Call spelling matters: use `RND()`, `PI()`, and `MAXNUM()` with parentheses; use bare `TIMER` and `FREEFILE`. An unknown `name(args)` may resolve as an array element instead of producing an unknown-function error.
+
+`COMMAND$()` (alias `COMMAND()`) returns program arguments joined with spaces. Run `rice program.bas -- argument ...` to pass them; `--` protects dash-leading arguments from Rice option parsing. New library and REPL interpreters default to empty arguments. See [runtime](docs/runtime.md) for the complete CLI and library contract.

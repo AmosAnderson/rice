@@ -138,7 +138,11 @@ These functions work in both modes. Binary strings map each byte to a character 
 | `TIME$` or `TIME$()` | Local time as `HH:MM:SS`, unless overridden by assignment. |
 | `ENVIRON$(name$)` | Interpreter override, if present, otherwise host environment value; absent/unreadable value gives `""`. Numeric environment-index lookup is unsupported. Names are case-sensitive on Unix; override names are uppercased on Windows. |
 | `CURDIR$()` | Host process working directory; `""` if it cannot be obtained. No drive argument. |
-| `COMMAND$()` | Joins raw host process arguments starting at index 2 with spaces. The CLI accepts no extra BASIC program arguments, so this may be empty or include dialect options/source path depending on argument order. It is not a reliable program-argument API. |
+| `COMMAND$()` or `COMMAND()` | Program arguments joined by single spaces, excluding the source filename and interpreter options. No arguments produce `""`. Case, Unicode, internal whitespace, and empty argument fields are preserved; shell quoting and original argument boundaries are not reconstructed. Parentheses are required; bare COMMAND$ is an ordinary variable. |
+
+Pass arguments as `rice program.bas First "two words"`; use `rice program.bas -- --flag` for dash-leading arguments. Interpreter flags remain active before `--`, even after the filename. For example, `rice --dialect ansi program.bas First --compat Second` selects QB and gives COMMAND$() the text `First Second`. See the [CLI contract](runtime.md#build-and-command-line).
+
+REPL and library interpreters start with empty program arguments instead of reading host process arguments. Library callers can use `interpreter.set_command_line_args(["First", "two words"])` to replace them; they persist across execution and CLEAR. A standalone builtin registry returns an empty string. Both aliases require zero arguments and are available in both dialects.
 
 **QB-only setters:** `DATE$ = expression` accepts `MM-DD-YYYY` or `MM/DD/YYYY` after trimming for validation. It checks month `1..12`, day `1..31`, and year `0..9999`, but not month lengths or leap years. `TIME$ = expression` checks `HH:MM:SS`, hours `0..23`, minutes/seconds `0..59`. Both store the original string, including surrounding whitespace; they override subsequent reads without changing the OS clock. The time override does not tick and does not change `TIMER`.
 

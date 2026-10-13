@@ -19,7 +19,7 @@ The release binary is `target/release/rice` (`rice.exe` on Windows). Save this a
 PRINT "Hello, World!"
 ```
 
-Relative file paths in a program refer to the process working directory. The CLI takes one source file and no extra program arguments. See [runtime](runtime.md) for all flags and editor setup.
+Relative file paths in a program refer to the process working directory. Pass program arguments with `rice program.bas -- one two`; `COMMAND$()` returns `"one two"`. The `--` separator also allows arguments beginning with `-`. See [runtime](runtime.md) for all flags, argument rules, and editor setup.
 
 ## Choose a dialect
 
@@ -54,7 +54,7 @@ PRINT "Hello" & ", " & name$
 
 Names are case-insensitive. Uninitialized numeric variables read as `0`, `$` names as `""`. Numeric storage is `f64`; QB numeric suffixes distinguish names but do not enforce integer or single-precision storage. `AS` declarations and suffixes mostly establish defaults, not strict assignment types, so use consistent types in your own code.
 
-PRINT semicolons add no spacing; commas advance to 16-character zones; a trailing separator suppresses the newline. Positive numbers have no automatic leading/trailing space. String positions are 1-based Unicode character positions. Quotes are not escaped by doubling them; use `CHR$(34)` to insert a quote.
+PRINT semicolons add no spacing; commas advance to 16-character zones; a trailing separator suppresses the newline. Positive numbers have no automatic leading/trailing space. String positions are 1-based Unicode character positions. Double a quote inside a string to include it: `PRINT "She said ""hi"""` prints `She said "hi"`. This works in both Rice dialects; `CHR$(34)` also produces a quote.
 
 ## Decisions and loops
 

@@ -138,10 +138,58 @@ values for that row. Missing, empty, invalid, or EOF values become `0`; extra va
 on the row are ignored. There is no reprompt for malformed input and no quoted CSV
 string handling.
 
-**Channel limitation:** the parser accepts `MAT PRINT #n, a` and `MAT INPUT #n, a`,
-but the runtime ignores the channel entirely, including its expression evaluation.
-They still use console/program output and standard input, even if the channel is
-not open. Use ordinary [File I/O](file-io.md) statements and loops for matrix files.
+### File channels
+
+`MAT PRINT #channel, array` and `MAT INPUT #channel, array` use an open file in
+both dialects. The channel expression is evaluated once before matrix/handle
+validation. Neither form prompts, reads console input, or writes console output.
+The matrix must have a usable two-dimensional shape, using the same DIM metadata
+or local-element inference as the other MAT operations.
+
+File `MAT PRINT` writes comma-separated numeric cells in row-major order, with
+one LF-terminated row per matrix row and ordinary Rice number formatting.
+It begins at the current file position, without inserting an initial newline:
+a preceding `PRINT #channel, "prefix";` shares the first row's line. Each row
+resets that channel's tracked print column, and the statement flushes its output.
+The channel must be writable; OUTPUT, APPEND, and readable/writable modes follow
+their ordinary file-position rules. Console `MAT PRINT` continues to use spaces.
+
+File `MAT INPUT` reads exactly rows-times-columns numeric fields using the same
+field reader as `INPUT #`. Commas and line endings separate fields; quoted
+numeric fields and fields spanning different physical rows are accepted.
+It does not infer or resize the matrix dimensions from the file. It stores cells
+by relative row/column position, preserving the destination's own lower bounds.
+Additional fields remain available for later input statements.
+
+The channel must be readable. Missing fields or an unfinished quoted field raise
+error 62; malformed numeric fields raise a type mismatch. Numeric conversion uses
+the same parser as scalar file `INPUT`, including its NaN/infinity support.
+All requested fields are read before numeric conversion, so a conversion failure
+consumes the entire requested matrix's fields. A read failure, such as an unfinished
+quoted field, can stop earlier. The destination matrix is replaced only after
+every read and conversion succeeds; failures leave its values unchanged but do
+not rewind consumed file data. A successful read updates the file's EOF status.
+As with ordinary file input, mixed buffered reads/writes
+on one handle retain the limitations described in [File I/O](file-io.md).
+
+File MAT operations check the base name under `OPTION EXPLICIT`. File `MAT INPUT`
+also rejects a constant base name or a constant alias of any destination's
+flattened key before consuming fields. Invalid dimensions and unavailable
+read/write handles fail before transfer. Channel-expression side effects are
+not rolled back. These checks do not change existing console MAT behavior.
+
+```basic
+DIM a(1 TO 2, 1 TO 2), b(-1 TO 0, 3 TO 4)
+DATA 1, 2, 3, 4
+MAT READ a
+OPEN "matrix.csv" FOR OUTPUT AS #1
+MAT PRINT #1, a                  ' File rows: 1,2 and 3,4
+CLOSE #1
+OPEN "matrix.csv" FOR INPUT AS #1
+MAT INPUT #1, b
+CLOSE #1
+PRINT b(-1, 3); ","; b(0, 4)    ' 1,4
+```
 
 ## Storage limitations
 
@@ -163,11 +211,12 @@ MAT uses the interpreter's existing flattened array storage:
   zeroes. Out-of-bound stored cells can still be read by ordinary array indexing.
 - An existing target uses its own lower bounds. An undimensioned target uses the
   current `OPTION BASE`, so copying does not implicitly transfer source bounds.
-- MAT paths do not consistently perform ordinary declaration/constant checks.
-  Do not rely on `OPTION EXPLICIT` as full matrix validation.
+- File MAT paths perform the declaration/constant checks described above;
+  other MAT paths do not consistently perform ordinary checks. Do not rely on
+  `OPTION EXPLICIT` as full matrix validation.
 
 These are implementation limitations, not alternate mathematical definitions.
-Portable ANSI conformance, broader MAT grammar, channel I/O, and automatic
+Portable ANSI conformance, broader MAT grammar, and automatic
 destination redimensioning are not implemented or claimed.
 
 ## Complete example: solving a linear system

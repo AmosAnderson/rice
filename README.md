@@ -10,6 +10,7 @@ These are Rice dialects, not claims of complete QBasic 1.1 or ANSI conformance. 
 cargo build
 cargo run                         # REPL, QBasic mode
 cargo run -- program.bas          # Execute a file
+cargo run -- program.bas -- one two  # Arguments available through COMMAND$()
 cargo run -- --dialect ansi program.bas
 cargo test
 ```
@@ -38,7 +39,7 @@ The [documentation index](docs/README.md) links the complete specification and g
 - [MAT operations](docs/mat-operations.md) and [string slicing](docs/string-slicing.md).
 - [CLI, REPL, host operations, and editor integration](docs/runtime.md).
 
-Both modes support structured control flow, procedures, records, arrays, text files, string slicing, numeric MIN/MAX functions, MAT, and structured exceptions. QB additionally enables integer division (`\`), numeric IF/THEN/ELSE jump targets, classic GOSUB/RETURN, computed ON branches, and classic error-handler syntax, and changes truth values, logical operators, string `+`, default parameter passing, and binary record behavior.
+Both modes support structured control flow (including `NEXT j, i` for nested loops), procedures, records, arrays, indexed READ/INPUT/LINE INPUT destinations, text files, string slicing, doubled quotes in string literals, numeric MIN/MAX functions, MAT with console and file I/O, program arguments through `COMMAND$()`, and structured exceptions. QB additionally enables integer division (`\`), EQV/IMP bitwise operators, numeric IF/THEN/ELSE jump targets, classic GOSUB/RETURN, computed ON branches, and classic error-handler syntax, and changes truth values, logical operators, string `+`, default parameter passing, and binary record behavior.
 
 Porting details that matter immediately: arrays default to **base 1 in both modes**; numeric values are stored as `f64` regardless of suffix; PRINT uses 16-character comma zones and no leading/trailing positive-number space; assignment types and array bounds are not strictly enforced. Read the compatibility guide before relying on historical BASIC behavior.
 

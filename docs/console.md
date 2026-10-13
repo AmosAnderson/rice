@@ -18,7 +18,7 @@ Plain `PRINT` emits a blank line. Strings are emitted as-is. Numbers have no lea
 
 `TAB(n)` inserts enough spaces to reach 1-based column `n`, only if that position is ahead of the current position. At/behind the cursor it emits nothing; it never starts a new line. `TAB(0)` also emits nothing. `SPC(n)` emits exactly `n` spaces. Counts truncate toward zero; negative counts are errors. They are special print items, not general string functions.
 
-`WRITE` emits comma-delimited values, quoting strings and doubling embedded quotes, then a newline. Bare `WRITE` emits a blank line. `PRINT USING` adds field formatting; see its [full guide](print-using.md). File-channel output is documented under [file I/O](file-io.md).
+`WRITE` emits comma-delimited values, wrapping strings in quotes, then a newline. Console WRITE leaves embedded quotes unchanged; `WRITE #` doubles them. Bare `WRITE` emits a blank line. `PRINT USING` adds field formatting; see its [full guide](print-using.md). File-channel output is documented under [file I/O](file-io.md). Source string literals can include a quote by doubling it: `PRINT "She said ""hello"""`.
 
 ## INPUT and LINE INPUT
 
@@ -26,13 +26,20 @@ Plain `PRINT` emits a blank line. Strings are emitted as-is. Numbers have no lea
 INPUT "Name"; name$
 INPUT "Coordinates"; x, y
 LINE INPUT "Whole line: "; line$
+DIM points(2, 2), descriptions$(2)
+INPUT "Coordinates"; points(1, 1), points(1, 2)
+LINE INPUT "Description: "; descriptions$(1)
 ```
 
 `INPUT ["literal prompt";] variable [, variable ...]` always prints `? `, prefixed by the supplied literal prompt. A comma instead of the prompt semicolon is accepted but does not suppress `? `. Prompt expressions and leading-semicolon variants are not implemented.
 
 For a single target, the entire line is the input field. With several targets, input is split at commas and fields are trimmed. Interactive `INPUT` does not implement quoted-CSV parsing: quote characters remain part of string input, and quoted commas still split fields. Numeric targets require finite numbers accepted by the numeric parser. A wrong field count or invalid number prints `? Redo from start` and requests the full line again, without assigning any targets from the rejected line. The existing value/declaration or `$` suffix determines whether a target is a string.
 
-`LINE INPUT ["literal prompt";] variable` prints only the supplied prompt, with no automatic `? `, and reads one complete line, stripping LF/CR. It currently stores a string even in an unsuffixed target that previously held a number; use a `$` variable to keep intent clear. Both statements accept scalar targets, not array elements or record members, and report error 62 when the input stream ends. Console `LINE INPUT` differs from `LINE INPUT #`, which checks that its target is a string.
+Both statements accept scalar names and indexed array elements in either dialect. Record members, slices, and empty subscripts (`a()`) are rejected. Index expressions use checked integer conversion, truncating fractions toward zero. Arrays retain their usual flattened storage, defaults, and lack of bounds/rank enforcement. Use `$` array names for untouched string elements; an unsuffixed array's `AS STRING` clause alone does not set their defaults. Declaration checks under OPTION EXPLICIT apply to the base name, and constant destinations are rejected.
+
+INPUT resolves all destination indices once, left to right, before prompting. Retries keep those locations and assign no values from a rejected line. For example, `i = 1: INPUT i, a(i)` always writes the second field to `a(1)`, even when the first field changes `i`. This differs from READ, which assigns each target before resolving the next. Index-expression side effects are not rolled back after failures.
+
+`LINE INPUT ["literal prompt";] variable` prints only the supplied prompt, with no automatic `? `, and reads one complete line, stripping LF/CR. Its destination is resolved once before reading. It stores a string even in an unsuffixed target or array element that previously held a number; use a `$` name to keep intent clear. Both statements report error 62 when the input stream ends and leave destination values unchanged on EOF. Console `LINE INPUT` differs from `LINE INPUT #`, which checks that its target is a string.
 
 ## Screen statements
 

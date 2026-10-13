@@ -177,6 +177,22 @@ mod tests {
             Some(Dialect::Ansi)
         );
     }
+
+    #[test]
+    fn dialect_detection_respects_doubled_quotes() {
+        let quoted_directive = r#"PRINT "text "" : OPTION DIALECT ""ANSI"" : ' REM"" text""#;
+        assert_eq!(detect_dialect(quoted_directive), None);
+        assert_eq!(
+            detect_dialect(&format!("{quoted_directive}: OPTION DIALECT \"QB\"")),
+            Some(Dialect::QuickBasic)
+        );
+        assert_eq!(
+            detect_dialect("PRINT \"\"\"\"\r\nOPTION DIALECT \"ANSI\""),
+            Some(Dialect::Ansi)
+        );
+        // The escaped quotation marks are part of the directive value.
+        assert_eq!(detect_dialect("OPTION DIALECT \"\"\"ANSI\"\"\""), None);
+    }
     #[test]
     fn inkey_maps_control_characters_without_truncating_unicode() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};

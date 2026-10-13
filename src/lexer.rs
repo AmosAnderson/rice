@@ -263,7 +263,12 @@ impl Lexer {
                 }
                 Some('"') => {
                     self.advance_char();
-                    break;
+                    if self.peek_char() == Some('"') {
+                        self.advance_char();
+                        s.push('"');
+                    } else {
+                        break;
+                    }
                 }
                 Some(ch) => {
                     s.push(ch);
@@ -415,6 +420,8 @@ impl Lexer {
             "OR" => Token::KwOr,
             "NOT" => Token::KwNot,
             "XOR" => Token::KwXor,
+            "EQV" => Token::KwEqv,
+            "IMP" => Token::KwImp,
             "MOD" => Token::KwMod,
             "TAB" => Token::KwTab,
             "SPC" => Token::KwSpc,
@@ -714,6 +721,87 @@ mod tests {
         assert_eq!(
             tokenize(r#""hello world""#),
             vec![Token::StringLiteral("hello world".into())]
+        );
+    }
+
+    #[test]
+    fn test_doubled_quotes_in_both_dialects() {
+        for dialect in [crate::Dialect::QuickBasic, crate::Dialect::Ansi] {
+            for (source, expected) in [
+                ("\"\"", ""),
+                ("\"\"\"\"", "\""),
+                ("\"\"\"\"\"\"", "\"\""),
+                ("\"a\"\"b\"", "a\"b"),
+                ("\"\"\"leading\"", "\"leading"),
+                ("\"trailing\"\"\"", "trailing\""),
+                ("\"é\"\"😀\"", "é\"😀"),
+                ("\"'REM \"\"x\"\"\"", "'REM \"x\""),
+                ("\"a\\b\"", "a\\b"),
+            ] {
+                let tokens = Lexer::with_dialect(source, dialect).tokenize().unwrap();
+                assert_eq!(
+                    tokens[0].token,
+                    Token::StringLiteral(expected.into()),
+                    "{dialect:?}: {source}"
+                );
+                assert_eq!(tokens[0].span, Span { line: 1, col: 1 });
+                assert_eq!(tokens[1].token, Token::Eof);
+                assert_eq!(tokens.len(), 2);
+            }
+        }
+    }
+
+    #[test]
+    fn test_doubled_quotes_preserve_following_token_spans() {
+        let source = "PRINT \"é\"\"😀\"; 7\r\nPRINT \"x\" ' \"\" ignored";
+        let tokens = Lexer::new(source).tokenize().unwrap();
+        assert_eq!(tokens[1].token, Token::StringLiteral("é\"😀".into()));
+        assert_eq!(tokens[1].span, Span { line: 1, col: 7 });
+        assert_eq!(tokens[2].token, Token::Semicolon);
+        assert_eq!(tokens[2].span, Span { line: 1, col: 13 });
+        assert_eq!(tokens[3].token, Token::NumericLiteral(7.0));
+        assert_eq!(tokens[3].span, Span { line: 1, col: 15 });
+        assert_eq!(tokens[5].token, Token::KwPrint);
+        assert_eq!(tokens[5].span, Span { line: 2, col: 1 });
+        assert_eq!(tokens[6].token, Token::StringLiteral("x".into()));
+        assert_eq!(tokens[6].span, Span { line: 2, col: 7 });
+    }
+
+    #[test]
+    fn test_doubled_quotes_still_require_a_closing_quote() {
+        for dialect in [crate::Dialect::QuickBasic, crate::Dialect::Ansi] {
+            for source in [
+                "PRINT \"",
+                "PRINT \"\"\"",
+                "PRINT \"unfinished\"\"",
+                "PRINT \"unfinished\"\"\n",
+                "PRINT \"unfinished\"\"\r\n",
+            ] {
+                assert!(
+                    matches!(
+                        Lexer::with_dialect(source, dialect).tokenize(),
+                        Err(LexError::UnterminatedString { line: 1, col: 7 })
+                    ),
+                    "{dialect:?}: {source:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_eqv_imp_keywords_preserve_identifier_boundaries() {
+        assert_eq!(
+            tokenize("eqv EqV imp ImP EQUIVALENT IMPORTANCE EQV$ IMP%"),
+            vec![
+                Token::KwEqv,
+                Token::KwEqv,
+                Token::KwImp,
+                Token::KwImp,
+                Token::Identifier("EQUIVALENT".into()),
+                Token::Identifier("IMPORTANCE".into()),
+                Token::Identifier("EQV$".into()),
+                Token::Identifier("IMP%".into()),
+            ]
         );
     }
 

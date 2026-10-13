@@ -15,7 +15,7 @@ This documentation specifies **Rice BASIC 0.14.0 as implemented**, for the defau
 | [Error handling](error-handling.md) | Structured WHEN/USE and QB ON ERROR/RESUME, registers, codes, control-flow limits. |
 | [Console](console.md) | PRINT, INPUT, terminal state/control, keyboard functions, screen buffer limits. |
 | [PRINT USING](print-using.md) | Numeric/string format grammar, format reuse, overflow, separators. |
-| [MAT](mat-operations.md) | Matrix syntax, dimensions, arithmetic, inverse, determinant, I/O limitations. |
+| [MAT](mat-operations.md) | Matrix syntax, dimensions, arithmetic, inverse, determinant, console/file I/O and limitations. |
 | [String slicing](string-slicing.md) | Colon substrings, slice assignment, MID$ assignment, Unicode. |
 | [Module boundaries](multi-module.md) | Single-source execution and unsupported module/linker directives. |
 | [Runtime](runtime.md) | CLI, REPL, state, host operations, library entry points, LSP/editor setup. |

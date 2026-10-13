@@ -917,14 +917,33 @@ fn builtin_curdir(_args: &[Value]) -> Result<Value, RuntimeError> {
 }
 
 fn builtin_command(_args: &[Value]) -> Result<Value, RuntimeError> {
-    // Program arguments after the source file, joined with spaces.
-    let extra: Vec<String> = std::env::args().skip(2).collect();
-    Ok(Value::Str(extra.join(" ")))
+    // Interpreter calls use explicitly configured program arguments. A standalone
+    // registry has no program context and must not expose the host's process args.
+    Ok(Value::Str(String::new()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn standalone_command_has_no_host_arguments_and_checks_arity() {
+        let registry = BuiltinRegistry::new();
+        for name in ["COMMAND$", "COMMAND"] {
+            assert!(registry.exists(name));
+            assert_eq!(
+                registry.call(name, &[]).unwrap(),
+                Some(Value::Str(String::new()))
+            );
+            assert!(matches!(
+                registry.call(name, &[Value::Numeric(1.0)]),
+                Err(RuntimeError::ArityMismatch {
+                    expected: 0,
+                    got: 1
+                })
+            ));
+        }
+    }
 
     #[test]
     fn minmax_accepts_one_or_more_numeric_arguments() {

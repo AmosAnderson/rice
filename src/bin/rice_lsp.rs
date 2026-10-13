@@ -218,7 +218,7 @@ fn collect_symbols(
                 collect_symbols(&func.body, syms, seen_vars);
             }
             Stmt::Let { var, .. } => {
-                add_variable(syms, var, ls.line, seen_vars);
+                add_variable(syms, &var.name, ls.line, seen_vars);
             }
             Stmt::Dim { decls, .. } | Stmt::Redim { decls, .. } => {
                 let tag = if matches!(&ls.stmt, Stmt::Redim { .. }) {
@@ -245,7 +245,7 @@ fn collect_symbols(
                 });
             }
             Stmt::For(f) => {
-                add_variable(syms, &f.var, ls.line, seen_vars);
+                add_variable(syms, &f.var.name, ls.line, seen_vars);
                 collect_symbols(&f.body, syms, seen_vars);
             }
             Stmt::If(if_stmt) => {
@@ -273,13 +273,20 @@ fn collect_symbols(
             }
             Stmt::Input(input) => {
                 for v in &input.vars {
-                    add_variable(syms, v, ls.line, seen_vars);
+                    add_variable(syms, &v.name, ls.line, seen_vars);
                 }
             }
-            Stmt::LineInput { var, .. } => add_variable(syms, var, ls.line, seen_vars),
+            Stmt::InputFile(input) => {
+                for v in &input.vars {
+                    add_variable(syms, &v.name, ls.line, seen_vars);
+                }
+            }
+            Stmt::LineInput { var, .. } | Stmt::LineInputFile { var, .. } => {
+                add_variable(syms, &var.name, ls.line, seen_vars);
+            }
             Stmt::Read(vars) => {
                 for v in vars {
-                    add_variable(syms, v, ls.line, seen_vars);
+                    add_variable(syms, &v.name, ls.line, seen_vars);
                 }
             }
             _ => {}
@@ -287,13 +294,8 @@ fn collect_symbols(
     }
 }
 
-fn add_variable(
-    syms: &mut DocumentSymbols,
-    var: &Variable,
-    line: usize,
-    seen: &mut HashSet<String>,
-) {
-    let full = var.name.clone();
+fn add_variable(syms: &mut DocumentSymbols, name: &str, line: usize, seen: &mut HashSet<String>) {
+    let full = name.to_string();
     if seen.insert(full.clone()) {
         syms.variables.push(SymbolInfo {
             name: full,
@@ -320,8 +322,14 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         // I/O
         ("PRINT", "Print output to the screen"),
         ("PRINT USING", "Print with format string"),
-        ("INPUT", "Read user input"),
-        ("LINE INPUT", "Read an entire line of input"),
+        (
+            "INPUT",
+            "Read keyboard or file input into scalars or array elements",
+        ),
+        (
+            "LINE INPUT",
+            "Read a complete line into a scalar or array element",
+        ),
         ("WRITE", "Write comma-delimited data"),
         // Variables
         ("LET", "Assign a value to a variable"),
@@ -351,7 +359,7 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("FOR", "Begin a FOR loop"),
         ("TO", "Specify FOR loop end value"),
         ("STEP", "Specify FOR loop increment"),
-        ("NEXT", "End of FOR loop"),
+        ("NEXT", "End FOR loops: NEXT [inner [, outer ...]]"),
         ("WHILE", "Begin a WHILE loop"),
         ("WEND", "End a classic WHILE loop"),
         ("END WHILE", "End of WHILE loop"),
@@ -396,7 +404,7 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("DEFSTR", "Set default string type for variable letters"),
         // Data
         ("DATA", "Define inline data"),
-        ("READ", "Read from DATA"),
+        ("READ", "Read DATA into scalars or array elements"),
         ("RESTORE", "Reset DATA pointer"),
         // User-defined types
         ("TYPE", "Define a user-defined record type"),
@@ -453,7 +461,7 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         // Matrix
         (
             "MAT",
-            "Matrix operation (MAT PRINT, MAT READ, MAT +/-/*, etc.)",
+            "Matrix operations; MAT PRINT/INPUT optionally use a file channel",
         ),
         // System
         ("SHELL", "Execute a system command"),
@@ -464,6 +472,8 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("OR", "Bitwise OR in QBasic; logical OR in ANSI"),
         ("NOT", "Bitwise NOT in QBasic; logical NOT in ANSI"),
         ("XOR", "Bitwise XOR in QBasic; logical XOR in ANSI"),
+        ("EQV", "Bitwise equivalence in QBasic"),
+        ("IMP", "Bitwise implication in QBasic"),
         (
             "\\",
             "Integer division in QBasic; rounds operands, truncates quotient",
@@ -561,7 +571,10 @@ static BUILTIN_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
             "CURDIR$",
             "CURDIR$() — Current process directory; no drive argument",
         ),
-        ("COMMAND$", "COMMAND$() — Raw host arguments from index 2"),
+        (
+            "COMMAND$",
+            "COMMAND$() — BASIC program arguments joined with spaces",
+        ),
         ("TIMER", "TIMER — Seconds since midnight"),
         ("DATE$", "DATE$ — Current date"),
         ("TIME$", "TIME$ — Current time"),
@@ -833,7 +846,7 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "COMMAND$",
-            "```basic\nCOMMAND$()\n```\nJoins raw host arguments starting at index 2. The CLI accepts no extra BASIC program arguments, so the result may be empty or contain options/the source path. Parentheses are required.",
+            "```basic\nCOMMAND$()\n```\nReturns BASIC program arguments joined with single spaces, preserving case and Unicode. For example, `rice program.bas -- one two` returns `one two`. The source filename and Rice options are excluded; `--` allows dash-leading program arguments. Shell quoting is not reconstructed. New library/REPL interpreters default to an empty string; library callers can set arguments explicitly. COMMAND() is an alias; parentheses are required.",
         ),
         (
             "TIMER",
@@ -908,7 +921,7 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         // I/O
         (
             "PRINT",
-            "```basic\nPRINT [expression][;|,] ...\n```\nDisplays output on the screen. Use `;` to suppress spacing, `,` for tab zones. Use `TAB(n)` and `SPC(n)` for positioning.",
+            "```basic\nPRINT [expression][;|,] ...\n```\nDisplays output on the screen. Use `;` to suppress spacing, `,` for tab zones. Use `TAB(n)` and `SPC(n)` for positioning. In either dialect, two adjacent quotes inside a string literal represent one quote: `PRINT \"a\"\"b\"` prints `a\"b`.",
         ),
         (
             "PRINT USING",
@@ -916,11 +929,11 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "INPUT",
-            "```basic\nINPUT [\"prompt\";] var[, var...]\n```\nReads values from the keyboard into variables.",
+            "```basic\nINPUT [\"prompt\";] target[, target...]\nINPUT #channel, target[, target...]\nINPUT values(i, j), names$(i)\n```\nReads into scalar names or array elements in either dialect; record fields and slices are unsupported. Indices are evaluated left to right once before input, retaining destinations across retries; INPUT i, values(i) uses the old i. Values are assigned only after all fields validate. Interactive INPUT retries invalid fields; file INPUT reads comma-delimited fields. Use doubled quotes inside a literal prompt to include a quote.",
         ),
         (
             "LINE INPUT",
-            "```basic\nLINE INPUT [\"prompt\";] var$\n```\nReads an entire line of input into a string variable (no comma parsing).",
+            "```basic\nLINE INPUT [\"prompt\";] target\nLINE INPUT #channel, target\nLINE INPUT lines$(i)\n```\nReads a complete line without comma parsing into a scalar name or array element in either dialect; record fields and slices are unsupported. Removes the line ending. The file form requires a string target; the console form assigns text even to a numeric target. Literal prompts accept doubled quotes.",
         ),
         (
             "WRITE",
@@ -993,8 +1006,20 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
             "```basic\nPRINT 7 \\ 2\n```\nQBasic mode only. Rounds each numeric operand to the nearest integer, ties to even, then divides signed 64-bit integers and truncates the quotient toward zero. Returns an f64. A divisor that rounds to zero raises division by zero; nonfinite or out-of-range operands and quotient overflow raise overflow. Multiplication and / bind more tightly; MOD binds less tightly.",
         ),
         (
+            "EQV",
+            "```basic\nresult = a EQV b\n```\nQBasic mode only. Complements the bitwise XOR of the operands after signed 64-bit casts that truncate fractions, saturate out-of-range values, and map NaN to zero. Returns an f64; both operands are always evaluated. Binds less tightly than XOR and more tightly than IMP; repeated EQV associates left to right.",
+        ),
+        (
+            "IMP",
+            "```basic\nresult = a IMP b\n```\nQBasic mode only. Combines the bitwise complement of the left operand with the right using OR, after signed 64-bit casts that truncate fractions, saturate out-of-range values, and map NaN to zero. Returns an f64; both operands are always evaluated. Has the lowest operator precedence, below EQV; repeated IMP associates left to right.",
+        ),
+        (
             "FOR",
-            "```basic\nFOR var = start TO end [STEP inc]\n  ...\nNEXT [var]\n```\nCounted loop. Default STEP is 1.",
+            "```basic\nFOR var = start TO end [STEP inc]\n  ...\nNEXT [var [, outer ...]]\n```\nCounted loop. Default STEP is 1. NEXT may close several nested FOR loops, listing their variables from innermost to outermost, in either Rice dialect.",
+        ),
+        (
+            "NEXT",
+            "```basic\nNEXT\nNEXT i\nNEXT k, j, i\n```\nCloses one FOR loop when bare, or the named nested FOR loops from innermost to outermost. Each name must match the corresponding loop variable. A list cannot cross an unfinished IF, DO, WHILE, or procedure block. Supported in both Rice dialects.",
         ),
         (
             "WHILE",
@@ -1108,11 +1133,11 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         // Data
         (
             "DATA",
-            "```basic\nDATA value[, value...]\n```\nDefines inline data to be read with READ.",
+            "```basic\nDATA value[, value...]\nDATA \"She said \"\"hi\"\"\", 42\n```\nDefines literal data to be read with READ. In either dialect, doubled quotes inside a string literal represent one quote.",
         ),
         (
             "READ",
-            "```basic\nREAD var[, var...]\n```\nReads values from DATA statements into variables.",
+            "```basic\nREAD target[, target...]\nREAD values(i, j), names$(i)\n```\nReads DATA into scalar names or array elements in either dialect; record fields and slices are unsupported. Targets are resolved and assigned left to right without coercing DATA types; READ i, values(i) uses the newly read i. Earlier assignments and consumed DATA are retained if a later target fails.",
         ),
         (
             "RESTORE",
@@ -1205,7 +1230,7 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         // Matrix
         (
             "MAT",
-            "```basic\nMAT C = A + B\nMAT C = A * B\nMAT B = INV(A)\nMAT B = TRN(A)\nMAT A = ZER\nMAT A = CON\nMAT A = IDN\nMAT PRINT A\n```\nTwo-dimensional numeric matrix operations in both dialects. Declare destination bounds to match the result; MAT does not resize metadata. MAT INPUT/PRINT channel clauses are parsed but ignored.",
+            "```basic\nMAT C = A + B\nMAT C = A * B\nMAT B = INV(A)\nMAT B = TRN(A)\nMAT A = ZER\nMAT A = CON\nMAT A = IDN\nMAT PRINT A\nMAT PRINT #1, A\nMAT INPUT #2, A\n```\nTwo-dimensional numeric matrix operations in both dialects. Declare destination bounds to match the result; MAT does not resize metadata. File MAT PRINT writes comma-separated rows; file MAT INPUT reads numeric fields in row-major order without console prompts. Each channel expression is evaluated once. Input replaces the matrix only after all fields succeed; errors leave consumed fields consumed. Console MAT PRINT uses spaces.",
         ),
         // System
         (
@@ -1349,6 +1374,8 @@ fn token_name(tok: &rice::token::Token) -> Option<String> {
         rice::token::Token::KwOr => Some("OR".into()),
         rice::token::Token::KwNot => Some("NOT".into()),
         rice::token::Token::KwXor => Some("XOR".into()),
+        rice::token::Token::KwEqv => Some("EQV".into()),
+        rice::token::Token::KwImp => Some("IMP".into()),
         rice::token::Token::KwMod => Some("MOD".into()),
         rice::token::Token::KwEndSub => Some("END SUB".into()),
         rice::token::Token::KwEndFunction => Some("END FUNCTION".into()),
@@ -1762,6 +1789,139 @@ mod tests {
                 Some(DiagnosticSeverity::ERROR)
             );
             assert_eq!(state.diagnostics[0].range.start.line, 1);
+        }
+    }
+
+    #[test]
+    fn indexed_input_targets_and_subscripts_resolve_to_symbols() {
+        for dialect in ["QB", "ANSI"] {
+            let source = format!(
+                "OPTION DIALECT \"{dialect}\"\nDIM index\nREAD table(index, 2)\nINPUT values(index)\nINPUT #1, filevalues$(index), count\nLINE INPUT lines$(index)\nLINE INPUT #1, filelines$(index)\n"
+            );
+            let state = analyze_source(source.clone(), 1);
+            assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+            for (name, expected_line) in [
+                ("TABLE", 3),
+                ("VALUES", 4),
+                ("FILEVALUES$", 5),
+                ("COUNT", 5),
+                ("LINES$", 6),
+                ("FILELINES$", 7),
+            ] {
+                assert_eq!(
+                    find_symbol(&state.symbols, name).unwrap().line,
+                    expected_line
+                );
+            }
+            for (line_number, line) in source.lines().enumerate().skip(2) {
+                let character = line.find("(index").unwrap() + 1;
+                let name =
+                    resolve_token_name(&state, Position::new(line_number as u32, character as u32))
+                        .unwrap();
+                assert_eq!(name, "INDEX");
+                assert_eq!(find_symbol(&state.symbols, &name).unwrap().line, 2);
+            }
+            assert_eq!(state.symbols.variables.len(), 7);
+        }
+        for keyword in ["READ", "INPUT", "LINE INPUT"] {
+            assert!(keyword_hover(keyword).unwrap().contains("array element"));
+            assert!(KEYWORD_COMPLETIONS.iter().any(|item| item.label == keyword));
+        }
+    }
+
+    #[test]
+    fn eqv_imp_have_hover_completions_and_dialect_diagnostics() {
+        for operator in ["EQV", "IMP"] {
+            let source = format!("PRINT 3 {operator} 5\n");
+            let state = analyze_source(source.clone(), 1);
+            assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+            let name = resolve_token_name(&state, Position::new(0, 8)).unwrap();
+            assert_eq!(name, operator);
+            let hover = keyword_hover(&name).unwrap();
+            assert!(hover.contains("64-bit"));
+            assert!(hover.contains("both operands are always evaluated"));
+            assert!(
+                KEYWORD_COMPLETIONS
+                    .iter()
+                    .any(|item| item.label == operator)
+            );
+
+            let ansi = analyze_source(format!("OPTION DIALECT \"ANSI\"\n{source}"), 1);
+            assert_eq!(ansi.diagnostics.len(), 1);
+            assert_eq!(ansi.diagnostics[0].range.start.line, 1);
+        }
+    }
+
+    #[test]
+    fn doubled_quotes_preserve_unicode_cursor_and_comment_boundaries() {
+        let source = r#"PRINT "é ""' REM 😀"""; marker ' 日本語"#;
+        for dialect in ["QB", "ANSI"] {
+            let state = analyze_source(format!("OPTION DIALECT \"{dialect}\"\n{source}\n"), 1);
+            assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+            let character =
+                |text: &str| source[..source.find(text).unwrap()].encode_utf16().count() as u32;
+            assert_eq!(
+                resolve_token_name(&state, Position::new(1, character("marker"))).as_deref(),
+                Some("MARKER")
+            );
+            for text in ["REM", "😀", "日本語"] {
+                assert_eq!(
+                    resolve_token_name(&state, Position::new(1, character(text))),
+                    None
+                );
+            }
+            assert!(state.tokens.iter().any(|token| matches!(
+                &token.token,
+                rice::token::Token::StringLiteral(value) if value == "é \"' REM 😀\""
+            )));
+        }
+    }
+
+    #[test]
+    fn escaped_directive_text_does_not_select_the_lsp_dialect() {
+        let state = analyze_source(
+            "PRINT \"OPTION DIALECT \"\"ANSI\"\"\"\nPRINT 1 EQV 1\n".into(),
+            1,
+        );
+        assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+    }
+
+    #[test]
+    fn next_lists_preserve_counter_references_and_comma_spans() {
+        for dialect in ["QB", "ANSI"] {
+            let source = format!(
+                "OPTION DIALECT \"{dialect}\"\nFOR outer = 1 TO 2\nFOR inner = 1 TO 2\nPRINT inner\nNEXT inner, outer\n"
+            );
+            let state = analyze_source(source, 1);
+            assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+            for (column, name, definition_line) in [(5, "INNER", 3), (12, "OUTER", 2)] {
+                assert_eq!(
+                    resolve_token_name(&state, Position::new(4, column)).as_deref(),
+                    Some(name)
+                );
+                assert_eq!(
+                    find_symbol(&state.symbols, name).unwrap().line,
+                    definition_line
+                );
+            }
+            assert_eq!(resolve_token_name(&state, Position::new(4, 10)), None);
+            assert!(state.tokens.iter().any(|token| {
+                token.span.line == 5 && matches!(token.token, rice::token::Token::Comma)
+            }));
+            assert!(
+                keyword_hover("NEXT")
+                    .unwrap()
+                    .contains("innermost to outermost")
+            );
+
+            let invalid = analyze_source(
+                format!(
+                    "OPTION DIALECT \"{dialect}\"\nFOR outer = 1 TO 2\nFOR inner = 1 TO 2\nNEXT outer, inner\n"
+                ),
+                1,
+            );
+            assert_eq!(invalid.diagnostics.len(), 1);
+            assert_eq!(invalid.diagnostics[0].range.start.line, 3);
         }
     }
 }

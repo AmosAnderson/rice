@@ -70,28 +70,44 @@ WRITE #n, expression [, expression ...]
 
 ```basic
 OPEN "people.csv" FOR OUTPUT AS #1
-WRITE #1, "Alice", 30, "She said " & CHR$(34) & "hello" & CHR$(34)
+WRITE #1, "Alice", 30, "She said ""hello"""
 PRINT #1, USING "Total: ###.##"; 12.5
 CLOSE #1
 ```
 
-[PRINT USING](print-using.md) describes the shared formatting engine. `MAT PRINT #` and `MAT INPUT #` are described in [MAT operations](mat-operations.md).
+[PRINT USING](print-using.md) describes the shared formatting engine. `MAT PRINT #channel, array` writes comma-separated numeric matrix rows with LF endings, starting at the current file position. It resets the channel's print column after each row and flushes its output. See [matrix file channels](mat-operations.md#file-channels) for dimensions, validation, and an example.
 
 ## Text input
 
 ```basic
-INPUT #n, variable [, variable ...]
-LINE INPUT #n, stringVariable
+INPUT #n, target [, target ...]
+LINE INPUT #n, stringTarget
 value$ = INPUT$(count, #n)
 ```
 
-Targets of statement-level file input are scalar names, not array elements or record members. Declare a string with `$` or `DIM name AS STRING` before reading it. A numeric variable cannot receive text through `INPUT #`; `LINE INPUT #` requires a string value.
+Targets of statement-level file input are scalar names or indexed array elements in either dialect, for example `INPUT #1, names$(i), scores(i, 2)` and `LINE INPUT #1, lines$(i)`. Record-member destinations, slices, and empty subscripts are rejected. Declare a scalar string with `$` or `DIM name AS STRING` before reading it. Use `$` for untouched string-array elements; an unsuffixed array's `AS STRING` clause alone does not set element defaults. A numeric target cannot receive text through `INPUT #`; `LINE INPUT #` requires a string value. Record values are rejected by both file-input statements.
+
+After evaluating the channel expression, file input resolves all destination indices once from left to right, before consuming file data. Index values truncate through a checked integer conversion. Base-name declaration checks and constant checks also happen before reading, including a constant that aliases a flattened element key. Array bounds/rank are not enforced. All INPUT values are committed after successful conversion, so `INPUT #1, i, values(i)` uses the old `i` to choose its element. Unlike READ, earlier input values cannot change later target locations. Index-expression side effects are not rolled back.
 
 `INPUT #` reads exactly as many fields as there are targets. Fields may cross physical lines or be consumed by subsequent `INPUT #` statements. It handles quoted fields, doubled quotes, embedded commas/newlines inside quotes, and surrounding whitespace. Unquoted fields are trimmed. Leading spaces, tabs, CR, and LF are skipped before each field. Empty fields between commas are preserved; blank lines and a final delimiter are not a complete CSV empty-record model. Text must be valid UTF-8. This is intended for Rice `WRITE #` round-trips, not unrestricted CSV validation.
 
 Numeric fields use Rust's `f64` text parser rather than BASIC `VAL` syntax; malformed numbers cause a type mismatch. All requested fields are consumed before conversion/assignment; a later conversion error leaves targets unchanged but advances the file position. Numeric file input currently accepts `NaN` and infinity spellings accepted by that parser, unlike interactive `INPUT`, which requires finite numbers.
 
 `LINE INPUT #` reads through LF, removes trailing LF/CR, and preserves spaces and commas. `INPUT #` and `LINE INPUT #` raise error 62 when reading past EOF; an unfinished quoted string also raises 62.
+
+`MAT INPUT #channel, array` fills an existing two-dimensional numeric matrix in row-major order using the same field reader and numeric conversions as `INPUT #`. It reads exactly the matrix's cell count, independent of physical file rows, and preserves the destination's lower bounds. All requested fields are consumed before numeric conversion; a read or conversion failure leaves the matrix unchanged without rewinding the file. It emits no console prompt. The matching comma-separated `MAT PRINT #` output can be read back with the same matrix shape; see [MAT file channels](mat-operations.md#file-channels).
+
+```basic
+DIM names$(2), scores(2)
+OPEN "people.csv" FOR OUTPUT AS #1
+WRITE #1, "Alice", 30
+WRITE #1, "Bob", 25
+CLOSE #1
+OPEN "people.csv" FOR INPUT AS #1
+INPUT #1, names$(1), scores(1)
+INPUT #1, names$(2), scores(2)
+CLOSE #1
+```
 
 `INPUT$(count, #n)` reads up to `count` **bytes**, with `count >= 1`, and returns a lossy UTF-8 string. A short read or read error can return a shorter string rather than error 62. Invalid UTF-8 becomes replacement characters; it does **not** preserve arbitrary binary bytes. The `#` in its second argument is optional. See [console](console.md) for the keyboard form.
 

@@ -33,6 +33,7 @@ The **first recognized directive** in source order selects the mode for the enti
 | Comparisons | True is `-1`, false is `0` | True is `1`, false is `0` |
 | Conditions | Zero false; nonzero true | Same |
 | `AND`, `OR`, `XOR`, `NOT` | Bitwise operations using signed 64-bit integer casts | Boolean operations on zero/nonzero values |
+| `EQV`, `IMP` | Bitwise equivalence and implication using the same signed 64-bit casts; lower precedence than XOR | Rejected |
 | Integer division `\` | Nearest-even operand rounding, checked signed 64-bit division, quotient truncated toward zero | Rejected |
 | String concatenation | String `+` and `&` | String `&`; `+` requires numbers |
 | Hex/octal literals | `&H...`, `&O...` | Not recognized as numeric literal syntax |
@@ -58,7 +59,11 @@ Unless a row above explicitly rejects a construct, do not infer that its histori
 
 - Structured control flow, numeric/named labels and `GOTO`, `SUB`/`FUNCTION`, `DIM`, `CONST`, `SHARED`, `STATIC`, and user-defined records.
 - `WHEN EXCEPTION IN ... USE ... END WHEN`, `RETRY`, and `CONTINUE`; `EXTYPE`/`EXTEXT$` provide structured exception information. `ERR` and `ERL` can be read in either mode, though only QB installs classic handlers.
-- ANSI-style string slicing, MAT operations, and `PRINT USING`.
+- ANSI-style string slicing, MAT operations including file-channel PRINT/INPUT, and `PRINT USING`.
+- Comma-separated NEXT lists such as `NEXT j, i`, closing nested FOR loops from innermost to outermost. Their availability in ANSI mode is a Rice extension.
+- `COMMAND$()`/`COMMAND()` for program arguments joined with spaces, with an explicit CLI/library argument contract; see [runtime](runtime.md).
+- Doubled quotes inside string literals (`"a""b"` contains `a"b`) as a Rice extension; backslashes remain literal.
+- Scalar and indexed destinations for READ, INPUT, LINE INPUT, INPUT #, and LINE INPUT #. INPUT resolves all targets before reading; READ resolves and assigns each in order. Existing array bounds/storage limitations still apply.
 - **Both** `OPEN #n: NAME ...` and `OPEN path$ FOR ... AS #n` syntaxes. The parser does not restrict these by dialect. `INPUT`, `OUTPUT`, `APPEND`, `BINARY`, and `RANDOM` mode words are accepted by the latter syntax in either profile, but their record and `GET`/`PUT` behavior differs.
 - `SEEK`, `SET #n: POINTER`, `ASK #n: POINTER`, text file I/O, filesystem statements, and text console control.
 - The shared builtin registry, including numeric `MIN`/`MAX` with one or more arguments, QBasic-style string function names, `INPUT$`, `MKI$`/`MKL$`/`MKS$`/`MKD$`, `CVI`/`CVL`/`CVS`/`CVD`, and `ENVIRON$` reads. See the complete [builtin catalog](builtins.md).

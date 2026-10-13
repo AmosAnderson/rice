@@ -61,7 +61,7 @@ pub enum Stmt {
     Input(InputStmt),
     LineInput {
         prompt: Option<String>,
-        var: Variable,
+        var: InputTarget,
     },
 
     // Control flow
@@ -115,7 +115,7 @@ pub enum Stmt {
 
     // Data
     Data(Vec<DataItem>),
-    Read(Vec<Variable>),
+    Read(Vec<InputTarget>),
     Restore(Option<Label>),
 
     // File I/O
@@ -126,7 +126,7 @@ pub enum Stmt {
     InputFile(FileInputStmt),
     LineInputFile {
         file_num: Expr,
-        var: Variable,
+        var: InputTarget,
     },
     GetPut(GetPutStmt),
     Field {
@@ -271,7 +271,7 @@ pub enum PrintSep {
 #[derive(Debug, Clone)]
 pub struct InputStmt {
     pub prompt: Option<String>,
-    pub vars: Vec<Variable>,
+    pub vars: Vec<InputTarget>,
 }
 
 #[derive(Debug, Clone)]
@@ -404,7 +404,7 @@ pub struct FileWriteStmt {
 #[derive(Debug, Clone)]
 pub struct FileInputStmt {
     pub file_num: Expr,
-    pub vars: Vec<Variable>,
+    pub vars: Vec<InputTarget>,
 }
 
 #[derive(Debug, Clone)]
@@ -462,6 +462,13 @@ pub struct Variable {
     pub name: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct InputTarget {
+    pub name: String,
+    // Empty for a scalar; array targets have at least one index expression.
+    pub indices: Vec<Expr>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BinOp {
     Add,
@@ -480,6 +487,8 @@ pub enum BinOp {
     And,
     Or,
     Xor,
+    Eqv,
+    Imp,
     Concat,
 }
 
