@@ -230,6 +230,9 @@ fn collect_symbols(
             Stmt::Let { var, .. } => {
                 add_variable(syms, &var.name, ls.line, seen_vars);
             }
+            Stmt::MidAssign { target, .. } => {
+                add_variable(syms, &target.name, ls.line, seen_vars);
+            }
             Stmt::Swap { a, b } => {
                 add_variable(syms, &a.name, ls.line, seen_vars);
                 add_variable(syms, &b.name, ls.line, seen_vars);
@@ -251,12 +254,14 @@ fn collect_symbols(
                     }
                 }
             }
-            Stmt::Const { name, .. } => {
-                syms.constants.push(SymbolInfo {
-                    name: name.clone(),
-                    line: ls.line,
-                    detail: Some("CONST".into()),
-                });
+            Stmt::Const { decls } => {
+                for decl in decls {
+                    syms.constants.push(SymbolInfo {
+                        name: decl.name.clone(),
+                        line: ls.line,
+                        detail: Some("CONST".into()),
+                    });
+                }
             }
             Stmt::For(f) => {
                 add_variable(syms, &f.var.name, ls.line, seen_vars);
@@ -361,7 +366,10 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         // Variables
         ("LET", "Assign a value to a variable"),
         ("DIM", "Declare a variable or array"),
-        ("CONST", "Declare a constant"),
+        (
+            "CONST",
+            "Declare constants left to right: CONST a = 1, b = a + 1",
+        ),
         ("SWAP", "Swap scalar variables or indexed array elements"),
         ("OPTION BASE", "Set default array lower bound"),
         ("OPTION EXPLICIT", "Require variable declarations"),
@@ -561,7 +569,7 @@ static BUILTIN_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ),
         (
             "ROUND",
-            "ROUND(n[, places]) — Round to nearest integer or decimal place",
+            "ROUND(n[, places]) — Round; negative places select tens/hundreds",
         ),
         ("ASIN", "ASIN(n) — Arc sine (radians)"),
         ("ACOS", "ACOS(n) — Arc cosine (radians)"),
@@ -572,7 +580,7 @@ static BUILTIN_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("CEIL", "CEIL(n) — Ceiling (smallest integer >= n)"),
         (
             "TRUNCATE",
-            "TRUNCATE(n[, places]) — Truncate to decimal places",
+            "TRUNCATE(n[, places]) — Truncate; negative places select tens/hundreds",
         ),
         ("REMAINDER", "REMAINDER(a, b) — Remainder of a / b"),
         ("MIN", "MIN(n[, n...]) — Minimum of one or more numbers"),
@@ -586,8 +594,19 @@ static BUILTIN_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ),
         ("LEFT$", "LEFT$(s$, n) — Left n characters"),
         ("RIGHT$", "RIGHT$(s$, n) — Right n characters"),
-        ("MID$", "MID$(s$, start[, len]) — Substring"),
+        (
+            "MID$",
+            "MID$(s$, start[, len]) — Substring; QB scalar/array overwrite statement",
+        ),
         ("INSTR", "INSTR([start,] s$, search$) — Find substring"),
+        (
+            "INSTRREV",
+            "INSTRREV(s$, search$[, start]) — Find the last substring match",
+        ),
+        (
+            "REPLACE$",
+            "REPLACE$(s$, find$, replacement$[, start[, count]]) — Replace substrings",
+        ),
         ("UCASE$", "UCASE$(s$) — Convert to uppercase"),
         ("LCASE$", "LCASE$(s$) — Convert to lowercase"),
         ("LTRIM$", "LTRIM$(s$) — Remove leading Unicode whitespace"),
@@ -732,7 +751,7 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "ROUND",
-            "```basic\nROUND(n[, places])\n```\nRounds to the nearest value, ties away from zero. Places defaults to zero; an explicit value is truncated and must be 0..308.",
+            "```basic\nROUND(n[, places])\n```\nRounds to the nearest value, ties away from zero. Places defaults to zero; an explicit value truncates and must be -308..308. Negative places round to powers of ten: ROUND(125, -1) is 130. Finite overflow in the negative-place result raises overflow; existing nonnegative-place and NaN/infinity behavior is unchanged.",
         ),
         (
             "ASIN",
@@ -764,7 +783,7 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "TRUNCATE",
-            "```basic\nTRUNCATE(n[, places])\n```\nTruncates toward zero. Places defaults to zero; an explicit value is truncated and must be 0..308.",
+            "```basic\nTRUNCATE(n[, places])\n```\nTruncates toward zero. Places defaults to zero; an explicit value truncates and must be -308..308. Negative places truncate to powers of ten: TRUNCATE(-129, -1) is -120. Available in both Rice dialects.",
         ),
         (
             "REMAINDER",
@@ -801,11 +820,19 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "MID$",
-            "```basic\nMID$(s$, start[, length])\n```\nReturns a substring starting at position `start`. If `length` is omitted, returns from `start` to end.",
+            "```basic\nMID$(s$, start[, length])\nMID$(lines$(i), start[, length]) = replacement$\n```\nThe function returns a substring in both dialects. The QB-only assignment overwrites a scalar or array element without changing its length. Indices resolve once before start, replacement, target snapshot, then optional length. Uses 1-based Unicode character positions; start must be positive, length nonnegative. Record-member and slice targets are unsupported.",
         ),
         (
             "INSTR",
             "```basic\nINSTR([start,] s$, search$)\n```\nReturns the position of `search$` in `s$`, or 0 if not found.",
+        ),
+        (
+            "INSTRREV",
+            "```basic\nINSTRREV(s$, search$[, start])\n```\nReturns the last case-sensitive match's 1-based Unicode character position, or 0. Omitted start or -1 searches the whole string; a positive start limits the final character of a match. Start truncates; 0 or values below -1 are errors. Empty text or start past the end returns 0; an empty search returns the effective start. Rice extension in both dialects.",
+        ),
+        (
+            "REPLACE$",
+            "```basic\nREPLACE$(s$, find$, replacement$[, start[, count]])\n```\nReplaces nonoverlapping, case-sensitive matches. Returns only the suffix beginning at the 1-based Unicode character start (default 1); start past the end returns empty. Count defaults to -1 (all), or is nonnegative. Empty find or count 0 keeps the selected suffix; an empty replacement deletes matches. Numeric options truncate and are checked. Rice extension in both dialects.",
         ),
         (
             "UCASE$",
@@ -1007,15 +1034,15 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "DIM",
-            "```basic\nDIM [SHARED] var[(dims)] [AS type]\n```\nDeclares and initializes values or records array bounds. All numeric kinds use f64; AS types do not enforce assignments. Ordinary array access does not enforce recorded bounds.",
+            "```basic\nDIM [SHARED] var[(dims)] [AS type]\n```\nDeclares and initializes values or records array bounds. Explicit array AS selects defaults for untouched elements: numeric zero, empty string, or a fresh record, overriding suffix/DEFSTR. Existing elements survive DIM and assignments remain permissive. All numeric kinds use f64; recorded bounds are not enforced. Array metadata is interpreter-wide, not scoped to procedures.",
         ),
         (
             "CONST",
-            "```basic\nCONST name = expression\n```\nDefines a named constant that cannot be reassigned.",
+            "```basic\nCONST name = expression[, name = expression ...]\n```\nDefines constants left to right at runtime; later expressions may use earlier names. Duplicate names in the current scope raise an error. Earlier definitions and expression side effects survive a later failure. No AS clauses or trailing commas are accepted. Available in both dialects.",
         ),
         (
             "SWAP",
-            "```basic\nSWAP target1, target2\nSWAP values(i, j), replacement\n```\nExchanges scalar variables or array elements in either dialect. Both destinations resolve from left to right with each index evaluated once, before reading or writing either value. Missing values use ordinary numeric, string, or declared record-array defaults. A target error leaves both destinations unwritten, apart from index-expression side effects. Record fields and slices are unsupported; no bounds or rank checks are added.",
+            "```basic\nSWAP target1, target2\nSWAP values(i, j), replacement\n```\nExchanges scalar variables or array elements in either dialect. Both destinations resolve from left to right with each index evaluated once, before reading or writing either value. Missing elements honor explicit array AS defaults, otherwise the ordinary suffix/DEFSTR defaults. A target error leaves both destinations unwritten, apart from index-expression side effects. Record fields and slices are unsupported; no bounds or rank checks are added.",
         ),
         (
             "OPTION BASE",
@@ -1031,11 +1058,11 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "REDIM",
-            "```basic\nREDIM [PRESERVE] var(dims) [AS type]\n```\nUpdates array bounds. Without PRESERVE, clears local element values. PRESERVE retains even out-of-range elements and does not enforce ordinary access bounds.",
+            "```basic\nREDIM [PRESERVE] var(dims) [AS type]\n```\nUpdates array bounds and explicit AS defaults. Omitting AS clears the previous declared element type and restores suffix/DEFSTR defaults. Without PRESERVE, clears local element values. PRESERVE retains all existing values without conversion, even out-of-range elements; ordinary bounds remain unchecked.",
         ),
         (
             "ERASE",
-            "```basic\nERASE array[, array...]\n```\nClears local flattened array elements and sets each base variable to numeric zero. Bounds and record-array type metadata remain.",
+            "```basic\nERASE array[, array...]\n```\nClears local flattened array elements and sets each base variable to numeric zero. Bounds and declared array type metadata remain, so future untouched elements retain their defaults.",
         ),
         (
             "SHARED",
@@ -1732,6 +1759,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn const_lists_register_every_symbol_in_both_dialects() {
+        for dialect in ["QB", "ANSI"] {
+            let source = format!(
+                "OPTION DIALECT \"{dialect}\"\nCONST First = 1, Second = First + 1, Title$ = \"ok\"\nSUB Worker\nCONST LocalOne = 2, LocalTwo = LocalOne + 1\nEND SUB\nPRINT Second; Title$\n"
+            );
+            let state = analyze_source(source, 1);
+            assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+            assert_eq!(state.symbols.constants.len(), 5);
+            for (name, line) in [
+                ("FIRST", 2),
+                ("SECOND", 2),
+                ("TITLE$", 2),
+                ("LOCALONE", 4),
+                ("LOCALTWO", 4),
+            ] {
+                let symbol = find_symbol(&state.symbols, name).unwrap();
+                assert_eq!(symbol.line, line);
+                assert_eq!(symbol.detail.as_deref(), Some("CONST"));
+            }
+        }
+        let state = analyze_source("CONST first = 1,\n".into(), 1);
+        assert!(!state.diagnostics.is_empty());
+    }
+
+    #[test]
     fn indexed_swap_registers_targets_and_preserves_index_references() {
         for dialect in ["QB", "ANSI"] {
             let state = analyze_source(
@@ -2158,6 +2210,28 @@ mod tests {
             assert_eq!(invalid.diagnostics.len(), 1);
             assert_eq!(invalid.diagnostics[0].range.start.line, 3);
         }
+    }
+
+    #[test]
+    fn indexed_mid_and_core_builtins_have_editor_support() {
+        let source = "CONST size = 2, last = size\nMID$(chunks$(last), 1) = REPLACE$(\"abc\", \"b\", \"X\")\nPRINT INSTRREV(\"abc\", \"c\"); ROUND(125, -1); TRUNCATE(129, -1)\n";
+        let state = analyze_source(source.into(), 1);
+        assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+        assert_eq!(find_symbol(&state.symbols, "CHUNKS$").unwrap().line, 2);
+        assert_eq!(find_symbol(&state.symbols, "LAST").unwrap().line, 1);
+        assert_eq!(
+            resolve_token_name(&state, Position::new(1, 6)).as_deref(),
+            Some("CHUNKS$")
+        );
+        for name in ["REPLACE$", "INSTRREV"] {
+            assert!(BUILTIN_COMPLETIONS.iter().any(|item| item.label == name));
+            assert!(builtin_hover(name).is_some());
+            assert!(rice::builtins::BuiltinRegistry::new().exists(name));
+        }
+        let invalid = analyze_source(format!("OPTION DIALECT \"ANSI\"\n{source}"), 1);
+        assert_eq!(invalid.diagnostics.len(), 1);
+        assert_eq!(invalid.diagnostics[0].range.start.line, 2);
+        assert!(invalid.diagnostics[0].message.contains("MID$ assignment"));
     }
 
     #[test]

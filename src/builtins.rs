@@ -64,6 +64,8 @@ impl BuiltinRegistry {
         // String
         reg.register("LEN", builtin_len, 1);
         reg.register_variadic("INSTR", builtin_instr);
+        reg.register_variadic("INSTRREV", builtin_instrrev);
+        reg.register_variadic("REPLACE$", builtin_replace);
         reg.register("LTRIM$", builtin_ltrim, 1);
         reg.register("RTRIM$", builtin_rtrim, 1);
         reg.register("SPACE$", builtin_space, 1);
@@ -261,6 +263,9 @@ fn builtin_round(args: &[Value]) -> Result<Value, RuntimeError> {
         1 => Ok(Value::Numeric(n.round())),
         2 => {
             let places = args[1].to_i64()?;
+            if places < 0 {
+                return round_negative_places(n, places, f64::round);
+            }
             let factor = decimal_factor(places)?;
             let scaled = n * factor;
             // Scaling overflow means this precision cannot change the stored value.
@@ -346,6 +351,9 @@ fn builtin_truncate(args: &[Value]) -> Result<Value, RuntimeError> {
         1 => Ok(Value::Numeric(n.trunc())),
         2 => {
             let places = args[1].to_i64()?;
+            if places < 0 {
+                return round_negative_places(n, places, f64::trunc);
+            }
             let factor = decimal_factor(places)?;
             let scaled = n * factor;
             Ok(Value::Numeric(if scaled.is_finite() {
@@ -377,6 +385,33 @@ fn decimal_factor(places: i64) -> Result<f64, RuntimeError> {
         });
     }
     Ok(10_f64.powi(places as i32))
+}
+
+fn round_negative_places(
+    number: f64,
+    places: i64,
+    operation: fn(f64) -> f64,
+) -> Result<Value, RuntimeError> {
+    if !(-308..=-1).contains(&places) {
+        return Err(RuntimeError::IllegalFunctionCall {
+            msg: "decimal places out of range".into(),
+        });
+    }
+    if !number.is_finite() {
+        return Ok(Value::Numeric(number));
+    }
+    // Parsing a decimal power avoids accumulated powi error: truncating exactly
+    // 1e308 to 10^308 must not see a quotient slightly less than one.
+    let factor = format!("1e{}", -places)
+        .parse::<f64>()
+        .expect("a decimal exponent in 1..308 is finite and valid");
+    let result = operation(number / factor) * factor;
+    if !result.is_finite() {
+        return Err(RuntimeError::Overflow {
+            msg: "rounded value exceeds the numeric range".into(),
+        });
+    }
+    Ok(Value::Numeric(result))
 }
 
 fn builtin_min(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -462,6 +497,88 @@ fn builtin_instr(args: &[Value]) -> Result<Value, RuntimeError> {
             got: args.len(),
         }),
     }
+}
+
+fn builtin_instrrev(args: &[Value]) -> Result<Value, RuntimeError> {
+    if !(2..=3).contains(&args.len()) {
+        return Err(RuntimeError::ArityMismatch {
+            expected: 2,
+            got: args.len(),
+        });
+    }
+    let haystack = args[0].to_string_val()?;
+    let needle = args[1].to_string_val()?;
+    let start = args.get(2).map(Value::to_i64).transpose()?.unwrap_or(-1);
+    if start == 0 || start < -1 {
+        return Err(RuntimeError::IllegalFunctionCall {
+            msg: "INSTRREV start must be -1 or at least 1".into(),
+        });
+    }
+    let length = haystack.chars().count();
+    let end = if start == -1 {
+        length
+    } else if let Ok(end) = usize::try_from(start) {
+        end
+    } else {
+        return Ok(Value::Numeric(0.0));
+    };
+    if length == 0 || end > length {
+        return Ok(Value::Numeric(0.0));
+    }
+    if needle.is_empty() {
+        return Ok(Value::Numeric(end as f64));
+    }
+    let byte_end = haystack
+        .char_indices()
+        .nth(end)
+        .map_or(haystack.len(), |(index, _)| index);
+    let prefix = &haystack[..byte_end];
+    let position = prefix
+        .rfind(&needle)
+        .map_or(0, |index| prefix[..index].chars().count() + 1);
+    Ok(Value::Numeric(position as f64))
+}
+
+fn builtin_replace(args: &[Value]) -> Result<Value, RuntimeError> {
+    if !(3..=5).contains(&args.len()) {
+        return Err(RuntimeError::ArityMismatch {
+            expected: 3,
+            got: args.len(),
+        });
+    }
+    let text = args[0].to_string_val()?;
+    let find = args[1].to_string_val()?;
+    let replacement = args[2].to_string_val()?;
+    let start = args.get(3).map(Value::to_i64).transpose()?.unwrap_or(1);
+    let count = args.get(4).map(Value::to_i64).transpose()?.unwrap_or(-1);
+    if start < 1 {
+        return Err(RuntimeError::IllegalFunctionCall {
+            msg: "REPLACE$ start must be at least 1".into(),
+        });
+    }
+    if count < -1 {
+        return Err(RuntimeError::IllegalFunctionCall {
+            msg: "REPLACE$ count must be -1 or nonnegative".into(),
+        });
+    }
+    let byte_start = usize::try_from(start - 1)
+        .ok()
+        .and_then(|index| text.char_indices().nth(index))
+        .map_or(text.len(), |(index, _)| index);
+    let suffix = &text[byte_start..];
+    if find.is_empty() || count == 0 {
+        return Ok(Value::Str(suffix.to_string()));
+    }
+    let result = if count == -1 {
+        suffix.replace(&find, &replacement)
+    } else {
+        suffix.replacen(
+            &find,
+            &replacement,
+            usize::try_from(count).unwrap_or(usize::MAX),
+        )
+    };
+    Ok(Value::Str(result))
 }
 
 fn builtin_ltrim(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -1340,6 +1457,280 @@ mod tests {
                 ),
                 Err(RuntimeError::TypeMismatch { .. })
             ));
+        }
+    }
+
+    #[test]
+    fn replace_uses_unicode_suffixes_and_nonoverlapping_matches() {
+        for (source, find, replacement, start, count, expected) in [
+            ("banana", "na", "XYZ", 1.0, -1.0, "baXYZXYZ"),
+            ("aaaaa", "aa", "b", 1.0, -1.0, "bba"),
+            ("aba", "a", "aa", 1.0, -1.0, "aabaa"),
+            ("é🙂é🙂", "é", "X", 2.0, -1.0, "🙂X🙂"),
+            ("é🙂é🙂", "🙂", "", 1.0, -1.0, "éé"),
+            ("prefix abc abc", "abc", "X", 8.0, 1.0, "X abc"),
+            ("abc", "", "X", 2.0, -1.0, "bc"),
+            ("abc", "b", "X", 2.0, 0.0, "bc"),
+            ("abc", "b", "X", 4.0, -1.0, ""),
+            ("", "a", "X", 1.0, -1.0, ""),
+            ("aaaa", "a", "b", 2.9, 1.9, "baa"),
+            ("aaaa", "a", "b", 1.0, 1e15, "bbbb"),
+            ("abc", "a", "b", 1e15, -1.0, ""),
+        ] {
+            assert_eq!(
+                builtin_replace(&[
+                    Value::Str(source.into()),
+                    Value::Str(find.into()),
+                    Value::Str(replacement.into()),
+                    Value::Numeric(start),
+                    Value::Numeric(count),
+                ])
+                .unwrap(),
+                Value::Str(expected.into())
+            );
+        }
+        let registry = BuiltinRegistry::new();
+        for name in ["REPLACE$", "REPLACE"] {
+            assert!(registry.exists(name));
+            assert_eq!(
+                registry
+                    .call(
+                        name,
+                        &[
+                            Value::Str("aba".into()),
+                            Value::Str("a".into()),
+                            Value::Str("x".into()),
+                        ]
+                    )
+                    .unwrap(),
+                Some(Value::Str("xbx".into()))
+            );
+        }
+    }
+
+    #[test]
+    fn instrrev_limits_match_end_and_handles_empty_inputs() {
+        for (source, needle, start, expected) in [
+            ("banana", "ana", -1.0, 4.0),
+            ("banana", "ana", 5.0, 2.0),
+            ("banana", "ana", 3.0, 0.0),
+            ("é🙂é🙂", "🙂", -1.0, 4.0),
+            ("é🙂é🙂", "é🙂", 3.0, 1.0),
+            ("é🙂é🙂", "🙂", 3.0, 2.0),
+            ("aaa", "aa", -1.0, 2.0),
+            ("abc", "", -1.0, 3.0),
+            ("abc", "", 2.0, 2.0),
+            ("abc", "", 4.0, 0.0),
+            ("", "", -1.0, 0.0),
+            ("", "x", 1.0, 0.0),
+            ("abc", "A", -1.0, 0.0),
+            ("abc", "a", 1e15, 0.0),
+            ("aba", "a", 2.9, 1.0),
+            ("aba", "a", -1.9, 3.0),
+        ] {
+            assert_eq!(
+                builtin_instrrev(&[
+                    Value::Str(source.into()),
+                    Value::Str(needle.into()),
+                    Value::Numeric(start),
+                ])
+                .unwrap(),
+                Value::Numeric(expected)
+            );
+        }
+        assert_eq!(
+            builtin_instrrev(&[Value::Str("aba".into()), Value::Str("a".into())]).unwrap(),
+            Value::Numeric(3.0)
+        );
+    }
+
+    #[test]
+    fn replacement_and_reverse_search_validate_noop_arguments_and_arity() {
+        let registry = BuiltinRegistry::new();
+        for (name, valid, arities) in [
+            (
+                "REPLACE$",
+                vec![
+                    Value::Str("".into()),
+                    Value::Str("".into()),
+                    Value::Str("".into()),
+                    Value::Numeric(1.0),
+                    Value::Numeric(0.0),
+                ],
+                vec![0, 1, 2, 6],
+            ),
+            (
+                "INSTRREV",
+                vec![
+                    Value::Str("".into()),
+                    Value::Str("".into()),
+                    Value::Numeric(1.0),
+                ],
+                vec![0, 1, 4],
+            ),
+        ] {
+            for arity in arities {
+                assert!(matches!(
+                    registry.call(name, &vec![Value::Numeric(1.0); arity]),
+                    Err(RuntimeError::ArityMismatch { .. })
+                ));
+            }
+            for index in 0..valid.len() {
+                let mut args = valid.clone();
+                args[index] = if args[index].is_numeric() {
+                    Value::Str("1".into())
+                } else {
+                    Value::Numeric(1.0)
+                };
+                assert!(
+                    matches!(
+                        registry.call(name, &args),
+                        Err(RuntimeError::TypeMismatch { .. })
+                    ),
+                    "{name} argument {index}"
+                );
+                args[index] = Value::Record {
+                    type_name: "R".into(),
+                    fields: HashMap::new(),
+                };
+                assert!(matches!(
+                    registry.call(name, &args),
+                    Err(RuntimeError::TypeMismatch { .. })
+                ));
+            }
+            let position = if name == "REPLACE$" { 3 } else { 2 };
+            for bad in [0.0, -2.0, i64::MIN as f64] {
+                let mut args = valid.clone();
+                args[position] = Value::Numeric(bad);
+                assert!(matches!(
+                    registry.call(name, &args),
+                    Err(RuntimeError::IllegalFunctionCall { .. })
+                ));
+            }
+            for bad in [
+                f64::NAN,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                9_223_372_036_854_775_808.0,
+            ] {
+                let mut args = valid.clone();
+                args[position] = Value::Numeric(bad);
+                assert!(matches!(
+                    registry.call(name, &args),
+                    Err(RuntimeError::Overflow { .. })
+                ));
+                if name == "REPLACE$" {
+                    args[position] = Value::Numeric(1.0);
+                    args[4] = Value::Numeric(bad);
+                    assert!(matches!(
+                        registry.call(name, &args),
+                        Err(RuntimeError::Overflow { .. })
+                    ));
+                }
+            }
+        }
+        for count in [-2.0, i64::MIN as f64] {
+            assert!(matches!(
+                builtin_replace(&[
+                    Value::Str("".into()),
+                    Value::Str("".into()),
+                    Value::Str("".into()),
+                    Value::Numeric(1.0),
+                    Value::Numeric(count)
+                ]),
+                Err(RuntimeError::IllegalFunctionCall { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn negative_decimal_places_round_and_truncate_without_changing_positive_precision() {
+        for (input, places, rounded, truncated) in [
+            (149.0, -1.0, 150.0, 140.0),
+            (150.0, -2.0, 200.0, 100.0),
+            (-150.0, -2.0, -200.0, -100.0),
+            (1499.0, -2.0, 1500.0, 1400.0),
+            (-1499.0, -2.0, -1500.0, -1400.0),
+            (1e308, -308.0, 1e308, 1e308),
+            (1e23, -23.0, 1e23, 1e23),
+            (149.0, -1.9, 150.0, 140.0),
+            (1.25, 1.0, 1.3, 1.2),
+            (1.25, -0.9, 1.0, 1.0),
+        ] {
+            let args = [Value::Numeric(input), Value::Numeric(places)];
+            assert_eq!(builtin_round(&args).unwrap(), Value::Numeric(rounded));
+            assert_eq!(builtin_truncate(&args).unwrap(), Value::Numeric(truncated));
+        }
+        for function in [builtin_round as BuiltinFn, builtin_truncate] {
+            for input in [-0.0, -f64::MIN_POSITIVE, -f64::from_bits(1)] {
+                let result = function(&[Value::Numeric(input), Value::Numeric(-308.0)])
+                    .unwrap()
+                    .to_f64()
+                    .unwrap();
+                assert_eq!(result, 0.0);
+                assert!(result.is_sign_negative());
+            }
+            for input in [f64::INFINITY, f64::NEG_INFINITY] {
+                assert_eq!(
+                    function(&[Value::Numeric(input), Value::Numeric(-308.0)]).unwrap(),
+                    Value::Numeric(input)
+                );
+            }
+            assert!(
+                function(&[Value::Numeric(f64::NAN), Value::Numeric(-1.0)])
+                    .unwrap()
+                    .to_f64()
+                    .unwrap()
+                    .is_nan()
+            );
+        }
+    }
+
+    #[test]
+    fn negative_decimal_places_check_range_arity_types_and_rounding_overflow() {
+        let registry = BuiltinRegistry::new();
+        for name in ["ROUND", "TRUNCATE"] {
+            for places in [-309.0, 309.0, i64::MIN as f64] {
+                assert!(matches!(
+                    registry.call(name, &[Value::Numeric(1.0), Value::Numeric(places)]),
+                    Err(RuntimeError::IllegalFunctionCall { .. })
+                ));
+            }
+            for places in [f64::NAN, f64::INFINITY, 9_223_372_036_854_775_808.0] {
+                assert!(matches!(
+                    registry.call(name, &[Value::Numeric(1.0), Value::Numeric(places)]),
+                    Err(RuntimeError::Overflow { .. })
+                ));
+            }
+            for args in [vec![], vec![Value::Numeric(1.0); 3]] {
+                assert!(matches!(
+                    registry.call(name, &args),
+                    Err(RuntimeError::ArityMismatch { .. })
+                ));
+            }
+            for args in [
+                vec![Value::Str("1".into()), Value::Numeric(-1.0)],
+                vec![Value::Numeric(1.0), Value::Str("-1".into())],
+            ] {
+                assert!(matches!(
+                    registry.call(name, &args),
+                    Err(RuntimeError::TypeMismatch { .. })
+                ));
+            }
+            assert!(matches!(
+                registry.call(name, &[Value::Numeric(f64::NAN), Value::Numeric(-309.0)]),
+                Err(RuntimeError::IllegalFunctionCall { .. })
+            ));
+        }
+        for number in [f64::MAX, -f64::MAX] {
+            assert!(matches!(
+                builtin_round(&[Value::Numeric(number), Value::Numeric(-308.0)]),
+                Err(RuntimeError::Overflow { .. })
+            ));
+            assert_eq!(
+                builtin_truncate(&[Value::Numeric(number), Value::Numeric(-308.0)]).unwrap(),
+                Value::Numeric(1e308_f64.copysign(number))
+            );
         }
     }
 }

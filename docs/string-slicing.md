@@ -114,11 +114,14 @@ zero-length `MID$` results also require care.
 This separate statement is accepted only in QBasic mode:
 
 ```text
-MID$(name, start [, count]) = replacement
+MID$(target, start [, count]) = replacement
+MID$(lines$(i), start [, count]) = replacement
 ```
 
-The target must be a plain name. `start` is truncated to an integer and must be
-at least `1`; an explicit count is truncated and must be non-negative.
+The target may be a plain name or an array element, including multiple indices.
+Record fields, slices, and empty array subscripts are rejected. `start` is
+truncated to an integer and must be at least `1`; an explicit count is truncated
+and must be non-negative. Positions and counts refer to Unicode scalar values.
 The statement overwrites at most the minimum of the requested count, replacement
 length, and characters remaining in the original string. Without a count, only
 replacement length and remaining characters limit it.
@@ -133,7 +136,24 @@ MID$(s$, 3, 2) = "XYZ"
 PRINT s$                           ' ABXYEF
 MID$(s$, 3, 3) = "Q"
 PRINT s$                           ' ABQYEF
+DIM lines$(2)
+lines$(1) = "abcdef"
+MID$(lines$(1), 3, 2) = "XY"
+PRINT lines$(1)                    ' abXYef
 ```
+
+Array indices resolve from left to right exactly once, before evaluating the
+start expression. Later changes to an index variable do not redirect the write.
+The remaining evaluation order preserves scalar MID$ behavior: start,
+replacement, current target value, then optional count. A count expression that
+changes the target does not change the string snapshot being overwritten.
+An error leaves this statement's target unwritten; expression side effects remain.
+
+Destinations follow INPUT's declaration and constant checks, including constants
+at a flattened array key. Bounds and rank remain unchecked. Existing array values
+must be strings; untouched elements use their declared `AS` type or ordinary
+suffix/DEFSTR default. A missing scalar retains MID$'s empty-string fallback.
+Writing into an empty string never extends it.
 
 The `MID$` **function** remains available in ANSI mode; only this assignment
 statement is rejected there.

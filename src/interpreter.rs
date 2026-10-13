@@ -128,7 +128,8 @@ pub struct Interpreter {
     static_vars: HashMap<String, HashMap<String, Value>>,
     current_static_vars: HashSet<String>,
     type_defs: HashMap<String, Vec<crate::ast::TypeField>>,
-    array_type_map: HashMap<String, String>,
+    /// Explicit array AS types, sharing the existing interpreter-wide bounds lifetime.
+    array_type_map: HashMap<String, BasicType>,
     source_dir: Option<std::path::PathBuf>,
     interactive: bool,
     screen_buffer: Vec<Vec<u8>>,
@@ -614,12 +615,12 @@ impl Interpreter {
                 Ok(ControlFlow::Normal)
             }
             Stmt::MidAssign {
-                name,
+                target,
                 start,
                 len,
                 expr,
             } => {
-                self.require_writable(name)?;
+                let key = self.resolve_input_target(target)?;
                 let start_i = self.eval_expr(start)?.to_i64()?;
                 if start_i < 1 {
                     return Err(RuntimeError::IllegalFunctionCall {
@@ -627,14 +628,19 @@ impl Interpreter {
                     });
                 }
                 let repl = self.eval_expr(expr)?.to_string_val()?;
-                let s = self
-                    .env
-                    .borrow()
-                    .get(name)
-                    .unwrap_or(Value::Str(String::new()))
-                    .to_string_val()?;
+                // Preserve scalar MID$'s empty-string fallback and evaluation
+                // order; indexed operands use their declared element default.
+                let current = if target.indices.is_empty() {
+                    self.env
+                        .borrow()
+                        .get(&key)
+                        .unwrap_or(Value::Str(String::new()))
+                } else {
+                    self.input_target_value(target, &key)?
+                };
+                let s = current.to_string_val()?;
                 let mut chars: Vec<char> = s.chars().collect();
-                let start_idx = (start_i - 1) as usize;
+                let start_idx = usize::try_from(start_i - 1).unwrap_or(usize::MAX);
                 // Number of characters to overwrite: min(len, repl.len, remaining)
                 let max_len = chars.len().saturating_sub(start_idx);
                 let n = match len {
@@ -645,7 +651,7 @@ impl Interpreter {
                                 msg: "MID$ length must be non-negative".into(),
                             });
                         }
-                        (l as usize).min(max_len)
+                        usize::try_from(l).unwrap_or(usize::MAX).min(max_len)
                     }
                     None => max_len,
                 };
@@ -654,14 +660,16 @@ impl Interpreter {
                     chars[start_idx + i] = *rc;
                 }
                 let new_s: String = chars.into_iter().collect();
-                self.env.borrow_mut().set(name, Value::Str(new_s));
+                self.env.borrow_mut().set(&key, Value::Str(new_s));
                 Ok(ControlFlow::Normal)
             }
             Stmt::Dim { decls, shared } => self.exec_dim(decls, *shared),
-            Stmt::Const { name, value } => {
-                self.env.borrow_mut().declare_var(name);
-                let val = self.eval_expr(value)?;
-                self.env.borrow_mut().define_const(name, val)?;
+            Stmt::Const { decls } => {
+                for decl in decls {
+                    self.env.borrow_mut().declare_var(&decl.name);
+                    let val = self.eval_expr(&decl.value)?;
+                    self.env.borrow_mut().define_const(&decl.name, val)?;
+                }
                 Ok(ControlFlow::Normal)
             }
             Stmt::OptionExplicit => {
@@ -1260,12 +1268,10 @@ impl Interpreter {
                     bounds.push((lower, upper));
                 }
                 self.array_dim_info.insert(decl.name.clone(), bounds);
+                self.set_array_decl_type(decl);
             }
             if let BasicType::UserDefined(ref type_name) = resolved {
-                if decl.dimensions.is_some() {
-                    self.array_type_map
-                        .insert(decl.name.clone(), type_name.clone());
-                } else {
+                if decl.dimensions.is_none() {
                     let record = self.create_default_record(type_name)?;
                     self.env.borrow_mut().set(&decl.name, record);
                 }
@@ -1302,12 +1308,27 @@ impl Interpreter {
         if let Some(value) = self.env.borrow().get(key) {
             return Ok(value);
         }
-        if !target.indices.is_empty()
-            && let Some(type_name) = self.array_type_map.get(&target.name)
-        {
-            return self.create_default_record(type_name);
+        if !target.indices.is_empty() {
+            return self.default_for_array(&target.name);
         }
         Ok(self.default_for_var(&target.name))
+    }
+
+    fn set_array_decl_type(&mut self, decl: &DimDecl) {
+        if let Some(ty) = &decl.as_type {
+            self.array_type_map.insert(decl.name.clone(), ty.clone());
+        } else {
+            // An untyped redeclaration returns to suffix/DEFSTR defaults.
+            self.array_type_map.remove(&decl.name);
+        }
+    }
+
+    fn default_for_array(&self, name: &str) -> Result<Value, RuntimeError> {
+        match self.array_type_map.get(name) {
+            Some(BasicType::UserDefined(type_name)) => self.create_default_record(type_name),
+            Some(ty) => Ok(Value::default_for(ty.clone())),
+            None => Ok(self.default_for_var(name)),
+        }
     }
 
     fn exec_read(&mut self, vars: &[InputTarget]) -> Result<ControlFlow, RuntimeError> {
@@ -1386,15 +1407,13 @@ impl Interpreter {
                     bounds.push((lower, upper));
                 }
                 self.array_dim_info.insert(decl.name.clone(), bounds);
+                self.set_array_decl_type(decl);
             } else {
                 self.array_dim_info.remove(&decl.name);
                 self.array_type_map.remove(&decl.name);
             }
             if let BasicType::UserDefined(ref type_name) = resolved {
-                if decl.dimensions.is_some() {
-                    self.array_type_map
-                        .insert(decl.name.clone(), type_name.clone());
-                } else {
+                if decl.dimensions.is_none() {
                     let record = self.create_default_record(type_name)?;
                     self.env.borrow_mut().set(&decl.name, record);
                 }
@@ -3015,13 +3034,11 @@ impl Interpreter {
                 msg: format!("Array '{}' is not declared (OPTION EXPLICIT)", name),
             });
         }
-        if let Some(type_name) = self.array_type_map.get(name).cloned() {
-            let record = self.create_default_record(&type_name)?;
-            self.env.borrow_mut().set(key, record.clone());
-            Ok(record)
-        } else {
-            Ok(self.default_for_var(name))
+        let value = self.default_for_array(name)?;
+        if matches!(value, Value::Record { .. }) {
+            self.env.borrow_mut().set(key, value.clone());
         }
+        Ok(value)
     }
 
     fn create_default_record(&self, type_name: &str) -> Result<Value, RuntimeError> {
@@ -4449,15 +4466,10 @@ impl Interpreter {
         } else if name.ends_with('$') {
             BasicType::String
         } else {
-            if let Some(t_name) = self.array_type_map.get(name) {
-                if t_name == "NUMERIC" {
-                    BasicType::Numeric
-                } else if t_name == "STRING" {
-                    BasicType::String
-                } else {
-                    BasicType::UserDefined(t_name.clone())
-                }
+            if let Some(BasicType::UserDefined(type_name)) = self.array_type_map.get(name) {
+                BasicType::UserDefined(type_name.clone())
             } else {
+                // Primitive AS declarations select defaults, not binary widths.
                 BasicType::Numeric
             }
         }

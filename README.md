@@ -1,6 +1,6 @@
 # RICE BASIC
 
-Rice BASIC 0.16.0 is a text-mode BASIC interpreter written in Rust, with an interactive REPL, file execution, and a stdio language server. It defaults to **QBasic compatibility mode** and also provides an **ANSI-style mode** inspired by ANSI X3.113-1991 Full BASIC.
+Rice BASIC 0.17.0 is a text-mode BASIC interpreter written in Rust, with an interactive REPL, file execution, and a stdio language server. It defaults to **QBasic compatibility mode** and also provides an **ANSI-style mode** inspired by ANSI X3.113-1991 Full BASIC.
 
 These are Rice dialects, not claims of complete QBasic 1.1 or ANSI conformance. Both share extensions and implementation limits. The documentation specifies the behavior implemented in this repository, including accepted syntax that has partial or no runtime effect.
 
@@ -61,6 +61,17 @@ Version 0.16.0 adds six language features:
 - Indexed `ENVIRON$(index)` lookup of sorted environment entries, including interpreter overrides.
 
 All six are available in both Rice modes; file transfer formats retain their dialect differences. Their owning references describe evaluation order, errors, and compatibility limits.
+
+Version 0.17.0 adds six core language features:
+
+- Comma-separated `CONST` declarations, evaluated left to right.
+- Explicit `DIM`/`REDIM` array `AS` defaults for untouched elements, including unsuffixed string arrays.
+- QB `MID$` assignment to individual array elements, with each index evaluated once.
+- `REPLACE$` for substring replacement with optional start and count.
+- `INSTRREV` for reverse substring search.
+- Negative decimal places in `ROUND` and `TRUNCATE`, for tens, hundreds, and larger powers of ten.
+
+All except the QB-only MID$ assignment are available in both modes. The [core reference](docs/language-reference.md), [string guide](docs/string-slicing.md), and [builtin reference](docs/builtins.md) document each addition. Explicit array types choose missing-element defaults without coercing existing values; array storage, scope, and binary-width limits remain documented. REPLACE$ returns the selected suffix when a start position is supplied.
 
 ## REPL and editor support
 

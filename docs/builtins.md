@@ -1,6 +1,6 @@
 # Built-in functions
 
-This is the function reference for Rice BASIC 0.16.0. Unless stated otherwise, functions are available in **both** QBasic and ANSI modes. Names such as “ANSI math additions” in the source do not restrict a function to that dialect. The [language reference](language-reference.md) defines expression operators and the [dialect guide](dialects.md) defines truth values.
+This is the function reference for Rice BASIC 0.17.0. Unless stated otherwise, functions are available in **both** QBasic and ANSI modes. Names such as “ANSI math additions” in the source do not restrict a function to that dialect. The [language reference](language-reference.md) defines expression operators and the [dialect guide](dialects.md) defines truth values.
 
 ## Calling conventions and types
 
@@ -36,7 +36,7 @@ All numeric results are stored as `f64`, including integer conversion results. T
 | `EXP(x)` | Exponential with base e. |
 | `LOG(x)` | Natural logarithm; inputs `<= 0` raise illegal function call. |
 | `CEIL(x)` | Ceiling. |
-| `ROUND(x[, places])` | Nearest value, ties away from zero. Default `places` is zero; explicitly supplied places truncate to an integer and must be `0..308`. Negative places are unsupported. |
+| `ROUND(x[, places])` | Nearest value, ties away from zero. Default `places` is zero; explicitly supplied places truncate to an integer and must be `-308..308`. Negative places round to tens, hundreds, and larger powers of ten. |
 | `TRUNCATE(x[, places])` | Truncation toward zero at the requested decimal places; same places rules as `ROUND`. |
 | `REMAINDER(x, y)` | Floating-point remainder using a quotient truncated toward zero; sign follows the dividend. Unlike MOD for negative operands: `REMAINDER(-5, 3)` is `-2`, while `-5 MOD 3` is `1`. Zero divisor raises division by zero. |
 | `MIN(x[, y, ...])`, `MAX(x[, y, ...])` | Smallest / largest of one or more numeric arguments. A single argument is returned unchanged; no arguments raises an arity error. Strings and records raise a type mismatch. Infinities compare normally; any NaN produces NaN, while remaining arguments are still type-checked. |
@@ -47,7 +47,9 @@ All numeric results are stored as `f64`, including integer conversion results. T
 | `MAXNUM()` | Largest finite `f64` value. |
 | `PI()` | The `f64` approximation of pi. |
 
-`ROUND` and `TRUNCATE` use binary floating-point scaling. If scaling overflows, they return the original value. Arithmetic and many math functions can produce infinity or NaN rather than a BASIC overflow exception; this is not a complete historical numeric error model. `CINT`/`CLNG` differ from the truncation used for most indices. For example, `ROUND(2.5)` is `3`, but `CINT(2.5)` is `2`.
+`ROUND` and `TRUNCATE` use binary floating-point scaling. With nonnegative places, scaling overflow returns the original value. Negative places divide by the corresponding decimal power, round or truncate, then multiply back: `ROUND(150, -2)` is `200`, `ROUND(-150, -2)` is `-200`, and `TRUNCATE(-1499, -2)` is `-1400`. A finite input whose negative-place result exceeds the numeric range raises overflow (BASIC error 6). NaN and infinity inputs remain unchanged, but invalid places still raise an error. Fractional places truncate toward zero, so `-1.9` selects tens and `-0.9` selects units. These functions provide binary floating-point results, not exact decimal arithmetic.
+
+Arithmetic and many math functions can produce infinity or NaN rather than a BASIC overflow exception; this is not a complete historical numeric error model. `CINT`/`CLNG` differ from the truncation used for most indices. For example, `ROUND(2.5)` is `3`, but `CINT(2.5)` is `2`.
 
 `MIN` and `MAX` are Rice extensions available in both dialects. They accept individual numeric expressions, including indexed array elements and nested calls; they do not reduce a whole array. Arguments are evaluated eagerly from left to right, following normal function-call rules.
 
@@ -82,6 +84,8 @@ Text uses Unicode strings. `LEN(string)`, positions, substrings, and most string
 | `MID$(s$, start[, count])` | Substring beginning at 1-based `start`; omitted count means through the end. Start must be at least 1, count nonnegative. Starting past the end returns `""`. See [slice and MID$ assignment](string-slicing.md). |
 | `INSTR(s$, needle$)` | 1-based first match, or `0` if absent. Empty needle returns `1`, including in an empty string. |
 | `INSTR(start, s$, needle$)` | Searches at or after 1-based start; start must be at least 1. Starting past the last character returns `0`, even for an empty needle. |
+| `INSTRREV(s$, needle$[, start])` | 1-based last match whose final character is at or before `start`, or `0` if absent. Omitted start or `-1` searches the entire string. |
+| `REPLACE$(s$, find$, replacement$[, start[, count]])` | Replaces nonoverlapping matches in the suffix beginning at 1-based `start` (default 1). Returns that suffix, omitting any preceding text. Count defaults to `-1` for all matches. |
 | `LTRIM$(s$)`, `RTRIM$(s$)` | Remove leading/trailing Unicode whitespace, including tabs and newlines, not just spaces. |
 | `UCASE$(s$)`, `LCASE$(s$)` | Unicode case conversion; can change the character count. |
 | `SPACE$(count)` | Repeats a space; nonnegative count. |
@@ -91,6 +95,12 @@ Text uses Unicode strings. `LEN(string)`, positions, substrings, and most string
 | `STR$(x)` | Numeric text with no leading/trailing positive-number space. Uses integer text for integral magnitudes below `1e15`, otherwise Rust floating-point formatting. |
 | `VAL(s$)` | Trims surrounding whitespace; parses a leading decimal number with optional E/D exponent, or leading `&H` hex/`&O` octal digits. Empty/invalid input returns `0`. |
 | `HEX$(x)`, `OCT$(x)` | Uppercase hexadecimal / octal text after direct truncating signed 64-bit cast. Out-of-range inputs saturate and NaN becomes zero. Negative values use unsigned 64-bit two's-complement representation; this is not QBasic's 16/32-bit formatting. |
+
+`INSTRREV` and `REPLACE$` are Rice extensions in both dialects. Matches are case-sensitive and positions count Unicode scalar values. Optional positions and counts use the checked, truncating integer conversion described above. Arguments are evaluated once, from left to right; even no-op calls validate their argument types and ranges.
+
+For `INSTRREV`, explicit start must be `-1` or at least 1. A start beyond the string's length returns `0`, including for an empty needle. An empty source also returns `0`. An empty needle in a nonempty source returns the effective start position. Overlapping matches are considered: `INSTRREV("aaa", "aa")` returns `2`. The limit applies to the **end** of the match: `INSTRREV("banana", "ana", 5)` returns `2`, while an unrestricted search returns `4`.
+
+For `REPLACE$`, start must be at least 1, and count must be `-1` or nonnegative. Starting beyond the final character returns `""`. An empty find string or zero count returns the selected suffix unchanged; an empty replacement deletes matches. Replacement proceeds left to right without searching newly inserted text. For example, `REPLACE$("prefix abc abc", "abc", "X", 8, 1)` returns `"X abc"`; `REPLACE$("abc", "", "X", 2)` returns `"bc"`. Neither function accepts a comparison-mode argument or modifies its source string.
 
 `VAL` accepts an optional sign, digits with at most one decimal point, and an
 optional `E`, `e`, `D`, or `d` exponent with optional sign and at least one digit.

@@ -33,6 +33,137 @@ fn run_file(path: &str) -> String {
 }
 
 #[test]
+fn test_indexed_mid_assignment_preserves_length_and_unicode_positions() {
+    assert_eq!(
+        run_file("tests/programs/indexed_mid_assign.bas"),
+        "é漢Zbcd|6\né漢Zbcd\nabcXYf\nabcXZf\n[]\n"
+    );
+    assert_eq!(
+        run_bas("MID$(missing, 1) = \"x\"\nPRINT LEN(missing)\n"),
+        "0\n"
+    );
+}
+
+#[test]
+fn test_indexed_mid_assignment_freezes_indices_and_evaluates_arguments_once() {
+    let source = r#"
+DIM a$(2)
+a$(1) = "abcdef": a$(2) = "second"
+i = 1: trace$ = ""
+MID$(a$(IndexOnce()), StartOnce(), CountOnce()) = ReplacementOnce$()
+PRINT trace$; "|"; i; "|"; a$(1); "|"; a$(2)
+FUNCTION IndexOnce()
+    SHARED trace$, i
+    trace$ = trace$ + "I"
+    IndexOnce = i
+END FUNCTION
+FUNCTION StartOnce()
+    SHARED trace$, i
+    trace$ = trace$ + "S"
+    i = 2
+    StartOnce = 2
+END FUNCTION
+FUNCTION CountOnce()
+    SHARED trace$
+    trace$ = trace$ + "L"
+    CountOnce = 2
+END FUNCTION
+FUNCTION ReplacementOnce$()
+    SHARED trace$
+    trace$ = trace$ + "R"
+    ReplacementOnce$ = "XYZ"
+END FUNCTION
+"#;
+    assert_eq!(run_bas(source), "ISRL|2|aXYdef|second\n");
+}
+
+#[test]
+fn test_indexed_mid_assignment_snapshots_after_replacement_before_count() {
+    let source = r#"
+DIM a$(1)
+a$(1) = "abcdef"
+MID$(a$(1), 2, CountAndChange(a$(1))) = ReplaceAndChange$(a$(1))
+PRINT a$(1)
+FUNCTION ReplaceAndChange$(BYREF text$)
+    text$ = "UVWXYZ"
+    ReplaceAndChange$ = "12"
+END FUNCTION
+FUNCTION CountAndChange(BYREF text$)
+    PRINT text$
+    text$ = "later"
+    CountAndChange = 2
+END FUNCTION
+"#;
+    assert_eq!(run_bas(source), "UVWXYZ\nU12XYZ\n");
+}
+
+#[test]
+fn test_indexed_mid_assignment_rejects_invalid_destinations_before_side_effects() {
+    for declaration in ["CONST a = \"locked\"", "CONST a_1 = \"locked\""] {
+        let (mut interpreter, output) = input_session("");
+        interpreter.run_source(&format!(
+            "{declaration}\ncalls = 0\nFUNCTION Changed()\n SHARED calls\n calls = calls + 1\n Changed = 1\nEND FUNCTION\n"
+        )).unwrap();
+        let error = interpreter
+            .run_source("MID$(a(1), Changed()) = \"x\"\n")
+            .unwrap_err();
+        assert!(error.to_string().contains("constant"));
+        interpreter.run_source("PRINT calls\n").unwrap();
+        assert_eq!(output.into_string(), "0\n");
+    }
+    let (_, result) = run_bas_may_fail("OPTION EXPLICIT\nMID$(undeclared(1), 1) = \"x\"\n");
+    assert!(result.unwrap_err().to_string().contains("OPTION EXPLICIT"));
+    for source in [
+        "DIM a(1)\nMID$(a(1), 1) = \"x\"\n",
+        "TYPE Entry\n value AS STRING\nEND TYPE\nDIM a(1) AS Entry\nMID$(a(1), 1) = \"x\"\n",
+    ] {
+        let (_, result) = run_bas_may_fail(source);
+        assert!(matches!(
+            result
+                .unwrap_err()
+                .downcast_ref::<rice::error::RuntimeError>(),
+            Some(rice::error::RuntimeError::TypeMismatch { .. })
+        ));
+    }
+}
+
+#[test]
+fn test_indexed_mid_assignment_errors_leave_target_unchanged() {
+    for statement in [
+        "MID$(a$(1), 0) = \"x\"",
+        "MID$(a$(1), 1, -1) = \"x\"",
+        "MID$(a$(1), 1) = 42",
+        "MID$(a$(1), VAL(\"NaN\")) = \"x\"",
+        "MID$(a$(1), 1, EXP(1000)) = \"x\"",
+        "MID$(a$(\"bad\"), 1) = \"x\"",
+    ] {
+        let (mut interpreter, output) = input_session("");
+        interpreter
+            .run_source("DIM a$(1)\na$(1) = \"before\"\n")
+            .unwrap();
+        assert!(interpreter.run_source(statement).is_err(), "{statement}");
+        interpreter.run_source("PRINT a$(1)\n").unwrap();
+        assert_eq!(output.into_string(), "before\n", "{statement}");
+    }
+    for source in [
+        "MID$(a$(), 1) = \"x\"",
+        "MID$(a$(1:2), 1) = \"x\"",
+        "MID$(a(1).text, 1) = \"x\"",
+        "MID$(\"literal\", 1) = \"x\"",
+        "OPTION DIALECT \"ANSI\"\nMID$(a$(1), 1) = \"x\"",
+    ] {
+        let (_, result) = run_bas_may_fail(source);
+        assert!(
+            result
+                .unwrap_err()
+                .downcast_ref::<rice::error::ParseError>()
+                .is_some(),
+            "{source}"
+        );
+    }
+}
+
+#[test]
 fn test_byref_array_elements_in_subs_functions_and_records() {
     let source = std::fs::read_to_string("tests/programs/byref_elements.bas").unwrap();
     for dialect in ["QB", "ANSI"] {
@@ -2906,7 +3037,7 @@ fn test_indexed_input_eof_preserves_existing_values() {
 }
 
 #[test]
-fn test_indexed_input_preserves_string_default_rules() {
+fn test_indexed_input_uses_declared_string_defaults() {
     for dialect in ["QB", "ANSI"] {
         let source = format!(
             r#"
@@ -2915,12 +3046,12 @@ DIM words$(2), labels(2) AS STRING
 labels(1) = ""
 INPUT words$(1), labels(1)
 INPUT labels(2)
-PRINT words$(1); "|"; labels(1); "|"; labels(2) + 1
+PRINT words$(1); "|"; labels(1); "|"; labels(2)
 "#
         );
         assert_eq!(
-            run_bas_with_input(&source, "alpha,beta\n7\n"),
-            "? ? alpha|beta|8\n",
+            run_bas_with_input(&source, "alpha,beta\ngamma\n"),
+            "? ? alpha|beta|gamma\n",
             "{dialect}"
         );
     }
@@ -4212,6 +4343,397 @@ fn test_indexed_get_put_rejects_non_element_operands() {
                     .downcast_ref::<rice::error::ParseError>()
                     .is_some(),
                 "{operation} {target}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_const_lists_in_both_dialects_and_procedure_scopes() {
+    let fixture = std::fs::read_to_string("tests/programs/const_lists.bas").unwrap();
+    for dialect in ["QB", "ANSI"] {
+        let explicit = if dialect == "QB" {
+            "OPTION EXPLICIT\n"
+        } else {
+            ""
+        };
+        assert_eq!(
+            run_bas(&format!(
+                "OPTION DIALECT \"{dialect}\"\n{explicit}{fixture}"
+            )),
+            "3:6:6:ok!\n7:8\n16:17\n"
+        );
+    }
+}
+
+#[test]
+fn test_const_lists_evaluate_left_to_right_once() {
+    for dialect in ["QB", "ANSI"] {
+        let source = format!(
+            r#"
+OPTION DIALECT "{dialect}"
+calls = 0
+CONST first = Bump(), second = Bump() + first, third = Bump() + second
+PRINT first; ":"; second; ":"; third; ":"; calls
+FUNCTION Bump()
+    SHARED calls
+    calls = calls + 1
+    Bump = calls
+END FUNCTION
+"#
+        );
+        assert_eq!(run_bas(&source), "1:3:6:3\n");
+    }
+}
+
+#[test]
+fn test_const_lists_keep_prior_definitions_and_initializer_effects_on_failure() {
+    for dialect in ["QB", "ANSI"] {
+        let explicit = if dialect == "QB" {
+            "OPTION EXPLICIT\n"
+        } else {
+            ""
+        };
+        for (declaration, expected_calls, duplicate) in [
+            (
+                "CONST first = Bump(), first = Bump(), later = Bump()",
+                2,
+                true,
+            ),
+            (
+                "CONST first = Bump(), failed = Bump() / 0, later = Bump()",
+                2,
+                false,
+            ),
+        ] {
+            let (mut interpreter, output) = input_session("");
+            interpreter.run_source(&format!(
+                "OPTION DIALECT \"{dialect}\"\n{explicit}DIM calls\nFUNCTION Bump()\nSHARED calls\ncalls = calls + 1\nBump = calls\nEND FUNCTION\n"
+            )).unwrap();
+            let error = interpreter.run_source(declaration).unwrap_err();
+            let runtime_error = error.downcast_ref::<rice::error::RuntimeError>().unwrap();
+            if duplicate {
+                assert!(matches!(
+                    runtime_error,
+                    rice::error::RuntimeError::DuplicateDefinition { .. }
+                ));
+            } else {
+                assert!(matches!(
+                    runtime_error,
+                    rice::error::RuntimeError::DivisionByZero
+                ));
+            }
+            interpreter
+                .run_source("CONST later = 99\nPRINT first; \":\"; calls; \":\"; later\n")
+                .unwrap();
+            assert_eq!(output.into_string(), format!("1:{expected_calls}:99\n"));
+            let error = interpreter.run_source("first = 9").unwrap_err();
+            assert!(error.to_string().contains("constant"));
+        }
+    }
+}
+
+#[test]
+fn test_const_lists_are_one_statement_for_handler_continue() {
+    for dialect in ["QB", "ANSI"] {
+        let source = format!(
+            r#"
+OPTION DIALECT "{dialect}"
+WHEN EXCEPTION IN
+    CONST first = 7, failed = 1 / 0, skipped = 99
+    PRINT first
+USE
+    PRINT "caught"
+    CONTINUE
+END WHEN
+CONST skipped = 42
+PRINT skipped
+"#
+        );
+        assert_eq!(run_bas(&source), "caught\n7\n42\n");
+    }
+}
+
+#[test]
+fn test_declared_array_defaults_fixture() {
+    let source = std::fs::read_to_string("tests/programs/declared_array_defaults.bas").unwrap();
+    for dialect in ["QB", "ANSI"] {
+        let explicit = if dialect == "QB" {
+            "OPTION EXPLICIT\n"
+        } else {
+            ""
+        };
+        assert_eq!(
+            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{explicit}{source}")),
+            "0|0|0\n0|0|0|0\nhello|6|0\n42|0\n0|0|0\n"
+        );
+    }
+}
+
+#[test]
+fn test_declared_array_defaults_redeclaration_and_lifetime() {
+    for dialect in ["QB", "ANSI"] {
+        let source = format!(
+            r#"
+OPTION DIALECT "{dialect}"
+TYPE Item
+    value AS NUMERIC
+END TYPE
+DIM changing(3) AS Item
+changing(1).value = 7
+DIM changing(3) AS STRING
+PRINT changing(1).value; "|"; LEN(changing(2))
+REDIM PRESERVE changing(4) AS NUMERIC
+PRINT changing(1).value; "|"; changing(2)
+REDIM changing(2) AS STRING
+PRINT LEN(changing(1)); "|"; LEN(changing(2))
+changing(1) = "kept"
+DIM changing AS NUMERIC
+PRINT LEN(changing(2))
+DIM changing(2)
+PRINT changing(1); "|"; changing(2)
+REDIM changing(2) AS STRING * 1
+changing(1) = "long"
+ERASE changing
+PRINT LEN(changing(1)); "|"; LEN(changing(2)); "|"; changing
+CLEAR
+PRINT LEN(changing(1)); "|"; UBOUND(changing)
+REDIM changing
+PRINT changing(1)
+"#
+        );
+        assert_eq!(
+            run_bas(&source),
+            "7|0\n7|0\n0|0\n0\nkept|0\n0|0|0\n0|2\n0\n"
+        );
+    }
+}
+
+#[test]
+fn test_declared_array_defaults_preserve_dynamic_defstr_for_untyped_arrays() {
+    assert_eq!(
+        run_bas(
+            r#"
+DIM apple(2), apricot(2) AS NUMERIC
+DEFSTR A
+PRINT LEN(apple(1)); "|"; apricot(1)
+DIM apple(2) AS NUMERIC
+PRINT apple(1)
+DIM apple(2)
+PRINT LEN(apple(1))
+DEFINT A
+PRINT apple(1)
+DIM apple(2) AS STRING
+PRINT LEN(apple(1))
+"#
+        ),
+        "0|0\n0\n0\n0\n0\n"
+    );
+}
+
+#[test]
+fn test_declared_array_defaults_apply_to_file_input() {
+    for dialect in ["QB", "ANSI"] {
+        let source = format!(
+            r#"
+OPTION DIALECT "{dialect}"
+OPEN "{{DIR}}/input.txt" FOR OUTPUT AS #1
+PRINT #1, "alpha,5"
+PRINT #1, "longer than one"
+CLOSE #1
+DIM labels(1) AS STRING, numbers$(1) AS NUMERIC, fixed(1) AS STRING * 1
+OPEN "{{DIR}}/input.txt" FOR INPUT AS #1
+INPUT #1, labels(1), numbers$(1)
+LINE INPUT #1, fixed(1)
+CLOSE #1
+PRINT labels(1); "|"; numbers$(1) + 1; "|"; fixed(1)
+"#
+        );
+        let (output, _) = run_bas_with_tmpdir(&source);
+        assert_eq!(output, "alpha|6|longer than one\n");
+    }
+}
+
+#[test]
+fn test_declared_array_defaults_keep_qb_binary_width_selection() {
+    let source = r#"
+DIM narrow%(1) AS DOUBLE, unsuffixed(1) AS INTEGER
+DIM text$(1) AS STRING * 2, receive(1) AS STRING
+narrow%(1) = 123
+unsuffixed(1) = 4
+text$(1) = "longer"
+OPEN "{DIR}/array.bin" FOR BINARY AS #1
+PUT #1, , narrow%(1)
+PUT #1, , unsuffixed(1)
+PUT #1, , text$(1)
+PRINT LOF(1)
+GET #1, 3, receive(1)
+GET #1, 11, text$(2)
+PRINT receive(1); "|"; text$(2)
+CLOSE #1
+"#;
+    let (output, dir) = run_bas_with_tmpdir(source);
+    assert_eq!(output, "18\n4|longer\n");
+    let mut expected = 123_i16.to_le_bytes().to_vec();
+    expected.extend_from_slice(&4_f64.to_le_bytes());
+    expected.extend_from_slice(b"\x06\0longer");
+    assert_eq!(
+        std::fs::read(dir.path().join("array.bin")).unwrap(),
+        expected
+    );
+}
+
+#[test]
+fn test_declared_array_defaults_persist_across_submissions_and_existing_scope_rules() {
+    let (mut interpreter, output) = input_session("");
+    interpreter.run_source("DIM values(2) AS STRING\n").unwrap();
+    interpreter
+        .run_source("PRINT LEN(values(1))\nCLEAR\n")
+        .unwrap();
+    interpreter.run_source("PRINT LEN(values(1))\n").unwrap();
+    interpreter.run_source(
+        "CALL SetDefaults\nPRINT values(2)\nSUB SetDefaults\n DIM values(2) AS NUMERIC\nEND SUB\n"
+    ).unwrap();
+    assert_eq!(output.into_string(), "0\n0\n0\n");
+}
+
+#[test]
+fn test_declared_array_defaults_apply_to_ansi_put_missing_elements() {
+    let source = r#"
+OPTION DIALECT "ANSI"
+DIM text(1) AS STRING, fixed(1) AS STRING * 20, numeric$(1) AS NUMERIC
+OPEN "{DIR}/defaults.bin" FOR BINARY AS #1
+PUT #1, , text(1)
+PUT #1, , fixed(1)
+PUT #1, , numeric$(1)
+PRINT LOF(1)
+GET #1, 1, text(1)
+PRINT text(1)
+CLOSE #1
+"#;
+    let (output, dir) = run_bas_with_tmpdir(source);
+    assert_eq!(output, "1\n0\n");
+    assert_eq!(
+        std::fs::read(dir.path().join("defaults.bin")).unwrap(),
+        b"0"
+    );
+}
+
+#[test]
+fn test_declared_array_defaults_survive_failed_dimension_changes() {
+    for operation in ["DIM", "REDIM", "REDIM PRESERVE"] {
+        let (mut interpreter, output) = input_session("");
+        interpreter.run_source("DIM text(2) AS STRING\n").unwrap();
+        assert!(
+            interpreter
+                .run_source(&format!("{operation} text(2 TO 1) AS NUMERIC\n"))
+                .is_err()
+        );
+        interpreter
+            .run_source("PRINT LEN(text(1)); \"|\"; UBOUND(text)\n")
+            .unwrap();
+        assert_eq!(output.into_string(), "0|2\n");
+    }
+}
+
+#[test]
+fn test_replace_strings_in_both_dialects() {
+    let source = std::fs::read_to_string("tests/programs/replace_strings.bas").unwrap();
+    for dialect in ["QB", "ANSI"] {
+        assert_eq!(
+            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{source}")),
+            "baXYZXYZ\nbba\nX abc\nbc\nbc\néé\n🙂X🙂\naabaa\n[]\n[]\nuntouched|unchanged\n",
+            "{dialect}"
+        );
+    }
+}
+
+#[test]
+fn test_reverse_search_in_both_dialects() {
+    let source = std::fs::read_to_string("tests/programs/reverse_search.bas").unwrap();
+    for dialect in ["QB", "ANSI"] {
+        assert_eq!(
+            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{source}")),
+            "4|2\n4|2\n1\n3|2|0\n0|0\n1|3\nfile.bas\n",
+            "{dialect}"
+        );
+    }
+}
+
+#[test]
+fn test_negative_decimal_places_in_both_dialects() {
+    let source = std::fs::read_to_string("tests/programs/negative_decimal_places.bas").unwrap();
+    for dialect in ["QB", "ANSI"] {
+        assert_eq!(
+            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{source}")),
+            "150|200|-200\n1400|-1400\n150|150\n1.3|1.2\n1\n1000\n",
+            "{dialect}"
+        );
+    }
+}
+
+#[test]
+fn test_string_transform_and_rounding_arguments_evaluate_once_left_to_right() {
+    let source = r#"
+trace$ = ""
+PRINT REPLACE$(Text$("1", "éaba"), Text$("2", "a"), Text$("3", "X"), Number("4", 2), Number("5", 1))
+PRINT trace$
+trace$ = ""
+PRINT INSTRREV(Text$("1", "banana"), Text$("2", "ana"), Number("3", 5))
+PRINT trace$
+trace$ = ""
+PRINT ROUND(Number("1", 125), Number("2", -1))
+PRINT trace$
+trace$ = ""
+PRINT TRUNCATE(Number("1", -125), Number("2", -1))
+PRINT trace$
+FUNCTION Text$(BYVAL tag$, BYVAL result$)
+    SHARED trace$
+    trace$ = trace$ & tag$
+    Text$ = result$
+END FUNCTION
+FUNCTION Number(BYVAL tag$, BYVAL result)
+    SHARED trace$
+    trace$ = trace$ & tag$
+    Number = result
+END FUNCTION
+"#;
+    for dialect in ["QB", "ANSI"] {
+        assert_eq!(
+            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{source}")),
+            "Xba\n12345\n2\n123\n130\n12\n-120\n12\n",
+            "{dialect}"
+        );
+    }
+}
+
+#[test]
+fn test_new_string_operations_and_negative_rounding_report_runtime_errors() {
+    for dialect in ["QB", "ANSI"] {
+        for (expression, expected_code) in [
+            ("REPLACE$(\"\", \"\", \"x\", 0)", 5),
+            ("REPLACE$(\"\", \"\", \"x\", 1, -2)", 5),
+            ("REPLACE$(\"\", \"\", 3, 1, 0)", 13),
+            ("REPLACE$(\"\", \"\", \"x\", 1, VAL(\"NaN\"))", 6),
+            ("REPLACE$()", 5),
+            ("INSTRREV(\"\", \"\", 0)", 5),
+            ("INSTRREV(\"\", 1)", 13),
+            ("INSTRREV(\"\", \"\", VAL(\"NaN\"))", 6),
+            ("INSTRREV(\"a\", \"a\", 1, 0)", 5),
+            ("ROUND(1, -309)", 5),
+            ("TRUNCATE(1, -309)", 5),
+            ("ROUND(1, \"-1\")", 13),
+            ("ROUND(MAXNUM(), -308)", 6),
+        ] {
+            let (_, result) = run_bas_may_fail(&format!(
+                "OPTION DIALECT \"{dialect}\"\nPRINT {expression}\n"
+            ));
+            let error = result.expect_err(expression);
+            let runtime = error.downcast_ref::<rice::error::RuntimeError>().unwrap();
+            assert_eq!(
+                runtime.basic_err_code(),
+                expected_code,
+                "{dialect}: {expression}"
             );
         }
     }

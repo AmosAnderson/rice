@@ -45,7 +45,7 @@ pub enum Stmt {
         expr: Expr,
     },
     MidAssign {
-        name: String,
+        target: InputTarget,
         start: Expr,
         len: Option<Expr>,
         expr: Expr,
@@ -55,8 +55,7 @@ pub enum Stmt {
         shared: bool,
     },
     Const {
-        name: String,
-        value: Expr,
+        decls: Vec<ConstDecl>,
     },
     Input(InputStmt),
     LineInput {
@@ -326,6 +325,12 @@ pub struct DimDecl {
     pub name: String,
     pub as_type: Option<BasicType>,
     pub dimensions: Option<Vec<(Expr, Option<Expr>)>>, // (upper,) or (lower, upper)
+}
+
+#[derive(Debug, Clone)]
+pub struct ConstDecl {
+    pub name: String,
+    pub value: Expr,
 }
 
 #[derive(Debug, Clone)]

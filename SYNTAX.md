@@ -61,7 +61,7 @@ QB comparisons return `-1`/`0`; ANSI comparisons return `1`/`0`. QB logical oper
 [LET] name = expr
 [LET] name(index [, index ...]) = expr
 DIM [SHARED] declaration [, declaration ...]
-CONST name = expr
+CONST name = expr [, name = expr ...]
 OPTION BASE {0 | 1}
 REDIM [PRESERVE] declaration [, declaration ...]
 ERASE name [, name ...]
@@ -81,7 +81,9 @@ PRINT LBOUND(table, 1); UBOUND(table, 2)
 REDIM PRESERVE values(20)
 ```
 
-Rice's initial OPTION BASE is **1 in both modes**. Ordinary array access does not enforce declared bounds/rank. Arrays use flattened variable keys; AS STRING does not determine untouched primitive element defaults, so use `$` names for string arrays. REDIM/ERASE have prefix-based removal and metadata limitations. SWAP accepts scalar names and array elements, resolves both locations once before exchanging their values, and uses ordinary numeric/string/record defaults for missing values. Members and slices are not SWAP targets. See [Arrays](docs/language-reference.md#arrays) and [Values, variables, and assignment](docs/language-reference.md#values-variables-and-assignment).
+Rice's initial OPTION BASE is **1 in both modes**. Ordinary array access does not enforce declared bounds/rank. Arrays use flattened variable keys. Explicit array AS chooses defaults for untouched elements: numeric zero, empty string, or a fresh record, overriding suffix/DEFSTR. It does not coerce existing elements or enforce fixed string lengths. Array metadata is interpreter-wide; REDIM/ERASE retain prefix-based removal and metadata limitations. SWAP accepts scalar names and array elements and resolves both locations once before exchanging their values. Members and slices are not SWAP targets. See [Arrays](docs/language-reference.md#arrays) and [Values, variables, and assignment](docs/language-reference.md#values-variables-and-assignment).
+
+CONST lists execute left to right, so later initializers can use earlier names. Earlier definitions and expression side effects survive a later failure. AS clauses and trailing commas are not accepted.
 
 QB-only declaration forms:
 
@@ -188,10 +190,11 @@ name$(start:end)
 QB substring assignment:
 
 ```text
-MID$(name$, start [, length]) = string-expression
+MID$(target, start [, length]) = string-expression
+MID$(names$(i), start [, length]) = string-expression
 ```
 
-Slices use 1-based inclusive endpoints. Slice assignment replaces the selected region and can change the string length; MID$ assignment has different overwrite semantics. See [User-defined types](docs/user-defined-types.md) and [String slicing](docs/string-slicing.md).
+Slices use 1-based inclusive endpoints. Slice assignment replaces the selected region and can change the string length. QB MID$ assignment overwrites a scalar or array element without changing its length; indices resolve once before the other expressions. See [User-defined types](docs/user-defined-types.md) and [String slicing](docs/string-slicing.md).
 
 ## DATA and console I/O
 
@@ -326,5 +329,16 @@ See [System and filesystem statements](docs/language-reference.md#system-and-fil
 The complete [Built-in function reference](docs/builtins.md) lists every implemented function, alias, argument count, type expectation, and known limitation. `MIN(number [, number ...])` and `MAX(number [, number ...])` select numeric extrema in both modes; each requires at least one numeric argument. Call spelling matters: use `RND()`, `PI()`, and `MAXNUM()` with parentheses; use bare `TIMER` and `FREEFILE`. An unknown `name(args)` may resolve as an array element instead of producing an unknown-function error. `VAL` accepts decimal prefixes with E/D exponents, and `ENVIRON$(index)` enumerates sorted environment entries (including interpreter overrides) from index 1; see the builtin reference for limits.
 
 `LEN(string)` counts Unicode scalar values. `LEN(record)` returns its current typed binary PUT byte count, including nested records and variable-string length headers; this size query works in both modes, while typed PUT serialization remains QB-specific.
+
+Both modes also support these Rice extensions:
+
+```text
+REPLACE$(text$, find$, replacement$ [, start [, count]])
+INSTRREV(text$, find$ [, start])
+ROUND(number [, places])
+TRUNCATE(number [, places])
+```
+
+REPLACE$ returns the suffix beginning at start, with nonoverlapping matches replaced; it does not retain the preceding text. INSTRREV searches backward and returns a character position or zero. String positions count Unicode scalar values. ROUND/TRUNCATE accept places from -308 through 308 after truncation; negative places select tens, hundreds, and higher powers of ten. The [builtin reference](docs/builtins.md) specifies defaults, empty-string behavior, validation, and overflow rules.
 
 `COMMAND$()` (alias `COMMAND()`) returns program arguments joined with spaces. Run `rice program.bas -- argument ...` to pass them; `--` protects dash-leading arguments from Rice option parsing. New library and REPL interpreters default to empty arguments. See [runtime](docs/runtime.md) for the complete CLI and library contract.

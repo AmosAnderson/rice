@@ -277,7 +277,9 @@ name, constants, and shared names. Ordinary undeclared reads that already find a
 value in an ancestor can still succeed; declaration checking is not a complete
 static scope check. Array bounds/type metadata is interpreter-wide rather than
 local to each call, so declaring the same array name in different procedures can
-affect later `LBOUND`, `UBOUND`, `MAT`, and record-array initialization.
+affect later `LBOUND`, `UBOUND`, `MAT`, and primitive/record array defaults. This
+includes explicit `AS STRING` and numeric array declarations; returning from a
+procedure does not restore a previous same-named array's metadata.
 
 See [Multi-Module Programming](multi-module.md) for the single-source restriction.
 

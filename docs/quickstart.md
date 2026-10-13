@@ -86,7 +86,7 @@ FOR i = LBOUND(scores) TO UBOUND(scores)
 NEXT i
 ```
 
-Bounds are inclusive. Write explicit lower bounds for portable intent, or set `OPTION BASE 0`/`OPTION BASE 1`. Ordinary array access does not enforce declared bounds or rank. Use `$`-suffixed string-array names so missing elements receive string defaults. See [arrays and limitations](language-reference.md).
+Bounds are inclusive. Write explicit lower bounds for portable intent, or set `OPTION BASE 0`/`OPTION BASE 1`. Ordinary array access does not enforce declared bounds or rank. Declare string arrays with `AS STRING`, `AS STRING * n`, or a `$`-suffixed name so missing elements receive empty string defaults. Explicit AS takes precedence over the suffix; fixed-length declarations do not pad or truncate ordinary assignments. See [arrays and limitations](language-reference.md).
 
 ## Procedures
 

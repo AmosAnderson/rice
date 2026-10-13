@@ -107,15 +107,19 @@ DIM name$                        ' String default from suffix
 DIM samples(1 TO 10) AS DOUBLE
 DIM code AS STRING * 8
 DIM SHARED total AS NUMERIC
-CONST limit = 10
-CONST greeting$ = "Hello"
+CONST limit = 10, doubled = limit * 2
+CONST greeting$ = "Hello", farewell$ = "Goodbye"
 ```
 
 `DIM [SHARED] declaration [, declaration ...]` accepts scalar names or dimensions, each with an optional `AS type`. Types are `NUMERIC`, `INTEGER`, `LONG`, `SINGLE`, `DOUBLE`, `STRING`, `STRING * length`, or a declared TYPE name. `length` is a nonnegative integer numeric literal, not a variable or expression. Numeric types all initialize to `0`; both primitive string forms initialize to `""`. A scalar record initializes its fields recursively.
 
-Declarations execute when reached. Repeating `DIM` resets the scalar value but does not clear existing array elements. A later `DIM` can replace bounds metadata. `AS` overrides the suffix for the initial scalar default. Fixed-length scalar strings are not padded/truncated by ordinary assignment; fixed widths apply when serializing declared record fields to binary files, not during ordinary field assignment. See the record and file references.
+Declarations execute when reached. Repeating `DIM` resets the scalar value but does not clear existing array elements. A later array `DIM` replaces bounds and explicit element-default metadata. `AS` overrides the suffix for the initial scalar default and for untouched array elements. Fixed-length scalar and array strings start empty and are not padded/truncated by ordinary assignment; fixed widths apply when serializing declared record fields to binary files, not during ordinary field assignment. See the record and file references.
 
-`CONST name = expression` evaluates the expression at execution time and creates one constant in the current scope. It has no `AS` clause or comma-separated declaration list. Duplicate definition in the same scope raises an error. Normal assignments and other checked write targets cannot change a constant; constants remain after `CLEAR`. Some declaration/reset paths do not use the same write checks, so do not treat CONST as comprehensive static enforcement.
+`CONST name = expression [, name = expression ...]` creates constants in the current scope in both dialects. Declarations run from left to right when the statement executes, so later expressions can use earlier constants in the same list. Expressions follow the usual runtime rules and may call functions; CONST does not require compile-time literals. Each comma must be followed by another complete declaration. An `AS` clause and a trailing comma are not accepted.
+
+Duplicate definition in the same scope raises an error. If an expression or definition fails, earlier constants and expression side effects remain, and later declarations are skipped; the list is not rolled back. The failing name is marked declared before its expression runs, following the single-declaration behavior. An initializer runs before its duplicate-name check, so its side effects also persist if that check fails. The whole list is one statement for exception-handler CONTINUE/RESUME behavior.
+
+Normal assignments and other checked write targets cannot change a constant; constants remain after `CLEAR`. Some declaration/reset paths do not use the same write checks, so do not treat CONST as comprehensive static enforcement.
 
 ### Assignment and type enforcement
 
@@ -160,7 +164,7 @@ Names count as declared through executed `DIM`, `REDIM`, `SHARED`, `STATIC`, `CO
 
 Both destinations are resolved from left to right, evaluating each index exactly once, before either value is read or written. Thus `SWAP i, items(i)` selects the element using the old `i`; swapping a location with itself leaves its value unchanged. A target error leaves both destinations unwritten, although side effects from evaluating indices remain. Constants and `OPTION EXPLICIT` follow the same checks as INPUT targets. Array targets retain the usual flattened storage and do not add bounds or rank checks.
 
-`CLEAR` removes variable values in the current environment and resets the DATA cursor to the start. It retains constants, declaration flags, procedure/type definitions, options, and array bounds metadata. It does not close files or fully recreate the interpreter. Compatibility arguments after CLEAR are parsed and ignored.
+`CLEAR` removes variable values in the current environment and resets the DATA cursor to the start. It retains constants, declaration flags, procedure/type definitions, options, and array bounds/default-type metadata. It does not close files or fully recreate the interpreter. Compatibility arguments after CLEAR are parsed and ignored.
 
 `SHARED name [, name ...]`, `DIM SHARED ...`, `STATIC ...`, and QB-only `COMMON [SHARED] ...` control procedure state. COMMON does not load or link modules; `CHAIN` is unsupported. See [Procedures](procedures.md) and [Multiple modules](multi-module.md) for exact sharing and persistence limitations.
 
@@ -240,10 +244,12 @@ Rice arrays are currently sparse values stored under flattened names, separate f
 - Indices truncate toward zero using checked signed 64-bit conversion. `a(1.9)` accesses `a(1)`.
 - `a(1, 2)` is stored under the key `A_1_2`. This can collide with a scalar named `a_1_2` or an element `a_1(2)`. Avoid such scalar/array naming combinations.
 - Scalar `a` and its elements coexist. A bare array name in an ordinary expression is the scalar slot, not a whole-array value.
-- Missing primitive elements use the name/DEFSTR default, not the DIM `AS` clause. For example, an unsuffixed `DIM a(2) AS STRING` still yields numeric `0` for untouched `a(1)`; use `a$` for string arrays. UDT arrays separately retain record type metadata and initialize missing records lazily.
+- Missing elements use an explicit `DIM`/`REDIM` `AS` type: `STRING` and `STRING * n` yield `""`, all numeric types yield `0`, and a TYPE name yields a recursively initialized record. `AS` takes precedence over the name suffix and DEFSTR; for example, `DIM a(2) AS STRING` makes untouched `a(1)` a string, while `DIM a$(2) AS NUMERIC` makes it numeric. Without `AS`, the current suffix/DEFSTR rules determine defaults, including later DEFtype changes. UDT records initialize lazily on ordinary reads.
 - `DIM` updates metadata and a scalar default but does not erase existing elements. Array assignment evaluates the right-hand value before its index expressions.
 
-`REDIM [PRESERVE]` accepts the same declarations as DIM. Without PRESERVE, it removes existing keys beginning with the array name plus `_`; with PRESERVE, it keeps **all** such values, including values outside new bounds. It permits changes to any dimension instead of enforcing QBasic's last-dimension-only restriction. It resets the scalar slot even with PRESERVE. A failed REDIM can already have removed data. Type-changing REDIM of a UDT array is not a reliable conversion and may retain old record metadata.
+Element-default types are retained in both dialects and used by ordinary reads, empty DATA items in READ, console/file INPUT, SWAP, and indexed GET/PUT. Existing values take precedence over defaults, and assignments remain permissive: changing `AS` does not convert populated elements or impose fixed string lengths. Primitive `AS` types do not change QBasic binary GET/PUT width selection; see [File I/O](file-io.md#qbasic-typed-binary-serialization).
+
+`REDIM [PRESERVE]` accepts the same declarations as DIM. Without PRESERVE, it removes existing keys beginning with the array name plus `_`; with PRESERVE, it keeps **all** such values, including values outside new bounds. It permits changes to any dimension instead of enforcing QBasic's last-dimension-only restriction. It resets the scalar slot even with PRESERVE. A failed REDIM can already have removed data. A successful array DIM or REDIM replaces the explicit default type; omitting AS clears a previous explicit type and restores suffix/DEFSTR defaults. Type-changing REDIM PRESERVE leaves old values unchanged while new missing elements use the new type. Scalar DIM leaves a same-named array's metadata intact; REDIM without dimensions removes it.
 
 `ERASE name [, name ...]` removes keys with that prefix and sets the scalar slot to numeric `0`. It retains dimension/type metadata and declaration state. Because removal uses a name prefix, ERASE and non-PRESERVE REDIM can also remove colliding scalar names or another array with that prefix. They do not implement a distinction between static and dynamic arrays. Array parameter/sharing limitations are in [Procedures](procedures.md); whole-matrix operations are in [MAT operations](mat-operations.md).
 
@@ -438,7 +444,7 @@ PRINT writes expressions consecutively. `;` adds no spacing; `,` advances to the
 
 Console INPUT accepts an optional literal prompt followed by `;` or `,` and one or more scalar or array-element targets. **Both separators currently append `? ` to the prompt**; there is no comma form that suppresses the question mark. With no prompt it prints `? `. A single target receives the whole line; multiple targets split on commas and trim each field, with no quoted-CSV handling. A target whose current/default value is a string receives text; other targets require a finite numeric input. Incorrect field counts or numeric values print `? Redo from start` and retry without partial assignment. End-of-input raises error 62.
 
-INPUT resolves all destination indices once, left to right, before prompting or consuming file data. Console retries keep those destinations. Values are assigned only after the whole input list succeeds, so `INPUT i, values(i)` uses the value of `i` from before input; this differs from sequential READ. Failed destination resolution consumes no input, though side effects from index expressions are not rolled back. Primitive array defaults follow ordinary element reads; use `$` names for untouched string-array elements, since an unsuffixed array's `AS STRING` metadata alone does not establish their defaults.
+INPUT resolves all destination indices once, left to right, before prompting or consuming file data. Console retries keep those destinations. Values are assigned only after the whole input list succeeds, so `INPUT i, values(i)` uses the value of `i` from before input; this differs from sequential READ. Failed destination resolution consumes no input, though side effects from index expressions are not rolled back. Primitive array defaults follow ordinary element reads, including explicit AS STRING/STRING * n declarations for untouched string elements.
 
 LINE INPUT takes an optional literal prompt and one scalar or array-element target; it removes the input line ending and assigns the remaining text, even to an unsuffixed target. It resolves its indices once before reading and prints the prompt verbatim without `? `. Record members and slices remain unsupported. `LINE INPUT #` additionally requires a string target. `INPUT$` and `INKEY$`, cursor statements, screen behavior, and output accounting are detailed in [Console](console.md) and [Built-in functions](builtins.md).
 
@@ -452,7 +458,7 @@ These statement families are fully specified in their linked references:
 |---|---|
 | [Procedures](procedures.md) | `SUB ... END SUB`, `FUNCTION ... END FUNCTION`, `CALL`, implicit SUB calls, `DECLARE SUB/FUNCTION`, parameter `BYVAL/BYREF`, static procedures, `STATIC`, `SHARED`, `DIM SHARED`, QB `COMMON`, QB `DEF FN` |
 | [User-defined types](user-defined-types.md) | `TYPE ... END TYPE`, nested fields, `DIM ... AS type`, record arrays, `record.field`, member assignment |
-| [Strings](string-slicing.md) | `name$(start:end)`, slice assignment, QB `MID$(name$, start [, length]) = replacement$` |
+| [Strings](string-slicing.md) | `name$(start:end)`, slice assignment, QB `MID$(target, start [, length]) = replacement$` for scalar or array-element targets |
 | [Matrices](mat-operations.md) | `MAT PRINT`, `MAT INPUT`, `MAT READ`, copy, `ZER`, `CON`, `IDN`, `INV`, `TRN`, addition/subtraction/multiplication, scalar multiplication, `DET` |
 
 ## System and filesystem statements

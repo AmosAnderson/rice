@@ -43,7 +43,7 @@ The **first recognized directive** in source order selects the mode for the enti
 | Single-line `IF expr THEN line-number [ELSE line-number]` | Numeric branch targets abbreviate GOTO; either branch may instead contain statements | Rejected; write explicit GOTO |
 | `ON ERROR GOTO`, `RESUME`, `ERROR` | Supported with limits below | Rejected |
 | `DEFINT`, `DEFLNG`, `DEFSNG`, `DEFDBL`, `DEFSTR`; `DEF FN` | Supported | Rejected |
-| `MID$` assignment | Supported | Rejected; use slice assignment |
+| `MID$` assignment | Scalar or array-element targets | Rejected; use slice assignment for scalar strings |
 | `OPTION EXPLICIT`, `COMMON [SHARED]` | Supported | Rejected |
 | `FIELD`, `LSET`, `RSET` | Supported | Rejected |
 | `ENVIRON` statement; `DATE$ =`, `TIME$ =` | Supported | Rejected |
@@ -74,6 +74,9 @@ Unless a row above explicitly rejects a construct, do not infer that its histori
 - FUNCTION result initialization from `AS type`, including fresh nested records; without AS, the existing name-suffix defaults apply. Assignment remains permissive. See [function result types](procedures.md#function-result-types).
 - `EXIT WHILE` and `EXIT SELECT`, as Rice extensions that leave the nearest matching active construct in the current procedure.
 - Individual array elements as GET/PUT operands, including QB typed binary records and ANSI raw string transfers; file layout still follows the selected dialect.
+- Comma-separated CONST declarations, initialized left to right at runtime.
+- Explicit array AS defaults for untouched elements, including empty strings and numeric zero. Existing values remain permissive, and metadata retains its interpreter-wide lifetime.
+- REPLACE$ and INSTRREV for case-sensitive Unicode string processing, plus negative places for ROUND/TRUNCATE. These are Rice extensions; see [builtins](builtins.md) for exact behavior.
 
 Identifiers are case-insensitive; string contents are case-sensitive. Undefined values initialize to `0` or `""` unless declaration enforcement applies. `=` assigns at statement level and compares inside expressions. `MOD` is `a - b * FLOOR(a / b)` in both profiles, including real operands and negative values. Plain `PRINT` adds neither leading nor trailing spaces to numbers and uses 16-column comma zones. Numeric and string operands do not implicitly convert for arithmetic or concatenation.
 

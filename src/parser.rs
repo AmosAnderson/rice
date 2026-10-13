@@ -655,7 +655,7 @@ impl Parser {
             return Ok(Stmt::ExprStmt(expr));
         };
 
-        // MID$ statement assignment: MID$(s$, start[, len]) = expr$
+        // MID$ statement assignment: MID$(target, start[, len]) = expr$
         if name == "MID$" && self.peek_at(1) == Some(&Token::LeftParen) {
             if self.dialect != crate::Dialect::QuickBasic {
                 return Err(ParseError::General {
@@ -665,7 +665,7 @@ impl Parser {
             }
             self.advance(); // consume MID$
             self.advance(); // consume (
-            let target = self.expect_identifier()?;
+            let target = self.parse_input_target()?;
             self.expect(Token::Comma)?;
             let start = self.parse_expr()?;
             let len = if matches!(self.peek(), Token::Comma) {
@@ -678,7 +678,7 @@ impl Parser {
             self.expect(Token::Equal)?;
             let expr = self.parse_expr()?;
             return Ok(Stmt::MidAssign {
-                name: target,
+                target,
                 start,
                 len,
                 expr,
@@ -880,10 +880,25 @@ impl Parser {
 
     fn parse_const(&mut self) -> Result<Stmt, ParseError> {
         self.advance(); // consume CONST
-        let name = self.expect_identifier()?;
-        self.expect(Token::Equal)?;
-        let value = self.parse_expr()?;
-        Ok(Stmt::Const { name, value })
+        let mut decls = Vec::new();
+        loop {
+            let name = self.expect_identifier()?;
+            self.expect(Token::Equal)?;
+            let value = self.parse_expr()?;
+            decls.push(ConstDecl { name, value });
+            if !matches!(self.peek(), Token::Comma) {
+                break;
+            }
+            self.advance();
+        }
+        if !self.at_stmt_end() {
+            return Err(ParseError::Expected {
+                line: self.current_line(),
+                expected: "comma or end of statement after constant declaration".into(),
+                found: format!("{:?}", self.peek()),
+            });
+        }
+        Ok(Stmt::Const { decls })
     }
 
     fn parse_input(&mut self) -> Result<Stmt, ParseError> {
@@ -2792,7 +2807,7 @@ impl Parser {
         if matches!(self.peek(), Token::Dot) {
             return Err(ParseError::General {
                 line: self.current_line(),
-                msg: "READ, INPUT, SWAP, GET, and PUT operands do not support record members"
+                msg: "READ, INPUT, SWAP, GET, PUT, and MID$ operands do not support record members"
                     .into(),
             });
         }
@@ -3103,6 +3118,57 @@ mod tests {
     fn parse_result(s: &str) -> Result<Program, ParseError> {
         let tokens = Lexer::new(s).tokenize().unwrap();
         Parser::new(tokens).parse_program()
+    }
+
+    #[test]
+    fn test_const_lists_preserve_order_and_expression_commas() {
+        for dialect in [crate::Dialect::QuickBasic, crate::Dialect::Ansi] {
+            let source = "CONST first = MIN(2, 3), second = first + 1, text$ = \"a,b\"\n";
+            let tokens = Lexer::with_dialect(source, dialect).tokenize().unwrap();
+            let program = Parser::with_dialect(tokens, dialect)
+                .parse_program()
+                .unwrap();
+            let Stmt::Const { decls } = &program.statements[0].stmt else {
+                panic!("expected CONST");
+            };
+            assert_eq!(
+                decls
+                    .iter()
+                    .map(|decl| decl.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["FIRST", "SECOND", "TEXT$"]
+            );
+            assert!(matches!(&decls[0].value, Expr::FunctionCall { args, .. } if args.len() == 2));
+            assert!(matches!(&decls[2].value, Expr::StringLit(value) if value == "a,b"));
+        }
+    }
+
+    #[test]
+    fn test_const_lists_reject_incomplete_declarations_and_missing_separators() {
+        for source in [
+            "CONST",
+            "CONST , a = 1",
+            "CONST a = 1,",
+            "CONST a = 1,\nb = 2",
+            "CONST a = 1, ' comment",
+            "CONST a = 1,, b = 2",
+            "CONST a = 1, b",
+            "CONST a = 1, b =",
+            "CONST a = 1 b = 2",
+            "CONST a = 1 CallSomething()",
+            "CONST a AS NUMERIC = 1",
+            "CONST a(1) = 2",
+            "CONST a.x = 2",
+        ] {
+            assert!(parse_result(source).is_err(), "{source}");
+        }
+        for source in [
+            "CONST a = 1, b = 2: PRINT b",
+            "IF 1 THEN CONST a = 1, b = 2 ELSE CONST c = 3, d = 4",
+            "WHEN EXCEPTION IN\nCONST a = 1, b = 2 USE\nCONST c = 3, d = 4 END WHEN",
+        ] {
+            assert!(parse_result(source).is_ok(), "{source}");
+        }
     }
 
     #[test]
