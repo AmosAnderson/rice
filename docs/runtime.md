@@ -1,6 +1,6 @@
 # Running Rice, the REPL, and editor integration
 
-This page describes Rice BASIC 0.15.0. See the [quick start](quickstart.md), [language specification](language-reference.md), and [dialect selection rules](dialects.md).
+This page describes Rice BASIC 0.15.1. See the [quick start](quickstart.md), [language specification](language-reference.md), and [dialect selection rules](dialects.md).
 
 ## Build and command line
 
@@ -42,9 +42,12 @@ The CLI runs the interpreter on an 8 MiB stack thread to accommodate large debug
 | Platform | Archive suffix | Build host |
 |---|---|---|
 | Linux x64 | `x86_64-unknown-linux-gnu.tar.gz` | Ubuntu 22.04 (glibc; not a static/musl build) |
+| Linux ARM64 | `aarch64-unknown-linux-gnu.tar.gz` | Ubuntu 22.04 ARM64 (glibc; not a static/musl build) |
 | Windows x64 | `x86_64-pc-windows-msvc.zip` | Windows Server 2022 |
 | macOS Apple Silicon | `aarch64-apple-darwin.tar.gz` | macOS 15 |
 | macOS Intel | `x86_64-apple-darwin.tar.gz` | macOS 15 |
+
+For a Raspberry Pi running 64-bit Linux, choose `aarch64-unknown-linux-gnu`. Check `uname -m` for `aarch64` and `getconf LONG_BIT` for `64`. The ARM64 archive does not run on a 32-bit ARM OS; no ARMv6/ARMv7 release archive is provided. Linux archives require the system's glibc runtime and `libgcc_s.so.1`; Rust itself need not be installed. These are dynamically linked builds, so the CPU architecture alone does not guarantee compatibility with every Linux distribution.
 
 Archives are named `rice-<Cargo-version>-<target>.<extension>`. Each release includes `SHA256SUMS`; after downloading the archives, verify them with `sha256sum --check --ignore-missing SHA256SUMS` on Linux. On macOS use `shasum -a 256 <archive>`; on Windows use `Get-FileHash <archive> -Algorithm SHA256` and compare the result with the matching entry.
 
@@ -57,12 +60,12 @@ git tag -a vX.Y.Z -m "Rice BASIC X.Y.Z"
 git push --atomic origin master vX.Y.Z
 ```
 
-Each native runner installs stable Rust, runs `cargo test --locked`, and builds both optimized binaries from the validated commit using the lockfile. A release is published with generated notes and checksummed archives only after all four builds pass. The workflow checks the tag again before publication. It uses the repository's automatic `GITHUB_TOKEN`; no extra secret is required. Only the publishing job has write permission.
+Each native runner installs stable Rust, runs `cargo test --locked`, and builds both optimized binaries from the validated commit using the lockfile. Linux ARM64 is tested and built natively on `ubuntu-22.04-arm`. A release is published with generated notes and checksummed archives only after all five builds pass. The workflow checks the tag again before publication. It uses the repository's automatic `GITHUB_TOKEN`; no extra secret is required. Only the publishing job has write permission.
 
 To release a tag that predates this workflow, or retry a release, use **Actions → Release → Run workflow** on `master` and supply the existing tag. The equivalent CLI command is:
 
 ```sh
-gh workflow run release.yml --ref master -f tag=v0.15.0
+gh workflow run release.yml --ref master -f tag=v0.15.1
 ```
 
 Manual runs enforce the same master-history check and build the tagged source. A new release is staged as a draft until all assets are uploaded. Retries resume uploads to an existing draft; an already published release is left unchanged. Publish a new tag to distribute changed binaries. Push release tags individually: [GitHub does not emit tag-push events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#push) when more than three tags are pushed together; use manual runs for those tags.

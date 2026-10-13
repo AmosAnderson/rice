@@ -1,12 +1,12 @@
 # RICE BASIC
 
-Rice BASIC 0.15.0 is a text-mode BASIC interpreter written in Rust, with an interactive REPL, file execution, and a stdio language server. It defaults to **QBasic compatibility mode** and also provides an **ANSI-style mode** inspired by ANSI X3.113-1991 Full BASIC.
+Rice BASIC 0.15.1 is a text-mode BASIC interpreter written in Rust, with an interactive REPL, file execution, and a stdio language server. It defaults to **QBasic compatibility mode** and also provides an **ANSI-style mode** inspired by ANSI X3.113-1991 Full BASIC.
 
 These are Rice dialects, not claims of complete QBasic 1.1 or ANSI conformance. Both share extensions and implementation limits. The documentation specifies the behavior implemented in this repository, including accepted syntax that has partial or no runtime effect.
 
 ## Start here
 
-Download prebuilt `rice` and `rice-lsp` binaries for Linux, Windows, and macOS from [GitHub Releases](https://github.com/AmosAnderson/rice/releases). Each archive includes both executables, the documentation, and the MIT license. See [release downloads and publishing](docs/runtime.md#release-downloads-and-publishing) for platforms, checksums, and the tag-based release process.
+Download prebuilt `rice` and `rice-lsp` binaries for Linux (x64 and ARM64), Windows, and macOS from [GitHub Releases](https://github.com/AmosAnderson/rice/releases). The Linux ARM64 archive supports compatible Raspberry Pi systems running a 64-bit OS. Each archive includes both executables, the documentation, and the MIT license. See [release downloads and publishing](docs/runtime.md#release-downloads-and-publishing) for platforms, checksums, and the tag-based release process.
 
 To build from source:
 
@@ -48,6 +48,8 @@ Both modes support structured control flow (including `NEXT j, i` for nested loo
 Porting details that matter immediately: arrays default to **base 1 in both modes**; numeric values are stored as `f64` regardless of suffix; PRINT uses 16-character comma zones and no leading/trailing positive-number space; assignment types and array bounds are not strictly enforced. Read the compatibility guide before relying on historical BASIC behavior.
 
 Version 0.15.0 adds array-element BYREF arguments and SWAP targets, empty and signed-plus DATA fields, QB `RETURN label`, binary record sizes through `LEN(record)`, and independent matrix determinants through `DET(matrix)`. The references above document evaluation order, error behavior, and dialect limits for each addition.
+
+Version 0.15.1 adds native Linux ARM64 release builds of both binaries, with the full test suite run on an ARM64 runner before publication.
 
 ## REPL and editor support
 

@@ -1,6 +1,6 @@
 # Compatibility gaps, quirks, and unknowns
 
-This page records Rice BASIC **0.15.0 implementation behavior**. QBasic is the default; `OPTION DIALECT "ANSI"` selects the ANSI-style dialect. Neither name establishes full conformance to QBasic 1.1 or ANSI X3.113-1991. The complete Rice specification is the [core reference](language-reference.md), [builtins](builtins.md), [dialect table](dialects.md), and linked topic guides.
+This page records Rice BASIC **0.15.1 implementation behavior**. QBasic is the default; `OPTION DIALECT "ANSI"` selects the ANSI-style dialect. Neither name establishes full conformance to QBasic 1.1 or ANSI X3.113-1991. The complete Rice specification is the [core reference](language-reference.md), [builtins](builtins.md), [dialect table](dialects.md), and linked topic guides.
 
 “Implemented” means supported by the parser/runtime described here. “Partial” means accepted syntax or familiar names have a smaller or different effect. “Unverified” means there is no established compatibility guarantee; it does not assert a known failure.
 
