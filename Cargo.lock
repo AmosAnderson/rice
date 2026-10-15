@@ -702,7 +702,7 @@ dependencies = [
 
 [[package]]
 name = "rice"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "crossterm",
  "rusqlite",

@@ -1,6 +1,6 @@
 # Built-in functions
 
-This is the function reference for Rice BASIC 0.20.0. The [language reference](language-reference.md) defines expression operators and truth values.
+This is the function reference for Rice BASIC 0.20.1. The [language reference](language-reference.md) defines expression operators and truth values.
 
 ## Calling conventions and types
 

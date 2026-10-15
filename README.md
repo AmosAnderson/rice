@@ -1,6 +1,6 @@
 # RICE BASIC
 
-Rice BASIC 0.20.0 is a text-mode BASIC interpreter written in Rust, with an interactive REPL, file execution, and a stdio language server. Rice defines its own language and evolves its semantics through its specification and tests.
+Rice BASIC 0.20.1 is a text-mode BASIC interpreter written in Rust, with an interactive REPL, file execution, and a stdio language server. Rice defines its own language and evolves its semantics through its specification and tests.
 
 The Rice specification is authoritative. Rice provides exact integers, booleans, byte buffers, Unicode strings, records, floating-point numbers, and NULL values within one language. Bundled SQLite support provides databases, bound SQL parameters, result rows, and transactions.
 
@@ -89,6 +89,8 @@ Version 0.20.0 expands the type system and strengthens runtime behavior:
 - Fixes for scoped array access, rejected declarations, buffered file positioning and records, exception recovery, matrix boundaries, and numeric formatting.
 
 The [data type reference](docs/data-types.md) documents conversion and migration rules. The runtime fixes include regression coverage for file I/O failures and numeric limits.
+
+Version 0.20.1 adds bundled SQLite support: parameterized SQL, native values and NULL, materialized query results, transactions and savepoints, file modes, and connection cleanup. See the [SQLite guide](docs/sqlite.md) for examples and error recovery.
 
 ## REPL and editor support
 

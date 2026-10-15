@@ -1,6 +1,6 @@
 # Rice BASIC documentation
 
-This documentation is the authoritative specification of **Rice BASIC 0.20.0 as implemented**. Rice develops its own semantics. Implementation limits, ignored syntax, and unverified areas are documented explicitly.
+This documentation is the authoritative specification of **Rice BASIC 0.20.1 as implemented**. Rice develops its own semantics. Implementation limits, ignored syntax, and unverified areas are documented explicitly.
 
 ## Complete specification
 

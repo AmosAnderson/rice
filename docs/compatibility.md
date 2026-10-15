@@ -1,6 +1,6 @@
 # Implementation limits
 
-This page records Rice BASIC **0.20.0 implementation behavior**, constraints, and partial features. The authoritative Rice specification is the [core reference](language-reference.md), [native types](data-types.md), [builtins](builtins.md), and linked topic guides.
+This page records Rice BASIC **0.20.1 implementation behavior**, constraints, and partial features. The authoritative Rice specification is the [core reference](language-reference.md), [native types](data-types.md), [builtins](builtins.md), and linked topic guides.
 
 “Implemented” means supported by the parser/runtime described here. “Partial” means accepted syntax or familiar names have a smaller or different effect. “Unverified” identifies behavior that has not been established by the available tests or inspection.
 
