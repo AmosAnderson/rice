@@ -1,6 +1,6 @@
 # Quick start
 
-Rice defaults to QBasic compatibility mode. Its ANSI-style mode and shared extensions are documented in the [language reference](language-reference.md). Neither mode implements every feature of its namesake; consult [compatibility notes](compatibility.md) when porting code.
+The [language reference](language-reference.md) defines Rice's syntax and semantics. See [implementation limits](compatibility.md) for unsupported operations and known restrictions.
 
 ## Build and run
 
@@ -10,7 +10,6 @@ From this repository, with a Rust toolchain supporting edition 2024:
 cargo build --release --bin rice
 cargo run
 cargo run -- hello.bas
-cargo run -- --dialect ansi hello.bas
 ```
 
 The release binary is `target/release/rice` (`rice.exe` on Windows). Save this as `hello.bas`:
@@ -21,23 +20,16 @@ PRINT "Hello, World!"
 
 Relative file paths in a program refer to the process working directory. Pass program arguments with `rice program.bas -- one two`; `COMMAND$()` returns `"one two"`. The `--` separator also allows arguments beginning with `-`. See [runtime](runtime.md) for all flags, argument rules, and editor setup.
 
-## Choose a dialect
-
-Put a directive at the start of a program for predictable parsing and editor diagnostics:
+## Basic language rules
 
 ```basic
-OPTION DIALECT "QB"
 PRINT 1 = 1                ' -1
 PRINT "Hello" + " world"
 ```
 
-```basic
-OPTION DIALECT "ANSI"
-PRINT 1 = 1                ' 1
-PRINT "Hello" & " world"
-```
-
-QB uses bitwise numeric `AND`, `OR`, `NOT`, and `XOR` and defaults procedure parameters to BYREF. ANSI uses logical operators and defaults parameters to BYVAL. **Both currently default array lower bounds to 1.** A source directive applies to the whole source unit, even if placed later. See [dialects](dialects.md) for exact rules.
+Numeric `AND`, `OR`, `NOT`, and `XOR` are bitwise. Native BOOL values use logical
+operations. Procedure parameters default to BYREF, and array lower bounds default
+to 1. See the [language reference](language-reference.md) for exact rules.
 
 ## Variables, strings, and output
 
@@ -52,9 +44,9 @@ PRINT name$(2:4)
 PRINT "Hello" & ", " & name$
 ```
 
-Names are case-insensitive. Uninitialized numeric variables read as `0`, `$` names as `""`. Numeric storage is `f64`; QB numeric suffixes distinguish names but do not enforce integer or single-precision storage. `AS` declarations and suffixes mostly establish defaults, not strict assignment types, so use consistent types in your own code.
+Names are case-insensitive. Declared and suffixed variables enforce their type: INTEGER is i16, LONG i32, SINGLE f32, NUMERIC/DOUBLE f64, and INT64 i64. BOOL, BYTE, BYTES, STRING, and records are also supported. Fixed strings pad or truncate to their character count. Unsuffixed implicit variables remain dynamic unless a DEFtype rule applies. Use CINT64("9223372036854775807") for an exact large integer. See [Data types and declarations](data-types.md).
 
-PRINT semicolons add no spacing; commas advance to 16-character zones; a trailing separator suppresses the newline. Positive numbers have no automatic leading/trailing space. String positions are 1-based Unicode character positions. Double a quote inside a string to include it: `PRINT "She said ""hi"""` prints `She said "hi"`. This works in both Rice dialects; `CHR$(34)` also produces a quote.
+PRINT semicolons add no spacing; commas advance to 16-character zones; a trailing separator suppresses the newline. Positive numbers have no automatic leading/trailing space. String positions are 1-based Unicode character positions. Double a quote inside a string to include it: `PRINT "She said ""hi"""` prints `She said "hi"`. This works; `CHR$(34)` also produces a quote.
 
 ## Decisions and loops
 
@@ -72,7 +64,7 @@ FOR i = 1 TO 15
 NEXT i
 ```
 
-Both modes also support single-line IF, WHILE/WEND, DO/LOOP, SELECT CASE, and GOTO. Use explicit comparison conditions when sharing code between modes; `NOT` has different numeric behavior in QB. See [control flow](language-reference.md).
+Rice also supports single-line IF, WHILE/WEND, DO/LOOP, SELECT CASE, and GOTO. See [control flow](language-reference.md).
 
 ## Arrays
 
@@ -86,7 +78,7 @@ FOR i = LBOUND(scores) TO UBOUND(scores)
 NEXT i
 ```
 
-Bounds are inclusive. Write explicit lower bounds for portable intent, or set `OPTION BASE 0`/`OPTION BASE 1`. Ordinary array access does not enforce declared bounds or rank. Declare string arrays with `AS STRING`, `AS STRING * n`, or a `$`-suffixed name so missing elements receive empty string defaults. Explicit AS takes precedence over the suffix; fixed-length declarations do not pad or truncate ordinary assignments. See [arrays and limitations](language-reference.md).
+Bounds are inclusive. Set OPTION BASE 0/1 or use explicit lower bounds. Ordinary indexing does not enforce bounds or rank. Array declarations enforce their element types; STRING defaults empty and STRING * n defaults to n spaces and pads/truncates assignments. Explicit AS overrides suffix shorthand. See [arrays and limitations](language-reference.md#arrays).
 
 ## Procedures
 
@@ -103,11 +95,11 @@ CALL Greet("World")
 PRINT Square(5)
 ```
 
-A function returns by assigning to its own name. Explicit BYVAL avoids the dialect-dependent default. Rice implements BYREF as copy-in/copy-out for variables and individual array elements, with indices evaluated once before the call. Whole-array parameters and record-field write-back remain unsupported; read [procedures and scope](procedures.md) before using shared state.
+A function returns by assigning to its own name. Use BYVAL when a procedure should receive an independent value. Rice implements BYREF as copy-in/copy-out for variables and individual array elements, with indices evaluated once before the call. Whole-array parameters and record-field write-back remain unsupported; read [procedures and scope](procedures.md) before using shared state.
 
 ## Text files
 
-This example works in either mode and creates `output.txt` in the working directory:
+This example works and creates `output.txt` in the working directory:
 
 ```basic
 OPEN "output.txt" FOR OUTPUT AS #1
@@ -120,7 +112,7 @@ PRINT text$
 CLOSE #1
 ```
 
-ANSI-style OPEN syntax is also accepted in both modes:
+The named-channel OPEN syntax is also accepted:
 
 ```basic
 OPEN #1: NAME "output.txt", ACCESS INPUT, ORGANIZATION SEQUENTIAL
@@ -129,11 +121,11 @@ PRINT text$
 CLOSE #1
 ```
 
-See [file I/O](file-io.md) before using RANDOM/BINARY records: GET/PUT semantics differ substantially by dialect.
+See [file I/O](file-io.md) before using RANDOM/BINARY records: GET/PUT use typed binary layouts and raw byte buffers.
 
 ## Errors
 
-Structured exceptions work in both modes:
+Structured exceptions work:
 
 ```basic
 WHEN EXCEPTION IN
@@ -143,10 +135,9 @@ USE
 END WHEN
 ```
 
-QB also supports classic top-level handlers:
+Rice also supports classic top-level handlers:
 
 ```basic
-OPTION DIALECT "QB"
 10 ON ERROR GOTO 100
 20 PRINT 1 / 0
 30 END

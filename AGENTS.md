@@ -18,31 +18,22 @@
 ## BASIC Semantics To Preserve
 
 - Identifiers are case-insensitive and normalized to UPPERCASE internally.
-- Only two primitive types exist in memory: NUMERIC `f64` and STRING; records are aggregates. `$` and declarations choose string defaults, while other names default numeric unless DEFSTR applies. Ordinary assignments do not strictly enforce these types; see `docs/language-reference.md`.
-- Undefined variables auto-initialize to `0` or `""` unless `OPTION EXPLICIT` requires a declaration; preserve its documented suffix/declaration exceptions.
+- Runtime values include NUMERIC/DOUBLE `f64`, INTEGER `i16`, LONG `i32`, SINGLE `f32`, INT64 `i64`, BOOL, BYTE `u8`, BYTES, STRING, and records. All declared types are enforced across variables, arrays, fields, parameters, results, and persistent/shared bindings. Integer assignments require exact in-range values; fixed strings pad/truncate to their Unicode character length. Unsuffixed implicit variables remain dynamic unless DEFtype applies. See `docs/data-types.md`.
+
+- Undefined variables initialize to the selected type's default unless OPTION EXPLICIT requires a declaration; preserve its documented declaration exceptions.
 - Statement-level `=` is assignment; inside expressions it is comparison.
 - `MOD` works on real numbers.
-- PRINT formatting intentionally has no leading space for positive numbers and uses 16-character comma zones.
-- Arrays currently use flattened keys; avoid broad array-storage refactors unless the task and tests are specifically about that.
-- **Dialect Semantics**: Rice BASIC provides QBasic 1.1 compatibility mode by default and ANSI-style mode via `OPTION DIALECT "ANSI"` or `--dialect ansi`. `OPTION DIALECT "QB"`, `OPTION DIALECT "QBasic 1.1"`, `--dialect qb`, and `--compat` explicitly select the default QBasic-compatible mode.
-  - **ANSI Mode Semantics**:
-    - Suffixes other than `$` are not supported.
-    - Truth values are `1.0` (true) and `0.0` (false).
-    - String concatenation is `&`, not `+`; `+` remains arithmetic.
-    - Logical `AND`, `OR`, `NOT`, `XOR` are logical, not bitwise.
-    - `OPTION BASE` defaults to 1.
-    - Subroutine/function parameters are `BYVAL` by default.
-    - `GOSUB`/`RETURN` and `ON GOTO/GOSUB` are not supported.
-  - **QuickBasic Mode Semantics**:
-    - `OPTION BASE` currently defaults to 1 in this mode too; this is a documented QBasic compatibility gap.
-    - Suffixes (`%`, `!`, `#`, `&`, `$`) are supported in variable names to distinguish different variables (which all hold `f64` or `String` values in memory).
-    - Truth values are `-1.0` (true) and `0.0` (false).
-    - String concatenation is `+` (for strings) or `&`.
-    - Logical `AND`, `OR`, `NOT`, `XOR` perform bitwise operations on numeric values.
-    - Subroutine/function parameters are `BYREF` by default. Passing a parenthesized argument (e.g. `MySub (x)`) forces it to be evaluated as an expression, passing it by value (`BYVAL`).
-    - `GOSUB`/`RETURN` (using a return address stack) and `ON GOTO/GOSUB` are supported.
-    - Classic top-level `ON ERROR GOTO`/`RESUME`, `ERROR`, `ERR`, and `ERL` are supported.
-    - Structured binary record I/O (`GET`/`PUT` with recursive UDT field serialization), `FIELD`/`LSET`/`RSET`, packed MK*/CV* conversion functions, and `APPEND` file mode are supported.
+- PRINT has no leading space for positive numbers and uses 16-character comma zones.
+- Arrays use flattened keys; avoid broad storage refactors unless the task and tests specifically cover them.
+- Rice BASIC defines one language; its specification is authoritative.
+- OPTION BASE defaults to 1.
+- Suffixes `%`, `&`, `!`, `#`, `$` enforce INTEGER, LONG, SINGLE, DOUBLE, STRING unless AS overrides them. DIM/STATIC without AS use the suffix or NUMERIC. DEFtype establishes enforced types for newly initialized implicit bindings.
+- Legacy numeric truth is -1/0; comparisons involving native values return BOOL.
+- Both `+` and `&` concatenate strings or byte buffers.
+- Numeric logical operators are bitwise; BOOL operands select boolean logic.
+- Parameters default to BYREF. Parenthesized expressions suppress copy-back.
+- GOSUB/RETURN, computed ON GOTO/GOSUB, and top-level ON ERROR/RESUME remain supported.
+- Structured binary GET/PUT follows retained declarations and recursive UDT layouts. FIELD/LSET/RSET, packed conversions, and APPEND remain supported.
 
 ## Parser And Interpreter Gotchas
 
@@ -61,8 +52,8 @@
 
 ## Documentation
 
-- `docs/README.md` indexes the complete implemented specification for both modes; `SYNTAX.md` is a compact syntax index.
+- `docs/README.md` indexes the Rice language specification; `SYNTAX.md` is a compact syntax index.
 - `docs/language-reference.md` owns core syntax/semantics; `docs/builtins.md` owns the complete function inventory. Topic guides cover files, errors, console, formatting, procedures, records, MAT, strings, and modules.
-- `docs/dialects.md` records exact mode differences; `docs/compatibility.md` records verified gaps, ignored syntax, and unverified external conformance.
+- `docs/compatibility.md` records implementation limits, ignored syntax, and remaining verification gaps.
 - `docs/runtime.md` specifies CLI, REPL, host operations, library entry points, and LSP limits.
-- When changing behavior, update its owning reference and relevant LSP hover/completion documentation. Do not describe accepted-but-ignored syntax as fully implemented or claim complete external-standard conformance.
+- When changing behavior, update its owning reference and relevant LSP hover/completion documentation. Describe accepted-but-ignored syntax explicitly and document only verified runtime behavior.

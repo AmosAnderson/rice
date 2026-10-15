@@ -15,7 +15,7 @@ fn run(args: &[&str]) -> Output {
         .unwrap()
 }
 
-fn expect_success(output: Output, arguments: &str, truth: i32) {
+fn expect_success(output: Output, arguments: &str) {
     assert!(
         output.status.success(),
         "{}",
@@ -26,34 +26,15 @@ fn expect_success(output: Output, arguments: &str, truth: i32) {
         String::from_utf8(output.stdout)
             .unwrap()
             .replace("\r\n", "\n"),
-        format!("[{arguments}]\n[{arguments}]\n{truth}\n")
+        format!("[{arguments}]\n[{arguments}]\n-1\n")
     );
 }
 
 #[test]
-fn cli_command_arguments_exclude_filename_and_dialect_options() {
+fn cli_command_arguments_exclude_filename() {
     let path = fixture();
-    expect_success(run(&[&path]), "", -1);
-    expect_success(run(&[&path, "Alpha", "second.bas"]), "Alpha second.bas", -1);
-    expect_success(
-        run(&[
-            "--dialect",
-            "ansi",
-            &path,
-            "Mixed",
-            "--compat",
-            "Case",
-            "--dialect",
-            "ANSI",
-        ]),
-        "Mixed Case",
-        1,
-    );
-    expect_success(
-        run(&["--dialect", "ansi", &path, "--compat", "tail"]),
-        "tail",
-        -1,
-    );
+    expect_success(run(&[&path]), "");
+    expect_success(run(&[&path, "Alpha", "second.bas"]), "Alpha second.bas");
 }
 
 #[test]
@@ -62,11 +43,10 @@ fn cli_command_arguments_preserve_spaces_unicode_and_empty_fields() {
     expect_success(
         run(&[&path, "", "Mixed Case", "é😀", ""]),
         " Mixed Case é😀 ",
-        -1,
     );
-    expect_success(run(&[&path, ""]), "", -1);
-    expect_success(run(&[&path, "left", "", "right"]), "left  right", -1);
-    expect_success(run(&[&path, "say \"hello\""]), "say \"hello\"", -1);
+    expect_success(run(&[&path, ""]), "");
+    expect_success(run(&[&path, "left", "", "right"]), "left  right");
+    expect_success(run(&[&path, "say \"hello\""]), "say \"hello\"");
 }
 
 #[test]
@@ -75,13 +55,8 @@ fn cli_separator_passes_dash_arguments_without_parsing_them() {
     expect_success(
         run(&[&path, "--", "--dialect", "ansi", "--compat", "--", "-x"]),
         "--dialect ansi --compat -- -x",
-        -1,
     );
-    expect_success(
-        run(&["--dialect", "ansi", "--", &path, "--compat"]),
-        "--compat",
-        1,
-    );
+    expect_success(run(&["--", &path, "--compat"]), "--compat");
 
     let directory = tempfile::tempdir().unwrap();
     std::fs::copy(&path, directory.path().join("-program.bas")).unwrap();
@@ -90,58 +65,49 @@ fn cli_separator_passes_dash_arguments_without_parsing_them() {
         .args(["--", "-program.bas", "value"])
         .output()
         .unwrap();
-    expect_success(output, "value", -1);
+    expect_success(output, "value");
 }
 
 #[test]
-fn cli_invalid_options_still_fail_before_the_separator() {
+fn cli_removed_and_unknown_options_fail_before_the_separator() {
     let path = fixture();
-    for (args, message) in [
-        (vec!["--dialect"], "--dialect requires an argument"),
-        (
-            vec![path.as_str(), "arg", "--dialect"],
-            "--dialect requires an argument",
-        ),
-        (
-            vec!["--dialect", "unknown", path.as_str()],
-            "unknown dialect: unknown",
-        ),
-        (
-            vec![path.as_str(), "--dialect", "--"],
-            "unknown dialect: --",
-        ),
-        (
-            vec![path.as_str(), "arg", "--unknown"],
-            "unknown option: --unknown",
-        ),
-    ] {
-        let output = run(&args);
-        assert_eq!(output.status.code(), Some(1), "{args:?}");
-        assert!(output.stdout.is_empty(), "{args:?}");
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains(message),
-            "{args:?}"
-        );
+    for option in ["--compat", "-compat", "--dialect", "-dialect", "--unknown"] {
+        for args in [
+            vec![option],
+            vec![option, "qb", &path],
+            vec![&path, "arg", option],
+        ] {
+            let output = run(&args);
+            assert_eq!(output.status.code(), Some(1), "{args:?}");
+            assert!(output.stdout.is_empty(), "{args:?}");
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains(&format!("unknown option: {option}")),
+                "{args:?}"
+            );
+        }
     }
 }
 
 #[test]
-fn cli_source_dialect_override_keeps_program_arguments() {
+fn cli_rejects_removed_source_directives_in_check_and_execution() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("override.bas");
-    std::fs::write(
-        &path,
-        format!(
-            "OPTION DIALECT \"QB\"\n{}",
-            std::fs::read_to_string(fixture()).unwrap()
-        ),
-    )
-    .unwrap();
-    expect_success(
-        run(&["--dialect", "ansi", path.to_str().unwrap(), "payload"]),
-        "payload",
-        -1,
-    );
+    let path = directory.path().join("removed-option.bas");
+    for name in ["QB", "ANSI", "QBasic 1.1", "unknown"] {
+        std::fs::write(
+            &path,
+            format!("PRINT \"must not execute\"\nOPTION DIALECT \"{name}\"\n"),
+        )
+        .unwrap();
+        let execution = run(&[path.to_str().unwrap()]);
+        let check = run(&["--check", path.to_str().unwrap()]);
+        assert_eq!(execution.status.code(), Some(1));
+        assert_eq!(check.status.code(), Some(1));
+        assert!(execution.stdout.is_empty());
+        assert!(check.stdout.is_empty());
+        assert_eq!(execution.stderr, check.stderr);
+        assert!(String::from_utf8_lossy(&execution.stderr).contains("OPTION"));
+    }
 }
 
 #[test]
@@ -198,37 +164,18 @@ fn cli_check_reports_the_same_lex_and_parse_errors_as_execution() {
 }
 
 #[test]
-fn cli_check_respects_cli_and_source_dialects() {
+fn cli_check_accepts_default_language_features() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("dialect.bas");
-    let qb_source = "GOSUB 100\nEND\n100 RETURN\n";
-    std::fs::write(&path, qb_source).unwrap();
-    let path_arg = path.to_str().unwrap();
-    for options in [
-        vec!["--check", path_arg],
-        vec!["--dialect", "qb", "--check", path_arg],
-        vec!["--dialect", "ansi", "--check", path_arg, "--compat"],
-    ] {
-        let output = run(&options);
-        assert!(output.status.success(), "{options:?}");
-        assert!(output.stdout.is_empty());
-        assert!(output.stderr.is_empty());
-    }
-    let ansi_args = ["--check", "--dialect", "ansi", path_arg];
-    let output = run(&ansi_args);
-    assert_eq!(output.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("GOSUB is not supported"));
-
-    std::fs::write(&path, format!("OPTION DIALECT \"QB\"\n{qb_source}")).unwrap();
-    let output = run(&ansi_args);
-    assert!(output.status.success());
+    let path = directory.path().join("language.bas");
+    std::fs::write(&path, "OPTION EXPLICIT\nDIM value%\nvalue% = 7 \\ 2\nPRINT value%; 2 AND 1\nGOSUB 100\nEND\n100 RETURN\n").unwrap();
+    let output = run(&["--check", path.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
-
-    std::fs::write(&path, format!("OPTION DIALECT \"ANSI\"\n{qb_source}")).unwrap();
-    let output = run(&["--check", "--dialect", "qb", path_arg]);
-    assert_eq!(output.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("GOSUB is not supported"));
 }
 
 #[test]
@@ -257,7 +204,7 @@ fn cli_check_requires_a_readable_source_file() {
 #[test]
 fn cli_check_after_separator_is_a_program_argument() {
     let path = fixture();
-    expect_success(run(&[&path, "--", "--check"]), "--check", -1);
+    expect_success(run(&[&path, "--", "--check"]), "--check");
 
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(directory.path().join("--check"), "PRINT 42\n").unwrap();

@@ -53,8 +53,8 @@ pub enum RuntimeError {
 }
 
 impl RuntimeError {
-    /// Map a RuntimeError to an ANSI BASIC exception type number.
-    pub fn ansi_extype(&self) -> i32 {
+    /// Map a RuntimeError to the EXTYPE number used by structured handlers.
+    pub fn exception_type(&self) -> i32 {
         match self {
             RuntimeError::DivisionByZero => 3001,
             RuntimeError::TypeMismatch { .. } => 4001,
@@ -71,7 +71,7 @@ impl RuntimeError {
         }
     }
 
-    /// Map a RuntimeError to a classic QBasic ERR error code.
+    /// Map a RuntimeError to the ERR code used by ON ERROR handlers.
     pub fn basic_err_code(&self) -> i32 {
         match self {
             RuntimeError::DivisionByZero => 11,
@@ -97,7 +97,7 @@ impl RuntimeError {
     }
 }
 
-/// Map a std::io::Error to an ANSI BASIC-compatible error code number.
+/// Map a std::io::Error to a Rice I/O error code.
 pub fn io_error_to_basic_code(e: &std::io::Error) -> i32 {
     match e.kind() {
         std::io::ErrorKind::NotFound => 53,

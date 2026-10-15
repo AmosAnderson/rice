@@ -146,9 +146,9 @@ pub enum Stmt {
         position: Expr,
     },
     Reset,
-    /// DEFINT/DEFLNG/DEFSNG/DEFDBL/DEFSTR letter ranges. is_string is true for DEFSTR.
+    /// Default types for identifiers beginning with the selected letters.
     DefType {
-        is_string: bool,
+        var_type: BasicType,
         ranges: Vec<(char, char)>,
     },
 
@@ -175,10 +175,10 @@ pub enum Stmt {
     Shell(Option<Expr>),
 
     // Scope
-    Shared(Vec<Variable>),
+    Shared(Vec<ScopeDecl>),
     Static(Vec<DimDecl>),
     Common {
-        names: Vec<String>,
+        decls: Vec<ScopeDecl>,
         shared: bool,
     },
 
@@ -192,7 +192,7 @@ pub enum Stmt {
         value: Expr,
     },
 
-    // SET/ASK POINTER (ANSI BASIC file positioning)
+    // SET/ASK POINTER file positioning
     SetPointer {
         file_num: Expr,
         position: Expr,
@@ -330,7 +330,15 @@ pub struct DimDecl {
 #[derive(Debug, Clone)]
 pub struct ConstDecl {
     pub name: String,
+    pub as_type: Option<BasicType>,
     pub value: Expr,
+}
+
+#[derive(Debug, Clone)]
+pub struct ScopeDecl {
+    pub name: String,
+    pub as_type: Option<BasicType>,
+    pub is_array: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -363,6 +371,7 @@ pub struct DeclareStmt {
     pub is_function: bool, // true = FUNCTION, false = SUB
     pub name: String,
     pub params: Vec<Param>,
+    pub as_type: Option<BasicType>,
 }
 
 #[derive(Debug, Clone)]
@@ -378,7 +387,7 @@ pub struct OpenStmt {
     pub name: Expr,                    // filename expression
     pub access: FileAccess,            // ACCESS mode
     pub organization: Option<FileOrg>, // ORGANIZATION (optional)
-    pub record_len: Option<Expr>,      // QuickBASIC LEN = record length
+    pub record_len: Option<Expr>,      // LEN = record length
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

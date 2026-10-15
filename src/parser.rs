@@ -5,24 +5,11 @@ use crate::token::{SpannedToken, Token};
 pub struct Parser {
     tokens: Vec<SpannedToken>,
     pos: usize,
-    pub dialect: crate::Dialect,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<SpannedToken>) -> Self {
-        Self {
-            tokens,
-            pos: 0,
-            dialect: crate::DEFAULT_DIALECT,
-        }
-    }
-
-    pub fn with_dialect(tokens: Vec<SpannedToken>, dialect: crate::Dialect) -> Self {
-        Self {
-            tokens,
-            pos: 0,
-            dialect,
-        }
+        Self { tokens, pos: 0 }
     }
 
     pub fn parse_program(&mut self) -> Result<Program, ParseError> {
@@ -101,40 +88,25 @@ impl Parser {
                 Ok(Stmt::Goto(label))
             }
             Token::KwGosub => {
-                if self.dialect == crate::Dialect::QuickBasic {
-                    self.advance();
-                    let label = self.parse_label()?;
-                    Ok(Stmt::Gosub(label))
-                } else {
-                    Err(ParseError::General {
-                        line: self.current_line(),
-                        msg: "GOSUB is not supported; use SUB/FUNCTION instead".into(),
-                    })
-                }
+                self.advance();
+                let label = self.parse_label()?;
+                Ok(Stmt::Gosub(label))
             }
             Token::KwReturn => {
-                if self.dialect == crate::Dialect::QuickBasic {
-                    self.advance();
-                    let target = if self.at_stmt_end() {
-                        None
-                    } else {
-                        Some(self.parse_label()?)
-                    };
-                    if !self.at_stmt_end() {
-                        return Err(ParseError::Expected {
-                            line: self.current_line(),
-                            expected: "end of statement after RETURN target".into(),
-                            found: format!("{:?}", self.peek()),
-                        });
-                    }
-                    Ok(Stmt::Return(target))
+                self.advance();
+                let target = if self.at_stmt_end() {
+                    None
                 } else {
-                    Err(ParseError::General {
+                    Some(self.parse_label()?)
+                };
+                if !self.at_stmt_end() {
+                    return Err(ParseError::Expected {
                         line: self.current_line(),
-                        msg: "RETURN is not supported; use EXIT SUB or EXIT FUNCTION instead"
-                            .into(),
-                    })
+                        expected: "end of statement after RETURN target".into(),
+                        found: format!("{:?}", self.peek()),
+                    });
                 }
+                Ok(Stmt::Return(target))
             }
             Token::KwExit => self.parse_exit(),
             Token::KwEnd => {
@@ -155,28 +127,15 @@ impl Parser {
             Token::KwDeclare => self.parse_declare(),
             Token::KwRedim => self.parse_redim(),
             Token::KwErase => self.parse_erase(),
-            Token::KwOption => {
-                if let Some(Token::Identifier(id)) = self.peek_at(1)
-                    && id == "DIALECT"
-                {
-                    self.advance(); // consume OPTION
-                    self.advance(); // consume DIALECT
-                    if let Token::StringLiteral(_) = self.peek() {
-                        self.advance();
-                        return Ok(Stmt::Rem);
-                    } else {
-                        return Err(ParseError::Expected {
-                            line: self.current_line(),
-                            expected: "string literal (e.g. \"QB\") after OPTION DIALECT".into(),
-                            found: format!("{:?}", self.peek()),
-                        });
-                    }
-                }
-                if let Some(Token::KwExplicit) = self.peek_at(1) {
-                    return self.parse_option_explicit();
-                }
-                self.parse_option_base()
-            }
+            Token::KwOption => match self.peek_at(1) {
+                Some(Token::KwExplicit) => self.parse_option_explicit(),
+                // The lexer consumes BASE as part of the compound keyword.
+                Some(Token::KwBase | Token::NumericLiteral(_)) => self.parse_option_base(),
+                _ => Err(ParseError::General {
+                    line: self.current_line(),
+                    msg: "Unknown OPTION; expected BASE or EXPLICIT".into(),
+                }),
+            },
             Token::KwSwap => self.parse_swap(),
             Token::KwData => self.parse_data(),
             Token::KwRead => self.parse_read(),
@@ -192,75 +151,48 @@ impl Parser {
                 Ok(Stmt::Reset)
             }
             Token::KwOn => {
-                if self.dialect == crate::Dialect::QuickBasic {
-                    self.advance(); // consume ON
-                    // ON ERROR GOTO label | ON ERROR GOTO 0
-                    if matches!(self.peek(), Token::KwError) {
-                        self.advance(); // consume ERROR
-                        self.expect(Token::KwGoto)?;
-                        if matches!(self.peek(), Token::NumericLiteral(n) if *n == 0.0) {
-                            self.advance();
-                            return Ok(Stmt::OnError { label: None });
-                        }
-                        let label = self.parse_label()?;
-                        return Ok(Stmt::OnError { label: Some(label) });
-                    }
-                    let expr = self.parse_expr()?;
-                    let is_gosub = match self.peek() {
-                        Token::KwGoto => {
-                            self.advance();
-                            false
-                        }
-                        Token::KwGosub => {
-                            self.advance();
-                            true
-                        }
-                        tok => {
-                            return Err(ParseError::Expected {
-                                line: self.current_line(),
-                                expected: "GOTO or GOSUB after ON expression".into(),
-                                found: format!("{:?}", tok),
-                            });
-                        }
-                    };
-                    let mut labels = vec![self.parse_label()?];
-                    while matches!(self.peek(), Token::Comma) {
+                self.advance(); // consume ON
+                // ON ERROR GOTO label | ON ERROR GOTO 0
+                if matches!(self.peek(), Token::KwError) {
+                    self.advance(); // consume ERROR
+                    self.expect(Token::KwGoto)?;
+                    if matches!(self.peek(), Token::NumericLiteral(n) if *n == 0.0) {
                         self.advance();
-                        labels.push(self.parse_label()?);
+                        return Ok(Stmt::OnError { label: None });
                     }
-                    Ok(Stmt::OnGoto {
-                        expr,
-                        labels,
-                        is_gosub,
-                    })
-                } else {
-                    // Peek ahead to determine which ON form for a specific error message
-                    let next = self.peek_at(1).cloned();
-                    let msg = match next.as_ref() {
-                        Some(Token::KwError) => {
-                            "ON ERROR GOTO is not supported; use WHEN EXCEPTION instead"
-                        }
-                        Some(Token::KwTimer) => "ON TIMER is not supported in ANSI BASIC",
-                        Some(Token::KwKey) => "ON KEY is not supported in ANSI BASIC",
-                        _ => {
-                            // ON n GOTO or ON n GOSUB
-                            // Try to determine which, but default to a generic message
-                            "ON GOTO/ON GOSUB is not supported in ANSI BASIC"
-                        }
-                    };
-                    Err(ParseError::General {
-                        line: self.current_line(),
-                        msg: msg.into(),
-                    })
+                    let label = self.parse_label()?;
+                    return Ok(Stmt::OnError { label: Some(label) });
                 }
+                let expr = self.parse_expr()?;
+                let is_gosub = match self.peek() {
+                    Token::KwGoto => {
+                        self.advance();
+                        false
+                    }
+                    Token::KwGosub => {
+                        self.advance();
+                        true
+                    }
+                    tok => {
+                        return Err(ParseError::Expected {
+                            line: self.current_line(),
+                            expected: "GOTO or GOSUB after ON expression".into(),
+                            found: format!("{:?}", tok),
+                        });
+                    }
+                };
+                let mut labels = vec![self.parse_label()?];
+                while matches!(self.peek(), Token::Comma) {
+                    self.advance();
+                    labels.push(self.parse_label()?);
+                }
+                Ok(Stmt::OnGoto {
+                    expr,
+                    labels,
+                    is_gosub,
+                })
             }
             Token::KwResume => {
-                if self.dialect != crate::Dialect::QuickBasic {
-                    return Err(ParseError::General {
-                        line: self.current_line(),
-                        msg: "RESUME is not supported; use WHEN EXCEPTION instead".into(),
-                    });
-                }
                 self.advance(); // consume RESUME
                 if self.at_stmt_end() {
                     Ok(Stmt::Resume(ResumeKind::Same))
@@ -276,12 +208,6 @@ impl Parser {
                 }
             }
             Token::KwError => {
-                if self.dialect != crate::Dialect::QuickBasic {
-                    return Err(ParseError::General {
-                        line: self.current_line(),
-                        msg: "ERROR is not supported; use WHEN EXCEPTION instead".into(),
-                    });
-                }
                 self.advance(); // consume ERROR
                 let code = self.parse_expr()?;
                 Ok(Stmt::ErrorStmt(code))
@@ -312,7 +238,7 @@ impl Parser {
             }
             Token::KwClear => {
                 self.advance();
-                // Ignore optional numeric arguments for compat
+                // Accept and ignore optional numeric arguments.
                 while !self.at_stmt_end() {
                     self.advance();
                 }
@@ -363,25 +289,8 @@ impl Parser {
             | Token::KwDefLng
             | Token::KwDefSng
             | Token::KwDefDbl
-            | Token::KwDefStr => {
-                if self.dialect != crate::Dialect::QuickBasic {
-                    return Err(ParseError::General {
-                        line: self.current_line(),
-                        msg: "DEFINT/DEFLNG/DEFSNG/DEFDBL/DEFSTR are not supported in ANSI BASIC"
-                            .into(),
-                    });
-                }
-                self.parse_def_type()
-            }
-            Token::KwDef => {
-                if self.dialect != crate::Dialect::QuickBasic {
-                    return Err(ParseError::General {
-                        line: self.current_line(),
-                        msg: "DEF FN is not supported in ANSI BASIC".into(),
-                    });
-                }
-                self.parse_def_fn()
-            }
+            | Token::KwDefStr => self.parse_def_type(),
+            Token::KwDef => self.parse_def_fn(),
             Token::KwType => self.parse_type_def(),
             // CHAIN/COMMON
             Token::KwChain => Err(ParseError::General {
@@ -409,11 +318,11 @@ impl Parser {
             Token::KwView => self.parse_view_print(),
             Token::KwTimer => Err(ParseError::General {
                 line: self.current_line(),
-                msg: "TIMER ON/OFF/STOP is not supported in ANSI BASIC".into(),
+                msg: "TIMER ON/OFF/STOP is not supported".into(),
             }),
             Token::KwKey => Err(ParseError::General {
                 line: self.current_line(),
-                msg: "KEY ON/OFF/STOP is not supported in ANSI BASIC".into(),
+                msg: "KEY ON/OFF/STOP is not supported".into(),
             }),
             Token::KwWhen => self.parse_when(),
             Token::KwRetry => {
@@ -429,30 +338,6 @@ impl Parser {
                 msg: "WEND without WHILE".into(),
             }),
             Token::KwMat => self.parse_mat(),
-            Token::Identifier(ref id) if id == "OPTION" => {
-                if let Some(Token::Identifier(id2)) = self.peek_at(1)
-                    && id2 == "DIALECT"
-                {
-                    self.advance(); // consume OPTION
-                    self.advance(); // consume DIALECT
-                    if let Token::StringLiteral(_) = self.peek() {
-                        self.advance();
-                        return Ok(Stmt::Rem);
-                    } else {
-                        return Err(ParseError::Expected {
-                            line: self.current_line(),
-                            expected: "string literal (e.g. \"QB\") after OPTION DIALECT".into(),
-                            found: format!("{:?}", self.peek()),
-                        });
-                    }
-                }
-                if let Some(Token::Identifier(id2)) = self.peek_at(1)
-                    && id2 == "EXPLICIT"
-                {
-                    return self.parse_option_explicit();
-                }
-                self.parse_assignment_or_call()
-            }
             Token::Identifier(_) => self.parse_assignment_or_call(),
             _ => {
                 let tok = self.peek().clone();
@@ -567,14 +452,8 @@ impl Parser {
     fn parse_assignment(&mut self) -> Result<Stmt, ParseError> {
         let var = self.parse_variable()?;
 
-        // Special QBasic pseudo-variable assignments
+        // Pseudo-variable assignments
         if var.name == "DATE$" || var.name == "TIME$" {
-            if self.dialect != crate::Dialect::QuickBasic {
-                return Err(ParseError::General {
-                    line: self.current_line(),
-                    msg: format!("{} assignment is not supported in ANSI BASIC", var.name),
-                });
-            }
             self.expect(Token::Equal)?;
             let expr = self.parse_expr()?;
             return if var.name == "DATE$" {
@@ -657,12 +536,6 @@ impl Parser {
 
         // MID$ statement assignment: MID$(target, start[, len]) = expr$
         if name == "MID$" && self.peek_at(1) == Some(&Token::LeftParen) {
-            if self.dialect != crate::Dialect::QuickBasic {
-                return Err(ParseError::General {
-                    line: self.current_line(),
-                    msg: "MID$ assignment is not supported in ANSI BASIC".into(),
-                });
-            }
             self.advance(); // consume MID$
             self.advance(); // consume (
             let target = self.parse_input_target()?;
@@ -689,24 +562,12 @@ impl Parser {
 
         // ENVIRON statement: ENVIRON "name=value" (not a function call)
         if name == "ENVIRON" && !matches!(self.peek(), Token::LeftParen) {
-            if self.dialect != crate::Dialect::QuickBasic {
-                return Err(ParseError::General {
-                    line: self.current_line(),
-                    msg: "ENVIRON statement is not supported in ANSI BASIC".into(),
-                });
-            }
             let expr = self.parse_expr()?;
             return Ok(Stmt::Environ(expr));
         }
 
-        // Special QBasic pseudo-variable assignments DATE$ = ... / TIME$ = ...
+        // Pseudo-variable assignments DATE$ = ... / TIME$ = ...
         if (name == "DATE$" || name == "TIME$") && matches!(self.peek(), Token::Equal) {
-            if self.dialect != crate::Dialect::QuickBasic {
-                return Err(ParseError::General {
-                    line: self.current_line(),
-                    msg: format!("{} assignment is not supported in ANSI BASIC", name),
-                });
-            }
             self.advance(); // consume =
             let expr = self.parse_expr()?;
             return if name == "DATE$" {
@@ -773,23 +634,8 @@ impl Parser {
 
             // SUB call with parenthesized args — re-parse since indices
             // may have consumed expressions differently than args would
-            if self.dialect == crate::Dialect::QuickBasic {
-                self.pos = paren_save;
-                // fall through to SUB call without parens
-            } else {
-                self.pos = paren_save;
-                self.advance(); // consume (
-                let mut args = Vec::new();
-                if !matches!(self.peek(), Token::RightParen) {
-                    args.push(self.parse_expr()?);
-                    while matches!(self.peek(), Token::Comma) {
-                        self.advance();
-                        args.push(self.parse_expr()?);
-                    }
-                }
-                self.expect(Token::RightParen)?;
-                return Ok(Stmt::Call { name, args });
-            }
+            self.pos = paren_save;
+            // fall through to SUB call without parens
         }
 
         // Member access on scalar: name.field[.field...] = expr
@@ -883,9 +729,19 @@ impl Parser {
         let mut decls = Vec::new();
         loop {
             let name = self.expect_identifier()?;
+            let as_type = if matches!(self.peek(), Token::KwAs) {
+                self.advance();
+                Some(self.parse_type_keyword()?)
+            } else {
+                None
+            };
             self.expect(Token::Equal)?;
             let value = self.parse_expr()?;
-            decls.push(ConstDecl { name, value });
+            decls.push(ConstDecl {
+                name,
+                as_type,
+                value,
+            });
             if !matches!(self.peek(), Token::Comma) {
                 break;
             }
@@ -1036,13 +892,6 @@ impl Parser {
             let stmt = if stmts.is_empty()
                 && matches!(self.peek(), Token::NumericLiteral(_) | Token::LineNumber(_))
             {
-                if self.dialect != crate::Dialect::QuickBasic {
-                    return Err(ParseError::General {
-                        line,
-                        msg: "IF line-number shorthand is not supported in ANSI BASIC; use GOTO"
-                            .into(),
-                    });
-                }
                 let label = self.parse_label()?;
                 if !self.at_stmt_end() {
                     return Err(ParseError::Expected {
@@ -1137,7 +986,7 @@ impl Parser {
         self.advance(); // consume WHILE
         let condition = self.parse_expr()?;
         self.skip_newlines();
-        // Accept both ANSI `END WHILE` and classic QBasic `WEND` terminators.
+        // Accept both `END WHILE` and `WEND` terminators.
         let body = self.parse_body_until(&[Token::KwEndWhile, Token::KwWend])?;
         if matches!(self.peek(), Token::KwWend) {
             self.advance();
@@ -1442,7 +1291,14 @@ impl Parser {
     }
 
     fn parse_def_type(&mut self) -> Result<Stmt, ParseError> {
-        let is_string = matches!(self.peek(), Token::KwDefStr);
+        let var_type = match self.peek() {
+            Token::KwDefInt => BasicType::Integer,
+            Token::KwDefLng => BasicType::Long,
+            Token::KwDefSng => BasicType::Single,
+            Token::KwDefDbl => BasicType::Double,
+            Token::KwDefStr => BasicType::String,
+            _ => unreachable!("parse_def_type requires a DEFtype keyword"),
+        };
         self.advance(); // consume DEFxxx
         let mut ranges = Vec::new();
         loop {
@@ -1460,7 +1316,7 @@ impl Parser {
                 break;
             }
         }
-        Ok(Stmt::DefType { is_string, ranges })
+        Ok(Stmt::DefType { var_type, ranges })
     }
 
     fn expect_letter(&mut self) -> Result<char, ParseError> {
@@ -1498,8 +1354,8 @@ impl Parser {
             self.advance();
             false
         } else {
-            // Default based on dialect: BYREF in QB, BYVAL in ANSI
-            self.dialect == crate::Dialect::Ansi
+            // Parameters default to BYREF.
+            false
         };
 
         let name = self.expect_identifier()?;
@@ -1582,10 +1438,25 @@ impl Parser {
             Vec::new()
         };
 
+        let as_type = if is_function && matches!(self.peek(), Token::KwAs) {
+            self.advance();
+            Some(self.parse_type_keyword()?)
+        } else {
+            None
+        };
+        if !self.at_stmt_end() {
+            return Err(ParseError::Expected {
+                line: self.current_line(),
+                expected: "end of procedure declaration".into(),
+                found: format!("{:?}", self.peek()),
+            });
+        }
+
         Ok(Stmt::Declare(DeclareStmt {
             is_function,
             name,
             params,
+            as_type,
         }))
     }
 
@@ -1621,12 +1492,6 @@ impl Parser {
     }
 
     fn parse_option_explicit(&mut self) -> Result<Stmt, ParseError> {
-        if self.dialect != crate::Dialect::QuickBasic {
-            return Err(ParseError::General {
-                line: self.current_line(),
-                msg: "OPTION EXPLICIT is not supported in ANSI BASIC".into(),
-            });
-        }
         self.advance(); // consume OPTION
         self.expect(Token::KwExplicit)?;
         Ok(Stmt::OptionExplicit)
@@ -1755,10 +1620,10 @@ impl Parser {
     fn parse_open(&mut self) -> Result<Stmt, ParseError> {
         self.advance(); // consume OPEN
 
-        // In ANSI BASIC, the syntax starts with #channel:
-        // In QuickBASIC, the syntax starts with name_expr FOR mode...
+        // Channel-first OPEN starts with #channel:
+        // Filename-first OPEN starts with name_expr FOR mode...
         if matches!(self.peek(), Token::Hash) {
-            // ANSI BASIC style
+            // Channel-first form
             self.advance(); // consume #
             let channel = self.parse_expr()?;
             self.expect(Token::Colon)?;
@@ -1844,7 +1709,7 @@ impl Parser {
                 record_len: None,
             }))
         } else {
-            // QuickBASIC style: name_expr FOR mode ...
+            // Filename-first form: name_expr FOR mode ...
             let name = self.parse_expr()?;
 
             // Expect FOR keyword
@@ -2035,12 +1900,6 @@ impl Parser {
     }
 
     fn parse_field(&mut self) -> Result<Stmt, ParseError> {
-        if self.dialect != crate::Dialect::QuickBasic {
-            return Err(ParseError::General {
-                line: self.current_line(),
-                msg: "FIELD is not supported in ANSI BASIC".into(),
-            });
-        }
         self.advance(); // consume FIELD
         if matches!(self.peek(), Token::Hash) {
             self.advance();
@@ -2064,16 +1923,6 @@ impl Parser {
     }
 
     fn parse_lset_rset(&mut self, right_align: bool) -> Result<Stmt, ParseError> {
-        if self.dialect != crate::Dialect::QuickBasic {
-            return Err(ParseError::General {
-                line: self.current_line(),
-                msg: if right_align {
-                    "RSET is not supported in ANSI BASIC".into()
-                } else {
-                    "LSET is not supported in ANSI BASIC".into()
-                },
-            });
-        }
         self.advance(); // consume LSET/RSET
         let var = self.parse_variable()?;
         self.expect(Token::Equal)?;
@@ -2108,12 +1957,7 @@ impl Parser {
 
     fn parse_shared(&mut self) -> Result<Stmt, ParseError> {
         self.advance(); // consume SHARED
-        let mut vars = vec![self.parse_variable()?];
-        while matches!(self.peek(), Token::Comma) {
-            self.advance();
-            vars.push(self.parse_variable()?);
-        }
-        Ok(Stmt::Shared(vars))
+        Ok(Stmt::Shared(self.parse_scope_declarations()?))
     }
 
     fn parse_static(&mut self) -> Result<Stmt, ParseError> {
@@ -2127,12 +1971,6 @@ impl Parser {
     }
 
     fn parse_common(&mut self) -> Result<Stmt, ParseError> {
-        if self.dialect != crate::Dialect::QuickBasic {
-            return Err(ParseError::General {
-                line: self.current_line(),
-                msg: "COMMON is not supported in ANSI BASIC".into(),
-            });
-        }
         self.advance(); // consume COMMON
         let shared = if matches!(self.peek(), Token::KwShared) {
             self.advance();
@@ -2140,28 +1978,48 @@ impl Parser {
         } else {
             false
         };
-        let mut names = vec![self.parse_common_name()?];
-        while matches!(self.peek(), Token::Comma) {
-            self.advance();
-            names.push(self.parse_common_name()?);
-        }
-        Ok(Stmt::Common { names, shared })
+        let decls = self.parse_scope_declarations()?;
+        Ok(Stmt::Common { decls, shared })
     }
 
-    fn parse_common_name(&mut self) -> Result<String, ParseError> {
+    fn parse_scope_declarations(&mut self) -> Result<Vec<ScopeDecl>, ParseError> {
+        let mut decls = vec![self.parse_scope_decl()?];
+        while matches!(self.peek(), Token::Comma) {
+            self.advance();
+            decls.push(self.parse_scope_decl()?);
+        }
+        if !self.at_stmt_end() {
+            return Err(ParseError::Expected {
+                line: self.current_line(),
+                expected: "comma or end of scope declaration".into(),
+                found: format!("{:?}", self.peek()),
+            });
+        }
+        Ok(decls)
+    }
+
+    fn parse_scope_decl(&mut self) -> Result<ScopeDecl, ParseError> {
         let name = self.expect_identifier()?;
         // Optional array placeholder: name()
-        if matches!(self.peek(), Token::LeftParen) {
+        let is_array = if matches!(self.peek(), Token::LeftParen) {
             self.advance();
-            // COMMON only declares bounds via DIM elsewhere, so () must be empty here.
+            // Array bounds are declared separately with DIM.
             self.expect(Token::RightParen)?;
-        }
-        // Optional AS type clause (ignored for runtime type, but parsed for compatibility)
-        if matches!(self.peek(), Token::KwAs) {
+            true
+        } else {
+            false
+        };
+        let as_type = if matches!(self.peek(), Token::KwAs) {
             self.advance();
-            let _ = self.parse_type_keyword()?;
-        }
-        Ok(name)
+            Some(self.parse_type_keyword()?)
+        } else {
+            None
+        };
+        Ok(ScopeDecl {
+            name,
+            as_type,
+            is_array,
+        })
     }
 
     fn parse_type_def(&mut self) -> Result<Stmt, ParseError> {
@@ -2405,12 +2263,6 @@ impl Parser {
     fn parse_imp_expr(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_eqv_expr()?;
         while matches!(self.peek(), Token::KwImp) {
-            if self.dialect != crate::Dialect::QuickBasic {
-                return Err(ParseError::General {
-                    line: self.current_line(),
-                    msg: "IMP is not supported in ANSI BASIC".into(),
-                });
-            }
             self.advance();
             let right = self.parse_eqv_expr()?;
             left = Expr::BinaryOp {
@@ -2425,12 +2277,6 @@ impl Parser {
     fn parse_eqv_expr(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_xor_expr()?;
         while matches!(self.peek(), Token::KwEqv) {
-            if self.dialect != crate::Dialect::QuickBasic {
-                return Err(ParseError::General {
-                    line: self.current_line(),
-                    msg: "EQV is not supported in ANSI BASIC".into(),
-                });
-            }
             self.advance();
             let right = self.parse_xor_expr()?;
             left = Expr::BinaryOp {
@@ -2557,12 +2403,6 @@ impl Parser {
     fn parse_integer_division(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_multiplicative()?;
         while matches!(self.peek(), Token::Backslash) {
-            if self.dialect != crate::Dialect::QuickBasic {
-                return Err(ParseError::General {
-                    line: self.current_line(),
-                    msg: "Integer division (\\) is not supported in ANSI BASIC".into(),
-                });
-            }
             self.advance();
             let right = self.parse_multiplicative()?;
             left = Expr::BinaryOp {
@@ -2896,14 +2736,16 @@ impl Parser {
                     Ok(BasicType::String)
                 }
             }
-            Token::Identifier(ref name) if name == "NUMERIC" => {
+            Token::Identifier(name) => {
                 self.advance();
-                Ok(BasicType::Numeric)
-            }
-            Token::Identifier(ref name) => {
-                let name = name.clone();
-                self.advance();
-                Ok(BasicType::UserDefined(name))
+                Ok(match name.as_str() {
+                    "NUMERIC" => BasicType::Numeric,
+                    "INT64" => BasicType::Int64,
+                    "BOOL" | "BOOLEAN" => BasicType::Bool,
+                    "BYTE" => BasicType::Byte,
+                    "BYTES" => BasicType::Bytes,
+                    _ => BasicType::UserDefined(name),
+                })
             }
             _ => Err(ParseError::Expected {
                 line: self.current_line(),
@@ -3122,26 +2964,78 @@ mod tests {
     }
 
     #[test]
-    fn test_const_lists_preserve_order_and_expression_commas() {
-        for dialect in [crate::Dialect::QuickBasic, crate::Dialect::Ansi] {
-            let source = "CONST first = MIN(2, 3), second = first + 1, text$ = \"a,b\"\n";
-            let tokens = Lexer::with_dialect(source, dialect).tokenize().unwrap();
-            let program = Parser::with_dialect(tokens, dialect)
-                .parse_program()
-                .unwrap();
-            let Stmt::Const { decls } = &program.statements[0].stmt else {
-                panic!("expected CONST");
-            };
-            assert_eq!(
-                decls
-                    .iter()
-                    .map(|decl| decl.name.as_str())
-                    .collect::<Vec<_>>(),
-                ["FIRST", "SECOND", "TEXT$"]
+    fn test_option_base_and_explicit() {
+        let program = parse("OPTION BASE 0\nOPTION BASE 1\nOPTION EXPLICIT\n");
+        assert!(matches!(program.statements[0].stmt, Stmt::OptionBase(0)));
+        assert!(matches!(program.statements[1].stmt, Stmt::OptionBase(1)));
+        assert!(matches!(program.statements[2].stmt, Stmt::OptionExplicit));
+    }
+
+    #[test]
+    fn test_option_dialect_is_rejected_as_unknown_option() {
+        for source in [
+            "OPTION DIALECT \"QB\"",
+            "OPTION DIALECT \"ANSI\"",
+            "OPTION DIALECT \"QBasic 1.1\"",
+            "OPTION DIALECT",
+            "10 option\tdialect \"QB\" ' comment",
+            "label: OPTION DIALECT \"QB\"",
+            "PRINT 1: OPTION DIALECT \"QB\"",
+            "IF 1 THEN OPTION DIALECT \"QB\"",
+            "OPTION UNKNOWN 1",
+        ] {
+            let error = parse_result(source).unwrap_err();
+            assert!(
+                error.to_string().contains("Unknown OPTION"),
+                "{source}: {error}"
             );
-            assert!(matches!(&decls[0].value, Expr::FunctionCall { args, .. } if args.len() == 2));
-            assert!(matches!(&decls[2].value, Expr::StringLit(value) if value == "a,b"));
         }
+    }
+
+    #[test]
+    fn test_dialect_is_an_ordinary_identifier() {
+        let program = parse("dialect = 3\nPRINT dialect\n");
+        assert!(matches!(
+            &program.statements[0].stmt,
+            Stmt::Let { var, .. } if var.name == "DIALECT"
+        ));
+        for source in [
+            "REM OPTION DIALECT \"QB\"",
+            "PRINT 1 ' OPTION DIALECT \"QB\"",
+            "PRINT \"OPTION DIALECT \"\"QB\"\"\"",
+        ] {
+            assert!(parse_result(source).is_ok(), "{source}");
+        }
+    }
+
+    #[test]
+    fn test_parameters_default_to_byref() {
+        let program = parse("SUB Update(first, BYVAL second, BYREF third)\nEND SUB\n");
+        let Stmt::SubDef(definition) = &program.statements[0].stmt else {
+            panic!("expected SUB");
+        };
+        assert!(!definition.params[0].by_val);
+        assert!(definition.params[1].by_val);
+        assert!(!definition.params[2].by_val);
+    }
+
+    #[test]
+    fn test_const_lists_preserve_order_and_expression_commas() {
+        let source = "CONST first = MIN(2, 3), second = first + 1, text$ = \"a,b\"\n";
+        let tokens = Lexer::new(source).tokenize().unwrap();
+        let program = Parser::new(tokens).parse_program().unwrap();
+        let Stmt::Const { decls } = &program.statements[0].stmt else {
+            panic!("expected CONST");
+        };
+        assert_eq!(
+            decls
+                .iter()
+                .map(|decl| decl.name.as_str())
+                .collect::<Vec<_>>(),
+            ["FIRST", "SECOND", "TEXT$"]
+        );
+        assert!(matches!(&decls[0].value, Expr::FunctionCall { args, .. } if args.len() == 2));
+        assert!(matches!(&decls[2].value, Expr::StringLit(value) if value == "a,b"));
     }
 
     #[test]
@@ -3157,7 +3051,7 @@ mod tests {
             "CONST a = 1, b =",
             "CONST a = 1 b = 2",
             "CONST a = 1 CallSomething()",
-            "CONST a AS NUMERIC = 1",
+            "CONST a AS = 1",
             "CONST a(1) = 2",
             "CONST a.x = 2",
         ] {
@@ -3173,24 +3067,20 @@ mod tests {
     }
 
     #[test]
-    fn test_exit_while_and_select_in_both_dialects() {
-        for dialect in [crate::Dialect::QuickBasic, crate::Dialect::Ansi] {
-            let source = "EXIT WHILE: EXIT SELECT\nIF 1 THEN EXIT WHILE ELSE EXIT SELECT\n";
-            let tokens = Lexer::with_dialect(source, dialect).tokenize().unwrap();
-            let program = Parser::with_dialect(tokens, dialect)
-                .parse_program()
-                .unwrap();
-            assert!(matches!(program.statements[0].stmt, Stmt::ExitWhile));
-            assert!(matches!(program.statements[1].stmt, Stmt::ExitSelect));
-            let Stmt::If(branch) = &program.statements[2].stmt else {
-                panic!("expected IF");
-            };
-            assert!(matches!(branch.then_body[0].stmt, Stmt::ExitWhile));
-            assert!(matches!(
-                branch.else_body.as_ref().unwrap()[0].stmt,
-                Stmt::ExitSelect
-            ));
-        }
+    fn test_exit_while_and_select() {
+        let source = "EXIT WHILE: EXIT SELECT\nIF 1 THEN EXIT WHILE ELSE EXIT SELECT\n";
+        let tokens = Lexer::new(source).tokenize().unwrap();
+        let program = Parser::new(tokens).parse_program().unwrap();
+        assert!(matches!(program.statements[0].stmt, Stmt::ExitWhile));
+        assert!(matches!(program.statements[1].stmt, Stmt::ExitSelect));
+        let Stmt::If(branch) = &program.statements[2].stmt else {
+            panic!("expected IF");
+        };
+        assert!(matches!(branch.then_body[0].stmt, Stmt::ExitWhile));
+        assert!(matches!(
+            branch.else_body.as_ref().unwrap()[0].stmt,
+            Stmt::ExitSelect
+        ));
     }
 
     #[test]
@@ -3225,59 +3115,51 @@ mod tests {
 
     #[test]
     fn test_read_and_input_targets_support_array_indices() {
-        for dialect in [crate::Dialect::QuickBasic, crate::Dialect::Ansi] {
-            for source in [
-                "READ item, values(2), grid(row + 1, 3)",
-                "INPUT item, values(2), grid(row + 1, 3)",
-                "INPUT #1, item, values(2), grid(row + 1, 3)",
-            ] {
-                let tokens = Lexer::with_dialect(source, dialect).tokenize().unwrap();
-                let program = Parser::with_dialect(tokens, dialect)
-                    .parse_program()
-                    .unwrap();
-                let targets = match &program.statements[0].stmt {
-                    Stmt::Read(targets) => targets,
-                    Stmt::Input(input) => &input.vars,
-                    Stmt::InputFile(input) => &input.vars,
-                    _ => panic!("expected READ or INPUT"),
-                };
-                assert_eq!(targets.len(), 3, "{source}");
-                assert_eq!(targets[0].name, "ITEM");
-                assert!(targets[0].indices.is_empty());
-                assert_eq!(targets[1].name, "VALUES");
-                assert!(matches!(
-                    targets[1].indices.as_slice(),
-                    [Expr::NumericLit(2.0)]
-                ));
-                assert_eq!(targets[2].name, "GRID");
-                assert!(matches!(
-                    targets[2].indices.as_slice(),
-                    [Expr::BinaryOp { op: BinOp::Add, .. }, Expr::NumericLit(3.0)]
-                ));
-            }
+        for source in [
+            "READ item, values(2), grid(row + 1, 3)",
+            "INPUT item, values(2), grid(row + 1, 3)",
+            "INPUT #1, item, values(2), grid(row + 1, 3)",
+        ] {
+            let tokens = Lexer::new(source).tokenize().unwrap();
+            let program = Parser::new(tokens).parse_program().unwrap();
+            let targets = match &program.statements[0].stmt {
+                Stmt::Read(targets) => targets,
+                Stmt::Input(input) => &input.vars,
+                Stmt::InputFile(input) => &input.vars,
+                _ => panic!("expected READ or INPUT"),
+            };
+            assert_eq!(targets.len(), 3, "{source}");
+            assert_eq!(targets[0].name, "ITEM");
+            assert!(targets[0].indices.is_empty());
+            assert_eq!(targets[1].name, "VALUES");
+            assert!(matches!(
+                targets[1].indices.as_slice(),
+                [Expr::NumericLit(2.0)]
+            ));
+            assert_eq!(targets[2].name, "GRID");
+            assert!(matches!(
+                targets[2].indices.as_slice(),
+                [Expr::BinaryOp { op: BinOp::Add, .. }, Expr::NumericLit(3.0)]
+            ));
         }
     }
 
     #[test]
     fn test_line_input_targets_support_scalar_and_array_destinations() {
-        for dialect in [crate::Dialect::QuickBasic, crate::Dialect::Ansi] {
-            for (source, index_count) in [
-                ("LINE INPUT text$", 0),
-                ("LINE INPUT \"Text: \"; text$(2)", 1),
-                ("LINE INPUT #1, text$", 0),
-                ("LINE INPUT #1, text$(row + 1, 3)", 2),
-            ] {
-                let tokens = Lexer::with_dialect(source, dialect).tokenize().unwrap();
-                let program = Parser::with_dialect(tokens, dialect)
-                    .parse_program()
-                    .unwrap();
-                let target = match &program.statements[0].stmt {
-                    Stmt::LineInput { var, .. } | Stmt::LineInputFile { var, .. } => var,
-                    _ => panic!("expected LINE INPUT"),
-                };
-                assert_eq!(target.name, "TEXT$");
-                assert_eq!(target.indices.len(), index_count, "{source}");
-            }
+        for (source, index_count) in [
+            ("LINE INPUT text$", 0),
+            ("LINE INPUT \"Text: \"; text$(2)", 1),
+            ("LINE INPUT #1, text$", 0),
+            ("LINE INPUT #1, text$(row + 1, 3)", 2),
+        ] {
+            let tokens = Lexer::new(source).tokenize().unwrap();
+            let program = Parser::new(tokens).parse_program().unwrap();
+            let target = match &program.statements[0].stmt {
+                Stmt::LineInput { var, .. } | Stmt::LineInputFile { var, .. } => var,
+                _ => panic!("expected LINE INPUT"),
+            };
+            assert_eq!(target.name, "TEXT$");
+            assert_eq!(target.indices.len(), index_count, "{source}");
         }
     }
 
@@ -3415,23 +3297,6 @@ mod tests {
     }
 
     #[test]
-    fn test_if_line_number_shorthand_is_qbasic_only() {
-        for source in ["IF 1 THEN 100", "IF 1 THEN PRINT 1 ELSE 100"] {
-            let tokens = Lexer::with_dialect(source, crate::Dialect::Ansi)
-                .tokenize()
-                .unwrap();
-            let error = Parser::with_dialect(tokens, crate::Dialect::Ansi)
-                .parse_program()
-                .unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("line-number shorthand is not supported in ANSI")
-            );
-        }
-    }
-
-    #[test]
     fn test_for_loop() {
         let prog = parse("FOR i = 1 TO 10\nPRINT i\nNEXT i");
         assert_eq!(prog.statements.len(), 1);
@@ -3447,47 +3312,37 @@ mod tests {
     }
 
     #[test]
-    fn test_next_list_closes_nested_for_loops_in_both_dialects() {
+    fn test_next_list_closes_nested_for_loops() {
         let source =
             "FOR i = 1 TO 2\nFOR j = 1 TO 2\nFOR k = 1 TO 2\nPRINT i; j; k\nNEXT k, J, I: PRINT 99";
-        for dialect in [crate::Dialect::QuickBasic, crate::Dialect::Ansi] {
-            let tokens = Lexer::with_dialect(source, dialect).tokenize().unwrap();
-            let program = Parser::with_dialect(tokens, dialect)
-                .parse_program()
-                .unwrap();
-            assert_eq!(program.statements.len(), 2);
-            let mut statement = &program.statements[0].stmt;
-            for expected in ["I", "J", "K"] {
-                let Stmt::For(for_stmt) = statement else {
-                    panic!("expected nested FOR {expected}");
-                };
-                assert_eq!(for_stmt.var.name, expected);
-                assert_eq!(for_stmt.body.len(), 1);
-                statement = &for_stmt.body[0].stmt;
-            }
-            assert!(matches!(statement, Stmt::Print(_)));
-            assert!(matches!(program.statements[1].stmt, Stmt::Print(_)));
+        let tokens = Lexer::new(source).tokenize().unwrap();
+        let program = Parser::new(tokens).parse_program().unwrap();
+        assert_eq!(program.statements.len(), 2);
+        let mut statement = &program.statements[0].stmt;
+        for expected in ["I", "J", "K"] {
+            let Stmt::For(for_stmt) = statement else {
+                panic!("expected nested FOR {expected}");
+            };
+            assert_eq!(for_stmt.var.name, expected);
+            assert_eq!(for_stmt.body.len(), 1);
+            statement = &for_stmt.body[0].stmt;
         }
+        assert!(matches!(statement, Stmt::Print(_)));
+        assert!(matches!(program.statements[1].stmt, Stmt::Print(_)));
     }
 
     #[test]
     fn test_data_signed_literals_and_empty_fields() {
-        for dialect in [crate::Dialect::QuickBasic, crate::Dialect::Ansi] {
-            let tokens = Lexer::with_dialect("DATA ,+2,,-3.5,\"\",rice,", dialect)
-                .tokenize()
-                .unwrap();
-            let program = Parser::with_dialect(tokens, dialect)
-                .parse_program()
-                .unwrap();
-            let Stmt::Data(items) = &program.statements[0].stmt else {
-                panic!("expected DATA");
-            };
-            assert!(matches!(items.as_slice(), [
-                DataItem::Empty, DataItem::Number(2.0), DataItem::Empty,
-                DataItem::Number(-3.5), DataItem::Str(empty), DataItem::Str(word),
-                DataItem::Empty,
-            ] if empty.is_empty() && word == "RICE"));
-        }
+        let tokens = Lexer::new("DATA ,+2,,-3.5,\"\",rice,").tokenize().unwrap();
+        let program = Parser::new(tokens).parse_program().unwrap();
+        let Stmt::Data(items) = &program.statements[0].stmt else {
+            panic!("expected DATA");
+        };
+        assert!(matches!(items.as_slice(), [
+            DataItem::Empty, DataItem::Number(2.0), DataItem::Empty,
+            DataItem::Number(-3.5), DataItem::Str(empty), DataItem::Str(word),
+            DataItem::Empty,
+        ] if empty.is_empty() && word == "RICE"));
         for (source, count) in [("DATA", 0), ("DATA ,", 2), ("DATA ,, ' tail", 3)] {
             let program = parse(source);
             let Stmt::Data(items) = &program.statements[0].stmt else {
@@ -3546,15 +3401,6 @@ mod tests {
             "RETURN one value = 1",
         ] {
             assert!(parse_result(source).is_err(), "accepted {source}");
-        }
-        for source in ["RETURN", "RETURN 100", "RETURN done"] {
-            let tokens = Lexer::with_dialect(source, crate::Dialect::Ansi)
-                .tokenize()
-                .unwrap();
-            let error = Parser::with_dialect(tokens, crate::Dialect::Ansi)
-                .parse_program()
-                .unwrap_err();
-            assert!(error.to_string().contains("RETURN is not supported"));
         }
     }
 
@@ -3653,6 +3499,203 @@ mod tests {
     }
 
     #[test]
+    fn test_all_types_in_declarations() {
+        for (spelling, expected) in [
+            ("numeric", BasicType::Numeric),
+            ("integer", BasicType::Integer),
+            ("long", BasicType::Long),
+            ("single", BasicType::Single),
+            ("double", BasicType::Double),
+            ("int64", BasicType::Int64),
+            ("bool", BasicType::Bool),
+            ("boolean", BasicType::Bool),
+            ("byte", BasicType::Byte),
+            ("bytes", BasicType::Bytes),
+            ("string", BasicType::String),
+            ("string * 3", BasicType::FixedLengthString(3)),
+            ("row", BasicType::UserDefined("ROW".into())),
+        ] {
+            let source = format!(
+                "DIM scalar AS {spelling}, values(2) AS {spelling}\n\
+                 REDIM values(3) AS {spelling}\n\
+                 TYPE Packet\nitem AS {spelling}\nEND TYPE\n\
+                 SUB Process(BYVAL item AS {spelling})\nEND SUB\n\
+                 FUNCTION Convert(item AS {spelling}) AS {spelling}\nEND FUNCTION\n\
+                 DECLARE SUB External(item AS {spelling})\n\
+                 DECLARE FUNCTION ExternalValue(item AS {spelling}) AS {spelling}\n"
+            );
+            let tokens = Lexer::new(&source).tokenize().unwrap();
+            let program = Parser::new(tokens).parse_program().unwrap();
+            let Stmt::Dim { decls, .. } = &program.statements[0].stmt else {
+                panic!("expected DIM");
+            };
+            assert_eq!(decls.len(), 2);
+            assert_eq!(decls[0].as_type.as_ref(), Some(&expected));
+            assert_eq!(decls[1].as_type.as_ref(), Some(&expected));
+            let Stmt::Redim { decls, .. } = &program.statements[1].stmt else {
+                panic!("expected REDIM");
+            };
+            assert_eq!(decls[0].as_type.as_ref(), Some(&expected));
+            let Stmt::TypeDef { fields, .. } = &program.statements[2].stmt else {
+                panic!("expected TYPE");
+            };
+            assert_eq!(fields[0].field_type, expected);
+            let Stmt::SubDef(definition) = &program.statements[3].stmt else {
+                panic!("expected SUB");
+            };
+            assert_eq!(definition.params[0].as_type.as_ref(), Some(&expected));
+            let Stmt::FunctionDef(definition) = &program.statements[4].stmt else {
+                panic!("expected FUNCTION");
+            };
+            assert_eq!(definition.params[0].as_type.as_ref(), Some(&expected));
+            assert_eq!(definition.as_type.as_ref(), Some(&expected));
+            for statement in &program.statements[5..] {
+                let Stmt::Declare(declaration) = &statement.stmt else {
+                    panic!("expected DECLARE");
+                };
+                assert_eq!(declaration.params[0].as_type.as_ref(), Some(&expected));
+                assert_eq!(
+                    declaration.as_type.as_ref(),
+                    declaration.is_function.then_some(&expected)
+                );
+            }
+            assert!(
+                parse_result(&format!("COMMON item AS {spelling}")).is_ok(),
+                "COMMON rejected {spelling}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_types_are_retained_in_const_static_shared_and_common() {
+        for (spelling, expected) in [
+            ("NUMERIC", BasicType::Numeric),
+            ("INTEGER", BasicType::Integer),
+            ("LONG", BasicType::Long),
+            ("SINGLE", BasicType::Single),
+            ("DOUBLE", BasicType::Double),
+            ("INT64", BasicType::Int64),
+            ("BOOL", BasicType::Bool),
+            ("BOOLEAN", BasicType::Bool),
+            ("BYTE", BasicType::Byte),
+            ("BYTES", BasicType::Bytes),
+            ("STRING", BasicType::String),
+            ("STRING * 3", BasicType::FixedLengthString(3)),
+            ("Row", BasicType::UserDefined("ROW".into())),
+        ] {
+            let source = format!(
+                "CONST first AS {spelling} = MakeValue(), second = first\n\
+                 STATIC saved AS {spelling}\n\
+                 SHARED scalar AS {spelling}, values() AS {spelling}, plain\n\
+                 COMMON scalar AS {spelling}, values() AS {spelling}, plain\n\
+                 COMMON SHARED scalar AS {spelling}, values() AS {spelling}, plain\n"
+            );
+            let program = parse(&source);
+            let Stmt::Const { decls } = &program.statements[0].stmt else {
+                panic!("expected CONST")
+            };
+            assert_eq!(decls[0].as_type.as_ref(), Some(&expected));
+            assert_eq!(decls[1].as_type, None);
+            let Stmt::Static(decls) = &program.statements[1].stmt else {
+                panic!("expected STATIC")
+            };
+            assert_eq!(decls[0].as_type.as_ref(), Some(&expected));
+            for (index, statement) in program.statements[2..].iter().enumerate() {
+                let decls = match &statement.stmt {
+                    Stmt::Shared(decls) => decls,
+                    Stmt::Common { decls, shared } => {
+                        assert_eq!(*shared, index == 2);
+                        decls
+                    }
+                    _ => panic!("expected scope declaration"),
+                };
+                assert_eq!(decls.len(), 3);
+                assert_eq!(decls[0].name, "SCALAR");
+                assert!(!decls[0].is_array);
+                assert_eq!(decls[0].as_type.as_ref(), Some(&expected));
+                assert_eq!(decls[1].name, "VALUES");
+                assert!(decls[1].is_array);
+                assert_eq!(decls[1].as_type.as_ref(), Some(&expected));
+                assert_eq!(decls[2].as_type, None);
+            }
+        }
+    }
+
+    #[test]
+    fn test_typed_declarations_reject_incomplete_or_unsupported_forms() {
+        for source in [
+            "CONST item AS = 1",
+            "CONST item AS BYTE",
+            "CONST item() AS BYTE = 1",
+            "CONST item AS STRING * value = 1",
+            "DECLARE SUB Work() AS BYTE",
+            "DECLARE FUNCTION Work() AS",
+            "DECLARE FUNCTION Work() AS BYTE extra",
+        ] {
+            assert!(parse_result(source).is_err(), "{source}");
+        }
+        for keyword in ["SHARED", "COMMON", "COMMON SHARED"] {
+            for tail in [
+                "",
+                "item AS",
+                "item(1) AS BYTE",
+                "item() AS",
+                "item AS BYTE,",
+                "item AS BYTE extra",
+                "item, , other",
+            ] {
+                let source = format!("{keyword} {tail}");
+                assert!(parse_result(&source).is_err(), "{source}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_deftype_preserves_each_numeric_representation() {
+        for (keyword, expected) in [
+            ("DEFINT", BasicType::Integer),
+            ("DEFLNG", BasicType::Long),
+            ("DEFSNG", BasicType::Single),
+            ("DEFDBL", BasicType::Double),
+            ("DEFSTR", BasicType::String),
+        ] {
+            let program = parse(&format!("{keyword} A-C, Z"));
+            let Stmt::DefType { var_type, ranges } = &program.statements[0].stmt else {
+                panic!("expected DEFtype")
+            };
+            assert_eq!(var_type, &expected);
+            assert_eq!(ranges, &[('A', 'C'), ('Z', 'Z')]);
+        }
+    }
+
+    #[test]
+    fn test_extended_type_and_boolean_names_remain_identifiers() {
+        for name in ["INT64", "BOOL", "BOOLEAN", "BYTE", "BYTES", "TRUE", "FALSE"] {
+            let source = format!("{name} = 1\nPRINT {name}\nPRINT {name}()\n");
+            let tokens = Lexer::new(&source).tokenize().unwrap();
+            let program = Parser::new(tokens).parse_program().unwrap();
+            assert!(matches!(
+                &program.statements[0].stmt,
+                Stmt::Let { var, .. } if var.name == name
+            ));
+            let Stmt::Print(print) = &program.statements[1].stmt else {
+                panic!("expected PRINT");
+            };
+            assert!(
+                matches!(&print.items[0], PrintItem::Expr(Expr::Variable(var)) if var.name == name)
+            );
+            let Stmt::Print(print) = &program.statements[2].stmt else {
+                panic!("expected PRINT");
+            };
+            assert!(matches!(
+                &print.items[0],
+                PrintItem::Expr(Expr::FunctionCall { name: called, args })
+                    if called == name && args.is_empty()
+            ));
+        }
+    }
+
+    #[test]
     fn test_operator_precedence() {
         let prog = parse("PRINT 2 + 3 * 4");
         if let Stmt::Print(ps) = &prog.statements[0].stmt
@@ -3716,24 +3759,18 @@ mod tests {
 
     #[test]
     fn test_swap_accepts_scalar_and_indexed_targets() {
-        for dialect in [crate::Dialect::QuickBasic, crate::Dialect::Ansi] {
-            let tokens = Lexer::with_dialect(
-                "SWAP a(i + 1, j), b$\nIF 1 THEN SWAP a(1, 2), a(2, 1) ELSE PRINT 0\n",
-                dialect,
-            )
-            .tokenize()
-            .unwrap();
-            let program = Parser::with_dialect(tokens, dialect)
-                .parse_program()
+        let tokens =
+            Lexer::new("SWAP a(i + 1, j), b$\nIF 1 THEN SWAP a(1, 2), a(2, 1) ELSE PRINT 0\n")
+                .tokenize()
                 .unwrap();
-            let Stmt::Swap { a, b } = &program.statements[0].stmt else {
-                panic!("expected SWAP");
-            };
-            assert_eq!(a.name, "A");
-            assert_eq!(a.indices.len(), 2);
-            assert_eq!(b.name, "B$");
-            assert!(b.indices.is_empty());
-        }
+        let program = Parser::new(tokens).parse_program().unwrap();
+        let Stmt::Swap { a, b } = &program.statements[0].stmt else {
+            panic!("expected SWAP");
+        };
+        assert_eq!(a.name, "A");
+        assert_eq!(a.indices.len(), 2);
+        assert_eq!(b.name, "B$");
+        assert!(b.indices.is_empty());
         for source in [
             "SWAP a(), b",
             "SWAP a(1:2), b",
@@ -3748,69 +3785,50 @@ mod tests {
     }
 
     #[test]
-    fn test_integer_division_is_qbasic_only() {
-        let tokens = Lexer::with_dialect(r"PRINT 9 \ 2", crate::Dialect::Ansi)
-            .tokenize()
-            .unwrap();
-        let error = Parser::with_dialect(tokens, crate::Dialect::Ansi)
-            .parse_program()
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("Integer division (\\) is not supported in ANSI")
-        );
-    }
-
-    #[test]
-    fn test_like_has_comparison_precedence_in_both_dialects() {
-        for dialect in [crate::Dialect::QuickBasic, crate::Dialect::Ansi] {
-            let source = "result = NOT text$ & suffix$ LIKE pattern$ & \"*\" AND enabled\n";
-            let tokens = Lexer::with_dialect(source, dialect).tokenize().unwrap();
-            let program = Parser::with_dialect(tokens, dialect)
-                .parse_program()
-                .unwrap();
-            let Stmt::Let { expr, .. } = &program.statements[0].stmt else {
-                panic!("expected assignment");
-            };
-            let Expr::BinaryOp {
-                op: BinOp::And,
-                left,
+    fn test_like_has_comparison_precedence() {
+        let source = "result = NOT text$ & suffix$ LIKE pattern$ & \"*\" AND enabled\n";
+        let tokens = Lexer::new(source).tokenize().unwrap();
+        let program = Parser::new(tokens).parse_program().unwrap();
+        let Stmt::Let { expr, .. } = &program.statements[0].stmt else {
+            panic!("expected assignment");
+        };
+        let Expr::BinaryOp {
+            op: BinOp::And,
+            left,
+            ..
+        } = expr
+        else {
+            panic!("AND must have lower precedence than LIKE");
+        };
+        let Expr::UnaryOp {
+            op: UnaryOp::Not,
+            operand,
+        } = left.as_ref()
+        else {
+            panic!("NOT must have lower precedence than LIKE");
+        };
+        let Expr::BinaryOp {
+            op: BinOp::Like,
+            left,
+            right,
+        } = operand.as_ref()
+        else {
+            panic!("expected LIKE");
+        };
+        assert!(matches!(
+            left.as_ref(),
+            Expr::BinaryOp {
+                op: BinOp::Concat,
                 ..
-            } = expr
-            else {
-                panic!("AND must have lower precedence than LIKE");
-            };
-            let Expr::UnaryOp {
-                op: UnaryOp::Not,
-                operand,
-            } = left.as_ref()
-            else {
-                panic!("NOT must have lower precedence than LIKE");
-            };
-            let Expr::BinaryOp {
-                op: BinOp::Like,
-                left,
-                right,
-            } = operand.as_ref()
-            else {
-                panic!("expected LIKE");
-            };
-            assert!(matches!(
-                left.as_ref(),
-                Expr::BinaryOp {
-                    op: BinOp::Concat,
-                    ..
-                }
-            ));
-            assert!(matches!(
-                right.as_ref(),
-                Expr::BinaryOp {
-                    op: BinOp::Concat,
-                    ..
-                }
-            ));
-        }
+            }
+        ));
+        assert!(matches!(
+            right.as_ref(),
+            Expr::BinaryOp {
+                op: BinOp::Concat,
+                ..
+            }
+        ));
         let program = parse("result = \"abc\" LIKE \"a*\" = -1");
         let Stmt::Let { expr, .. } = &program.statements[0].stmt else {
             panic!("expected assignment");
@@ -3873,24 +3891,6 @@ mod tests {
             assert_eq!(*op, expected);
             assert!(matches!(left.as_ref(), Expr::BinaryOp { op, .. } if *op == expected));
             assert!(matches!(right.as_ref(), Expr::NumericLit(3.0)));
-        }
-    }
-
-    #[test]
-    fn test_eqv_and_imp_are_qbasic_only() {
-        for operator in ["EQV", "IMP"] {
-            let source = format!("PRINT 1 {operator} 2");
-            let tokens = Lexer::with_dialect(&source, crate::Dialect::Ansi)
-                .tokenize()
-                .unwrap();
-            let error = Parser::with_dialect(tokens, crate::Dialect::Ansi)
-                .parse_program()
-                .unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains(&format!("{operator} is not supported in ANSI"))
-            );
         }
     }
 }

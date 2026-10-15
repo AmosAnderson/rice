@@ -657,7 +657,7 @@ dependencies = [
 
 [[package]]
 name = "rice"
-version = "0.17.1"
+version = "0.20.0"
 dependencies = [
  "crossterm",
  "rustyline",

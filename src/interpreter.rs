@@ -77,6 +77,11 @@ struct UserFunction {
     gosub_targets: OnceCell<Rc<HashMap<String, LabelTarget>>>,
 }
 
+struct AssignmentTarget {
+    name: String,
+    key: String,
+}
+
 struct FileHandle {
     _access: FileAccess,
     print_col: usize,
@@ -102,14 +107,46 @@ struct LabelTarget {
     trap_errors: bool,
 }
 
+/// Previous entries touched by a submission, retained until its signatures validate.
+#[derive(Default)]
+struct PrescanUndo {
+    data_len: usize,
+    data_labels: Vec<(String, Option<usize>)>,
+    subs: Vec<(String, Option<Rc<UserSub>>)>,
+    functions: Vec<(String, Option<Rc<UserFunction>>)>,
+    declarations: Vec<(String, Option<DeclareStmt>)>,
+    type_defs: Vec<(String, Option<Vec<TypeField>>)>,
+}
+
+impl PrescanUndo {
+    fn restore(self, interpreter: &mut Interpreter) {
+        fn restore_entries<T>(map: &mut HashMap<String, T>, entries: Vec<(String, Option<T>)>) {
+            for (name, previous) in entries.into_iter().rev() {
+                if let Some(previous) = previous {
+                    map.insert(name, previous);
+                } else {
+                    map.remove(&name);
+                }
+            }
+        }
+
+        interpreter.data_values.truncate(self.data_len);
+        restore_entries(&mut interpreter.data_label_pos, self.data_labels);
+        restore_entries(&mut interpreter.subs, self.subs);
+        restore_entries(&mut interpreter.functions, self.functions);
+        restore_entries(&mut interpreter.declarations, self.declarations);
+        restore_entries(&mut interpreter.type_defs, self.type_defs);
+    }
+}
+
 pub struct Interpreter {
-    pub dialect: crate::Dialect,
     gosub_targets: Rc<HashMap<String, LabelTarget>>,
     env: EnvRef,
     builtins: BuiltinRegistry,
     // Calls share immutable definitions and label maps, with a separate environment per call.
     subs: HashMap<String, Rc<UserSub>>,
     functions: HashMap<String, Rc<UserFunction>>,
+    declarations: HashMap<String, DeclareStmt>,
     print_col: usize,
     print_row: usize,
     screen_width: usize,
@@ -126,6 +163,8 @@ pub struct Interpreter {
     rng_state: u64,
     last_rnd: f64,
     static_vars: HashMap<String, HashMap<String, Value>>,
+    static_types: HashMap<String, HashMap<String, BasicType>>,
+    static_initialized_arrays: HashMap<String, HashSet<String>>,
     current_static_vars: HashSet<String>,
     type_defs: HashMap<String, Vec<crate::ast::TypeField>>,
     /// Explicit array AS types, sharing the existing interpreter-wide bounds lifetime.
@@ -137,10 +176,8 @@ pub struct Interpreter {
     last_det: f64,
     /// Tracks array dimensions from DIM: name -> vec of (lower, upper) per dimension.
     array_dim_info: HashMap<String, Vec<(i64, i64)>>,
-    /// DEFSTR letters: untyped variables starting with these default to STRING.
-    def_str_letters: [bool; 26],
-    /// Letters covered by any DEFtype statement (numeric or string). Used for OPTION EXPLICIT.
-    def_typed_letters: [bool; 26],
+    /// Default types established by DEFtype for new implicit bindings.
+    def_types: [Option<BasicType>; 26],
     /// True when OPTION EXPLICIT has been executed; undeclared variable references become errors.
     option_explicit: bool,
     /// Overrides for DATE$ and TIME$ pseudo-variables (set by assignment).
@@ -150,7 +187,7 @@ pub struct Interpreter {
     environment_overrides: HashMap<String, String>,
     /// Program arguments explicitly supplied by the host, excluding interpreter options.
     command_line: String,
-    /// Classic ON ERROR handler target (None = no handler / disabled).
+    /// ON ERROR handler target (None = no handler / disabled).
     on_error_label: Option<Label>,
     /// Most recent BASIC error code (ERR) and line (ERL).
     err_code: i32,
@@ -189,12 +226,12 @@ impl Interpreter {
 
     pub fn with_io(output: Box<dyn Write>, input: Box<dyn BufRead>) -> Self {
         Self {
-            dialect: crate::DEFAULT_DIALECT,
             gosub_targets: Rc::new(HashMap::new()),
             env: Environment::new_global(),
             builtins: BuiltinRegistry::new(),
             subs: HashMap::new(),
             functions: HashMap::new(),
+            declarations: HashMap::new(),
             print_col: 0,
             print_row: 1,
             screen_width: 80,
@@ -213,6 +250,8 @@ impl Interpreter {
                 .as_nanos() as u64,
             last_rnd: 0.0,
             static_vars: HashMap::new(),
+            static_types: HashMap::new(),
+            static_initialized_arrays: HashMap::new(),
             current_static_vars: HashSet::new(),
             type_defs: HashMap::new(),
             array_type_map: HashMap::new(),
@@ -222,8 +261,7 @@ impl Interpreter {
             current_exception: None,
             last_det: 0.0,
             array_dim_info: HashMap::new(),
-            def_str_letters: [false; 26],
-            def_typed_letters: [false; 26],
+            def_types: std::array::from_fn(|_| None),
             option_explicit: false,
             date_override: None,
             time_override: None,
@@ -253,11 +291,8 @@ impl Interpreter {
     }
 
     pub fn run_source(&mut self, source: &str) -> Result<(), Box<dyn std::error::Error>> {
-        if let Some(detected) = crate::detect_dialect(source) {
-            self.dialect = detected;
-        }
-        let tokens = crate::lexer::Lexer::with_dialect(source, self.dialect).tokenize()?;
-        let mut parser = crate::parser::Parser::with_dialect(tokens, self.dialect);
+        let tokens = crate::lexer::Lexer::new(source).tokenize()?;
+        let mut parser = crate::parser::Parser::new(tokens);
         let program = parser.parse_program()?;
         self.run_program(&program)?;
         Ok(())
@@ -277,7 +312,20 @@ impl Interpreter {
 
     pub fn run_program(&mut self, program: &Program) -> Result<(), RuntimeError> {
         // Pre-scan: collect labels, DATA statements, SUB/FUNCTION definitions
-        self.prescan(&program.statements);
+        let mut prescan_undo = PrescanUndo {
+            data_len: self.data_values.len(),
+            ..PrescanUndo::default()
+        };
+        self.prescan(&program.statements, &mut prescan_undo);
+        if let Err(error) = self
+            .declarations
+            .values()
+            .try_for_each(|declaration| self.validate_procedure_declaration(declaration))
+        {
+            prescan_undo.restore(self);
+            return Err(error);
+        }
+        drop(prescan_undo);
 
         let previous_targets = std::mem::replace(
             &mut self.gosub_targets,
@@ -296,18 +344,21 @@ impl Interpreter {
         }
     }
 
-    fn prescan(&mut self, stmts: &[LabeledStmt]) {
+    fn prescan(&mut self, stmts: &[LabeledStmt], undo: &mut PrescanUndo) {
         for ls in stmts {
             match &ls.stmt {
                 Stmt::Data(items) => {
                     if let Some(label) = &ls.label {
-                        self.data_label_pos
-                            .insert(label.to_string(), self.data_values.len());
+                        let name = label.to_string();
+                        let previous = self
+                            .data_label_pos
+                            .insert(name.clone(), self.data_values.len());
+                        undo.data_labels.push((name, previous));
                     }
                     self.data_values.extend(items.clone());
                 }
                 Stmt::SubDef(sub) => {
-                    self.subs.insert(
+                    let previous = self.subs.insert(
                         sub.name.clone(),
                         Rc::new(UserSub {
                             params: sub.params.clone(),
@@ -316,9 +367,10 @@ impl Interpreter {
                             gosub_targets: OnceCell::new(),
                         }),
                     );
+                    undo.subs.push((sub.name.clone(), previous));
                 }
                 Stmt::FunctionDef(func) => {
-                    self.functions.insert(
+                    let previous = self.functions.insert(
                         func.name.clone(),
                         Rc::new(UserFunction {
                             name: func.name.clone(),
@@ -329,34 +381,42 @@ impl Interpreter {
                             gosub_targets: OnceCell::new(),
                         }),
                     );
+                    undo.functions.push((func.name.clone(), previous));
+                }
+                Stmt::Declare(declaration) => {
+                    let previous = self
+                        .declarations
+                        .insert(declaration.name.clone(), declaration.clone());
+                    undo.declarations.push((declaration.name.clone(), previous));
                 }
                 Stmt::TypeDef { name, fields } => {
-                    self.type_defs.insert(name.clone(), fields.clone());
+                    let previous = self.type_defs.insert(name.clone(), fields.clone());
+                    undo.type_defs.push((name.clone(), previous));
                 }
                 // Recurse into nested blocks to find labels and DATA
                 Stmt::If(if_stmt) => {
-                    self.prescan(&if_stmt.then_body);
+                    self.prescan(&if_stmt.then_body, undo);
                     for (_, body) in &if_stmt.elseif_clauses {
-                        self.prescan(body);
+                        self.prescan(body, undo);
                     }
                     if let Some(else_body) = &if_stmt.else_body {
-                        self.prescan(else_body);
+                        self.prescan(else_body, undo);
                     }
                 }
-                Stmt::For(for_stmt) => self.prescan(&for_stmt.body),
-                Stmt::WhileWend { body, .. } => self.prescan(body),
-                Stmt::DoLoop(do_stmt) => self.prescan(&do_stmt.body),
+                Stmt::For(for_stmt) => self.prescan(&for_stmt.body, undo),
+                Stmt::WhileWend { body, .. } => self.prescan(body, undo),
+                Stmt::DoLoop(do_stmt) => self.prescan(&do_stmt.body, undo),
                 Stmt::SelectCase(sel) => {
                     for case in &sel.cases {
-                        self.prescan(&case.body);
+                        self.prescan(&case.body, undo);
                     }
                     if let Some(else_body) = &sel.else_body {
-                        self.prescan(else_body);
+                        self.prescan(else_body, undo);
                     }
                 }
                 Stmt::WhenException { body, handler } => {
-                    self.prescan(body);
-                    self.prescan(handler);
+                    self.prescan(body, undo);
+                    self.prescan(handler, undo);
                 }
                 _ => {}
             }
@@ -593,6 +653,7 @@ impl Interpreter {
                 expr,
             } => {
                 self.require_writable(name)?;
+                self.ensure_implicit_type(name);
                 let start_f = self.eval_expr(start)?.to_f64()?;
                 let end_f = self.eval_expr(end)?.to_f64()?;
                 if start_f < 1.0 || end_f < 1.0 {
@@ -601,17 +662,12 @@ impl Interpreter {
                     });
                 }
                 let replacement = self.eval_expr(expr)?.to_string_val()?;
-                let mut s = self
-                    .env
-                    .borrow()
-                    .get(name)
-                    .unwrap_or(Value::Str(String::new()))
-                    .to_string_val()?;
+                let mut s = self.string_target_value(name)?.to_string_val()?;
                 let (start_0, end_0) = Self::string_slice_byte_range(&s, start_f, end_f);
                 if start_0 <= end_0 {
                     s.replace_range(start_0..end_0, &replacement);
                 }
-                self.env.borrow_mut().set(name, Value::Str(s));
+                self.env.borrow_mut().set_checked(name, Value::Str(s))?;
                 Ok(ControlFlow::Normal)
             }
             Stmt::MidAssign {
@@ -628,13 +684,8 @@ impl Interpreter {
                     });
                 }
                 let repl = self.eval_expr(expr)?.to_string_val()?;
-                // Preserve scalar MID$'s empty-string fallback and evaluation
-                // order; indexed operands use their declared element default.
                 let current = if target.indices.is_empty() {
-                    self.env
-                        .borrow()
-                        .get(&key)
-                        .unwrap_or(Value::Str(String::new()))
+                    self.string_target_value(&key)?
                 } else {
                     self.input_target_value(target, &key)?
                 };
@@ -660,7 +711,7 @@ impl Interpreter {
                     chars[start_idx + i] = *rc;
                 }
                 let new_s: String = chars.into_iter().collect();
-                self.env.borrow_mut().set(&key, Value::Str(new_s));
+                self.env.borrow_mut().set_checked(&key, Value::Str(new_s))?;
                 Ok(ControlFlow::Normal)
             }
             Stmt::Dim { decls, shared } => self.exec_dim(decls, *shared),
@@ -668,7 +719,20 @@ impl Interpreter {
                 for decl in decls {
                     self.env.borrow_mut().declare_var(&decl.name);
                     let val = self.eval_expr(&decl.value)?;
+                    let ty = decl
+                        .as_type
+                        .clone()
+                        .or_else(|| BasicType::from_suffix(&decl.name));
+                    let val = match &ty {
+                        Some(ty) => val.coerce_to(ty.clone())?,
+                        None => val,
+                    };
                     self.env.borrow_mut().define_const(&decl.name, val)?;
+                    self.env.borrow_mut().shared_vars.remove(&decl.name);
+                    self.env.borrow_mut().clear_declared_type(&decl.name);
+                    if let Some(ty) = ty {
+                        self.env.borrow_mut().declare_type(&decl.name, ty);
+                    }
                 }
                 Ok(ControlFlow::Normal)
             }
@@ -702,7 +766,7 @@ impl Interpreter {
                     .trim_end_matches('\n')
                     .trim_end_matches('\r')
                     .to_string();
-                self.env.borrow_mut().set(&key, Value::Str(line));
+                self.env.borrow_mut().set_checked(&key, Value::Str(line))?;
                 Ok(ControlFlow::Normal)
             }
             Stmt::If(if_stmt) => self.exec_if(if_stmt),
@@ -750,7 +814,7 @@ impl Interpreter {
                 self.eval_expr(expr)?;
                 Ok(ControlFlow::Normal)
             }
-            Stmt::SubDef(_) | Stmt::FunctionDef(_) | Stmt::Declare(_) => {
+            Stmt::SubDef(_) | Stmt::FunctionDef(_) => {
                 // Already collected during prescan
                 Ok(ControlFlow::Normal)
             }
@@ -760,8 +824,15 @@ impl Interpreter {
                 let b_key = self.resolve_input_target(b)?;
                 let va = self.input_target_value(a, &a_key)?;
                 let vb = self.input_target_value(b, &b_key)?;
-                self.env.borrow_mut().set(&a_key, vb);
-                self.env.borrow_mut().set(&b_key, va);
+                let (new_a, new_b) = {
+                    let env = self.env.borrow();
+                    (
+                        env.coerce_assignment(&a_key, &vb)?,
+                        env.coerce_assignment(&b_key, &va)?,
+                    )
+                };
+                self.env.borrow_mut().set_checked(&a_key, new_a)?;
+                self.env.borrow_mut().set_checked(&b_key, new_b)?;
                 Ok(ControlFlow::Normal)
             }
             Stmt::Read(vars) => self.exec_read(vars),
@@ -839,15 +910,20 @@ impl Interpreter {
                     .ok_or_else(|| RuntimeError::General {
                         msg: format!("file #{fnum} is not open"),
                     })?;
-                if let Some(reader) = &mut fh.reader {
-                    reader
+                // The reader and writer share the underlying file cursor.
+                // Flush pending bytes before either handle changes its position.
+                if let Some(writer) = &mut fh.writer {
+                    writer
+                        .flush()
+                        .map_err(|e| RuntimeError::from_io("SEEK", e))?;
+                    writer
                         .seek(SeekFrom::Start(byte_pos))
                         .map_err(|e| RuntimeError::General {
                             msg: format!("SEEK error: {e}"),
                         })?;
                 }
-                if let Some(writer) = &mut fh.writer {
-                    writer
+                if let Some(reader) = &mut fh.reader {
+                    reader
                         .seek(SeekFrom::Start(byte_pos))
                         .map_err(|e| RuntimeError::General {
                             msg: format!("SEEK error: {e}"),
@@ -857,20 +933,15 @@ impl Interpreter {
                 Ok(ControlFlow::Normal)
             }
             Stmt::Reset => {
-                for (_, mut fh) in self.file_handles.drain() {
-                    if let Some(mut w) = fh.writer.take() {
-                        let _ = w.flush();
-                    }
-                }
+                self.exec_close(&[])?;
                 Ok(ControlFlow::Normal)
             }
-            Stmt::DefType { is_string, ranges } => {
+            Stmt::DefType { var_type, ranges } => {
                 for (start, end) in ranges {
                     let (s, e) = (*start as u8, *end as u8);
                     for c in s..=e {
                         if c.is_ascii_uppercase() {
-                            self.def_str_letters[(c - b'A') as usize] = *is_string;
-                            self.def_typed_letters[(c - b'A') as usize] = true;
+                            self.def_types[(c - b'A') as usize] = Some(var_type.clone());
                         }
                     }
                 }
@@ -1034,40 +1105,14 @@ impl Interpreter {
                 Ok(ControlFlow::Normal)
             }
 
-            Stmt::Shared(vars) => {
-                for var in vars {
-                    self.env.borrow_mut().declare_var(&var.name);
-                    self.env.borrow_mut().shared_vars.insert(var.name.clone());
-                }
+            Stmt::Declare(declaration) => {
+                self.validate_procedure_declaration(declaration)?;
+                self.declarations
+                    .insert(declaration.name.clone(), declaration.clone());
                 Ok(ControlFlow::Normal)
             }
-            Stmt::Common { names, shared: _ } => {
-                // CHAIN is not supported, so plain COMMON and COMMON SHARED are
-                // treated identically: both declare module-level variables that are
-                // visible inside procedures. The parsed `shared` flag is retained for
-                // syntax fidelity but does not change runtime behavior.
-                for name in names {
-                    self.env.borrow_mut().declare_var(name);
-                    self.env.borrow_mut().shared_vars.insert(name.clone());
-                }
-                Ok(ControlFlow::Normal)
-            }
-
-            Stmt::Static(decls) => {
-                // Mark variables as static and initialize with defaults if not already loaded
-                for decl in decls {
-                    self.env.borrow_mut().declare_var(&decl.name);
-                    if self.env.borrow().get(&decl.name).is_none() {
-                        let default = match Self::resolve_decl_type(decl) {
-                            BasicType::UserDefined(name) => self.create_default_record(&name)?,
-                            ty => Value::default_for(ty),
-                        };
-                        self.env.borrow_mut().set(&decl.name, default);
-                    }
-                    self.current_static_vars.insert(decl.name.clone());
-                }
-                Ok(ControlFlow::Normal)
-            }
+            Stmt::Shared(decls) | Stmt::Common { decls, .. } => self.exec_scope_declarations(decls),
+            Stmt::Static(decls) => self.exec_static(decls),
 
             // User-defined types (collected during prescan)
             Stmt::TypeDef { .. } => Ok(ControlFlow::Normal),
@@ -1225,67 +1270,287 @@ impl Interpreter {
                 .collect::<Result<Vec<_>, _>>()?;
             let key = Self::array_key(name, &idx_vals);
             self.require_writable(name)?;
-            self.env.borrow_mut().set(&key, val);
+            self.ensure_implicit_type(name);
+            self.env.borrow_mut().bind_element_type(name, &key);
+            self.env.borrow_mut().set_checked(&key, val)?;
             return Ok(ControlFlow::Normal);
         }
         self.require_writable(&var.name)?;
+        self.ensure_implicit_type(&var.name);
         let val = self.eval_expr(expr)?;
-        self.env.borrow_mut().set(&var.name, val);
+        self.env.borrow_mut().set_checked(&var.name, val)?;
         Ok(ControlFlow::Normal)
+    }
+
+    /// Evaluate all bounds before changing a declaration or clearing its data.
+    fn declaration_bounds(
+        &mut self,
+        decl: &DimDecl,
+    ) -> Result<Option<Vec<(i64, i64)>>, RuntimeError> {
+        let Some(dims) = &decl.dimensions else {
+            return Ok(None);
+        };
+        let base = self.env.borrow().option_base as i64;
+        let mut bounds = Vec::new();
+        for (first, second) in dims {
+            let (lower, upper) = match second {
+                None => (base, self.eval_expr(first)?.to_i64()?),
+                Some(last) => (
+                    self.eval_expr(first)?.to_i64()?,
+                    self.eval_expr(last)?.to_i64()?,
+                ),
+            };
+            if lower > upper
+                || upper
+                    .checked_sub(lower)
+                    .and_then(|n| n.checked_add(1))
+                    .is_none()
+            {
+                return Err(RuntimeError::SubscriptOutOfRange);
+            }
+            bounds.push((lower, upper));
+        }
+        Ok(Some(bounds))
+    }
+
+    fn declaration_default(
+        &self,
+        decl: &DimDecl,
+        ty: &BasicType,
+    ) -> Result<Option<Value>, RuntimeError> {
+        match ty {
+            BasicType::UserDefined(name) => {
+                let value = self.create_default_record(name)?;
+                Ok(decl.dimensions.is_none().then_some(value))
+            }
+            other => Ok(Some(Value::default_for(other.clone())?)),
+        }
     }
 
     fn exec_dim(&mut self, decls: &[DimDecl], shared: bool) -> Result<ControlFlow, RuntimeError> {
         for decl in decls {
+            self.require_nonconstant(&decl.name)?;
+            let shared = shared || self.env.borrow().shared_vars.contains(&decl.name);
+            let resolved = Self::resolve_decl_type(decl);
+            let bounds = self.declaration_bounds(decl)?;
+            let default = self.declaration_default(decl, &resolved)?;
+            // DIM retains array contents. Validate the new element type before mutation.
+            let mut converted = Vec::new();
+            if bounds.is_some() {
+                let prefix = format!("{}_", decl.name);
+                let entries = if shared {
+                    self.env.borrow().shared_entries()
+                } else {
+                    self.env
+                        .borrow()
+                        .var_entries()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect()
+                };
+                for (key, value) in entries {
+                    if key.starts_with(&prefix) {
+                        self.require_nonconstant(&key)?;
+                        converted.push((key.clone(), value.coerce_to(resolved.clone())?));
+                    }
+                }
+            }
             self.env.borrow_mut().declare_var(&decl.name);
             if shared {
                 self.env.borrow_mut().shared_vars.insert(decl.name.clone());
             }
-            let resolved = Self::resolve_decl_type(decl);
-            // Store dimension metadata for MAT operations
-            if let Some(dims) = &decl.dimensions {
-                let base = self.env.borrow().option_base as i64;
-                let mut bounds = Vec::new();
-                for dim in dims {
-                    let (lower, upper) = match dim {
-                        (upper_expr, None) => {
-                            let upper = self.eval_expr(upper_expr)?.to_i64()?;
-                            (base, upper)
-                        }
-                        (lower_expr, Some(upper_expr)) => {
-                            let lower = self.eval_expr(lower_expr)?.to_i64()?;
-                            let upper = self.eval_expr(upper_expr)?.to_i64()?;
-                            (lower, upper)
-                        }
-                    };
-                    if lower > upper
-                        || upper
-                            .checked_sub(lower)
-                            .and_then(|span| span.checked_add(1))
-                            .is_none()
-                    {
-                        return Err(RuntimeError::SubscriptOutOfRange);
-                    }
-                    bounds.push((lower, upper));
-                }
+            self.env.borrow_mut().declare_type(&decl.name, resolved);
+            if let Some(bounds) = bounds {
                 self.array_dim_info.insert(decl.name.clone(), bounds);
                 self.set_array_decl_type(decl);
             }
-            if let BasicType::UserDefined(ref type_name) = resolved {
-                if decl.dimensions.is_none() {
-                    let record = self.create_default_record(type_name)?;
-                    self.env.borrow_mut().set(&decl.name, record);
-                }
-            } else {
-                let default = Value::default_for(resolved);
-                self.env.borrow_mut().set(&decl.name, default);
+            for (key, value) in converted {
+                self.env.borrow_mut().bind_element_type(&decl.name, &key);
+                self.env.borrow_mut().set_checked(&key, value)?;
+            }
+            if let Some(default) = default {
+                self.env.borrow_mut().set_checked(&decl.name, default)?;
             }
         }
         Ok(ControlFlow::Normal)
+    }
+
+    fn exec_scope_declarations(
+        &mut self,
+        decls: &[ScopeDecl],
+    ) -> Result<ControlFlow, RuntimeError> {
+        for decl in decls {
+            self.require_nonconstant(&decl.name)?;
+            let previous = self.env.borrow().shared_declared_type(&decl.name);
+            let initialized = self.env.borrow().shared_is_initialized(&decl.name);
+            let ty = decl.as_type.clone().or(previous.clone()).or_else(|| {
+                (!initialized)
+                    .then(|| self.implicit_type(&decl.name))
+                    .flatten()
+            });
+            if let (Some(old), Some(new)) = (&previous, &ty) {
+                if !old.equivalent_to(new) {
+                    return Err(RuntimeError::TypeMismatch {
+                        msg: format!(
+                            "shared declaration for {} conflicts with its existing type",
+                            decl.name
+                        ),
+                    });
+                }
+            }
+            let existing = self.env.borrow().shared_value(&decl.name);
+            let value = match (existing, &ty) {
+                (Some(value), Some(ty)) => value.coerce_to(ty.clone())?,
+                (Some(value), None) => value,
+                (None, Some(ty)) => self.default_for_declared_type(ty)?,
+                (None, None) => Value::Numeric(0.0),
+            };
+            let mut converted = Vec::new();
+            if decl.is_array
+                && let Some(ty) = &ty
+            {
+                let prefix = format!("{}_", decl.name);
+                for (key, value) in self.env.borrow().shared_entries() {
+                    if key.starts_with(&prefix) {
+                        self.require_nonconstant(&key)?;
+                        converted.push((key, value.coerce_to(ty.clone())?));
+                    }
+                }
+            }
+            self.env.borrow_mut().declare_var(&decl.name);
+            self.env.borrow_mut().shared_vars.insert(decl.name.clone());
+            if let Some(ty) = ty {
+                self.env.borrow_mut().declare_type(&decl.name, ty.clone());
+                if decl.is_array {
+                    self.array_type_map.insert(decl.name.clone(), ty);
+                }
+            }
+            self.env.borrow_mut().set_checked(&decl.name, value)?;
+            for (key, value) in converted {
+                self.env.borrow_mut().bind_element_type(&decl.name, &key);
+                self.env.borrow_mut().set_checked(&key, value)?;
+            }
+        }
+        Ok(ControlFlow::Normal)
+    }
+
+    fn exec_static(&mut self, decls: &[DimDecl]) -> Result<ControlFlow, RuntimeError> {
+        for decl in decls {
+            self.require_nonconstant(&decl.name)?;
+            let shared = self.env.borrow().shared_vars.contains(&decl.name);
+            let ty = Self::resolve_decl_type(decl);
+            let bounds = self.declaration_bounds(decl)?;
+            let existing = if shared {
+                self.env.borrow().shared_value(&decl.name)
+            } else {
+                self.env.borrow().vars_ref().get(&decl.name).cloned()
+            };
+            let value = match existing {
+                Some(value) => value.coerce_to(ty.clone())?,
+                None => self.default_for_declared_type(&ty)?,
+            };
+            let mut converted = Vec::new();
+            if bounds.is_some() {
+                let prefix = format!("{}_", decl.name);
+                let entries = if shared {
+                    self.env.borrow().shared_entries()
+                } else {
+                    self.env
+                        .borrow()
+                        .var_entries()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect()
+                };
+                for (key, value) in entries {
+                    if key.starts_with(&prefix) {
+                        self.require_nonconstant(&key)?;
+                        converted.push((key.clone(), value.coerce_to(ty.clone())?));
+                    }
+                }
+            }
+            self.env.borrow_mut().declare_type(&decl.name, ty.clone());
+            if let Some(bounds) = bounds {
+                self.array_dim_info.insert(decl.name.clone(), bounds);
+                self.array_type_map.insert(decl.name.clone(), ty);
+            }
+            self.env.borrow_mut().set_checked(&decl.name, value)?;
+            self.current_static_vars.insert(decl.name.clone());
+            for (key, value) in converted {
+                self.env.borrow_mut().bind_element_type(&decl.name, &key);
+                self.env.borrow_mut().set_checked(&key, value)?;
+                self.current_static_vars.insert(key);
+            }
+        }
+        Ok(ControlFlow::Normal)
+    }
+
+    fn validate_procedure_declaration(
+        &self,
+        declaration: &DeclareStmt,
+    ) -> Result<(), RuntimeError> {
+        let mismatch = || RuntimeError::TypeMismatch {
+            msg: format!("DECLARE signature does not match {}", declaration.name),
+        };
+        let (params, result) = if declaration.is_function {
+            if self.subs.contains_key(&declaration.name) {
+                return Err(mismatch());
+            }
+            let Some(function) = self.functions.get(&declaration.name) else {
+                return Ok(());
+            };
+            (
+                &function.params,
+                function
+                    .as_type
+                    .clone()
+                    .or_else(|| BasicType::from_suffix(&declaration.name)),
+            )
+        } else {
+            if self.functions.contains_key(&declaration.name) {
+                return Err(mismatch());
+            }
+            let Some(sub) = self.subs.get(&declaration.name) else {
+                return Ok(());
+            };
+            (&sub.params, None)
+        };
+        let same_type = |a: Option<BasicType>, b: Option<BasicType>| match (a, b) {
+            (Some(a), Some(b)) => a.equivalent_to(&b),
+            (None, None) => true,
+            _ => false,
+        };
+        let declared_result = declaration.as_type.clone().or_else(|| {
+            declaration
+                .is_function
+                .then(|| BasicType::from_suffix(&declaration.name))
+                .flatten()
+        });
+        if !same_type(result, declared_result) || params.len() != declaration.params.len() {
+            return Err(mismatch());
+        }
+        for (actual, declared) in params.iter().zip(&declaration.params) {
+            if actual.by_val != declared.by_val
+                || actual.is_array != declared.is_array
+                || !same_type(
+                    actual
+                        .as_type
+                        .clone()
+                        .or_else(|| BasicType::from_suffix(&actual.name)),
+                    declared
+                        .as_type
+                        .clone()
+                        .or_else(|| BasicType::from_suffix(&declared.name)),
+                )
+            {
+                return Err(mismatch());
+            }
+        }
+        Ok(())
     }
 
     /// Resolve an input destination once, before consuming input or prompting.
     fn resolve_input_target(&mut self, target: &InputTarget) -> Result<String, RuntimeError> {
         self.require_writable(&target.name)?;
+        self.ensure_implicit_type(&target.name);
         if target.indices.is_empty() {
             return Ok(target.name.clone());
         }
@@ -1295,6 +1560,7 @@ impl Interpreter {
             .map(|expr| self.eval_expr(expr)?.to_i64())
             .collect::<Result<Vec<_>, _>>()?;
         let key = Self::array_key(&target.name, &indices);
+        self.env.borrow_mut().bind_element_type(&target.name, &key);
         // Flattened array keys can alias scalar constants; never silently discard input.
         if self.env.borrow().is_const(&key) {
             return Err(RuntimeError::General {
@@ -1311,7 +1577,18 @@ impl Interpreter {
         if !target.indices.is_empty() {
             return self.default_for_array(&target.name);
         }
-        Ok(self.default_for_var(&target.name))
+        self.default_for_var(&target.name)
+    }
+
+    fn string_target_value(&self, name: &str) -> Result<Value, RuntimeError> {
+        if let Some(value) = self.env.borrow().get(name) {
+            return Ok(value);
+        }
+        if self.env.borrow().declared_type(name).is_some() {
+            self.default_for_var(name)
+        } else {
+            Ok(Value::Str(String::new()))
+        }
     }
 
     fn set_array_decl_type(&mut self, decl: &DimDecl) {
@@ -1324,10 +1601,14 @@ impl Interpreter {
     }
 
     fn default_for_array(&self, name: &str) -> Result<Value, RuntimeError> {
-        match self.array_type_map.get(name) {
+        let declared = self.env.borrow().declared_type(name);
+        match declared.as_ref().or_else(|| self.array_type_map.get(name)) {
             Some(BasicType::UserDefined(type_name)) => self.create_default_record(type_name),
-            Some(ty) => Ok(Value::default_for(ty.clone())),
-            None => Ok(self.default_for_var(name)),
+            Some(ty) => Value::default_for(ty.clone()),
+            None if self.env.borrow().array_is_initialized_for_read(name) => {
+                Ok(Value::Numeric(0.0))
+            }
+            None => self.default_for_var(name),
         }
     }
 
@@ -1343,9 +1624,25 @@ impl Interpreter {
             let item = &self.data_values[self.data_pos];
             let val = match item {
                 DataItem::Number(n) => Value::Numeric(*n),
-                DataItem::Str(s) => Value::Str(s.clone()),
+                DataItem::Str(s) => {
+                    let existing = self.input_target_value(var, &key)?;
+                    if self.env.borrow().declared_type(&key).is_some()
+                        || BasicType::from_suffix(&key).is_some()
+                    {
+                        self.parse_text_value(s, &existing)?
+                    } else {
+                        Value::Str(s.clone())
+                    }
+                }
                 DataItem::Empty => match self.input_target_value(var, &key)? {
                     Value::Numeric(_) => Value::Numeric(0.0),
+                    value @ (Value::Integer(_)
+                    | Value::Long(_)
+                    | Value::Single(_)
+                    | Value::Int64(_)
+                    | Value::Bool(_)
+                    | Value::Byte(_)
+                    | Value::Bytes(_)) => Value::default_for(value.get_type())?,
                     Value::Str(_) => Value::Str(String::new()),
                     Value::Record { .. } => {
                         return Err(RuntimeError::TypeMismatch {
@@ -1354,8 +1651,8 @@ impl Interpreter {
                     }
                 },
             };
+            self.env.borrow_mut().set_checked(&key, val)?;
             self.data_pos += 1;
-            self.env.borrow_mut().set(&key, val);
         }
         Ok(ControlFlow::Normal)
     }
@@ -1366,60 +1663,67 @@ impl Interpreter {
         preserve: bool,
     ) -> Result<ControlFlow, RuntimeError> {
         for decl in decls {
-            self.env.borrow_mut().declare_var(&decl.name);
-            if !preserve {
-                let prefix = format!("{}_", decl.name);
-                let keys: Vec<String> = self
-                    .env
-                    .borrow()
-                    .var_keys()
-                    .into_iter()
-                    .filter(|k| k.starts_with(&prefix))
-                    .collect();
-                for key in keys {
-                    self.env.borrow_mut().vars_mut().remove(&key);
+            self.require_nonconstant(&decl.name)?;
+            let shared = self.env.borrow().is_shared(&decl.name);
+            let previous = self.env.borrow().declared_type(&decl.name);
+            let mut resolved = Self::resolve_decl_type(decl);
+            if preserve {
+                if decl.as_type.is_none() {
+                    if let Some(ty) = &previous {
+                        resolved = ty.clone();
+                    }
+                }
+                if previous
+                    .as_ref()
+                    .is_some_and(|ty| !ty.equivalent_to(&resolved))
+                {
+                    return Err(RuntimeError::TypeMismatch {
+                        msg: "REDIM PRESERVE cannot change the element type".into(),
+                    });
                 }
             }
-            let resolved = Self::resolve_decl_type(decl);
-            if let Some(dims) = &decl.dimensions {
-                let base = self.env.borrow().option_base as i64;
-                let mut bounds = Vec::new();
-                for dim in dims {
-                    let (lower, upper) = match dim {
-                        (upper_expr, None) => {
-                            let upper = self.eval_expr(upper_expr)?.to_i64()?;
-                            (base, upper)
-                        }
-                        (lower_expr, Some(upper_expr)) => {
-                            let lower = self.eval_expr(lower_expr)?.to_i64()?;
-                            let upper = self.eval_expr(upper_expr)?.to_i64()?;
-                            (lower, upper)
-                        }
-                    };
-                    if lower > upper
-                        || upper
-                            .checked_sub(lower)
-                            .and_then(|span| span.checked_add(1))
-                            .is_none()
-                    {
-                        return Err(RuntimeError::SubscriptOutOfRange);
-                    }
-                    bounds.push((lower, upper));
-                }
+            let bounds = self.declaration_bounds(decl)?;
+            let default = self.declaration_default(decl, &resolved)?;
+            let converted = if preserve {
+                self.env
+                    .borrow()
+                    .array_entries(&decl.name)
+                    .into_iter()
+                    .map(|(key, value)| {
+                        self.require_nonconstant(&key)?;
+                        Ok((key, value.coerce_to(resolved.clone())?))
+                    })
+                    .collect::<Result<Vec<_>, RuntimeError>>()?
+            } else {
+                Vec::new()
+            };
+            self.env.borrow_mut().declare_var(&decl.name);
+            if shared {
+                self.env.borrow_mut().shared_vars.insert(decl.name.clone());
+            }
+            if !preserve {
+                self.env.borrow_mut().clear_array_elements(&decl.name);
+            }
+            self.env
+                .borrow_mut()
+                .declare_type(&decl.name, resolved.clone());
+            if let Some(bounds) = bounds {
                 self.array_dim_info.insert(decl.name.clone(), bounds);
-                self.set_array_decl_type(decl);
+                if preserve && decl.as_type.is_none() && previous.is_some() {
+                    self.array_type_map.insert(decl.name.clone(), resolved);
+                } else {
+                    self.set_array_decl_type(decl);
+                }
             } else {
                 self.array_dim_info.remove(&decl.name);
                 self.array_type_map.remove(&decl.name);
             }
-            if let BasicType::UserDefined(ref type_name) = resolved {
-                if decl.dimensions.is_none() {
-                    let record = self.create_default_record(type_name)?;
-                    self.env.borrow_mut().set(&decl.name, record);
-                }
-            } else {
-                let default = Value::default_for(resolved);
-                self.env.borrow_mut().set(&decl.name, default);
+            for (key, value) in converted {
+                self.env.borrow_mut().bind_element_type(&decl.name, &key);
+                self.env.borrow_mut().set_checked(&key, value)?;
+            }
+            if let Some(default) = default {
+                self.env.borrow_mut().set_checked(&decl.name, default)?;
             }
         }
         Ok(ControlFlow::Normal)
@@ -1428,18 +1732,13 @@ impl Interpreter {
     fn exec_erase(&mut self, names: &[String]) -> Result<ControlFlow, RuntimeError> {
         for name in names {
             self.require_declared(name)?;
-            self.env.borrow_mut().set(name, Value::Numeric(0.0));
-            let prefix = format!("{name}_");
-            let keys: Vec<String> = self
-                .env
-                .borrow()
-                .var_keys()
-                .into_iter()
-                .filter(|k| k.starts_with(&prefix))
-                .collect();
-            for key in keys {
-                self.env.borrow_mut().vars_mut().remove(&key);
-            }
+            let default = if self.env.borrow().declared_type(name).is_some() {
+                self.default_for_array(name)?
+            } else {
+                Value::Numeric(0.0)
+            };
+            self.env.borrow_mut().set_checked(name, default)?;
+            self.env.borrow_mut().clear_array_elements(name);
         }
         Ok(ControlFlow::Normal)
     }
@@ -1459,9 +1758,7 @@ impl Interpreter {
                         self.write_text(&format!("{}", n))?;
                     }
                 }
-                Value::Record { type_name, .. } => {
-                    self.write_text(&format!("[{}]", type_name))?;
-                }
+                other => self.write_text(&other.format_for_write())?,
             };
         }
         self.write_text("\n")?;
@@ -1541,20 +1838,66 @@ impl Interpreter {
         Ok(())
     }
 
+    /// Parse input according to its destination without rounding INT64 through f64.
+    fn parse_text_value(&self, text: &str, template: &Value) -> Result<Value, RuntimeError> {
+        let invalid = || RuntimeError::TypeMismatch {
+            msg: format!("invalid input for {:?}", template.get_type()),
+        };
+        match template {
+            Value::Str(_) => Ok(Value::Str(text.to_owned())),
+            Value::Numeric(_) => text
+                .trim()
+                .parse::<f64>()
+                .map(Value::Numeric)
+                .map_err(|_| invalid()),
+            Value::Integer(_) | Value::Long(_) => {
+                let number = text.trim().parse::<i64>().map_err(|_| invalid())?;
+                Value::Int64(number).coerce_to(template.get_type())
+            }
+            Value::Single(_) => {
+                let number = text.trim().parse::<f64>().map_err(|_| invalid())?;
+                Value::Numeric(number).coerce_to(BasicType::Single)
+            }
+            Value::Int64(_) => text
+                .trim()
+                .parse::<i64>()
+                .map(Value::Int64)
+                .map_err(|_| invalid()),
+            Value::Byte(_) => text
+                .trim()
+                .parse::<u8>()
+                .map(Value::Byte)
+                .map_err(|_| invalid()),
+            Value::Bool(_) => match text.trim().to_ascii_uppercase().as_str() {
+                "TRUE" | "1" => Ok(Value::Bool(true)),
+                "FALSE" | "0" => Ok(Value::Bool(false)),
+                _ => Err(invalid()),
+            },
+            Value::Bytes(_) => {
+                let hex = text.trim();
+                let hex = hex
+                    .strip_prefix("&H")
+                    .or_else(|| hex.strip_prefix("&h"))
+                    .unwrap_or(hex);
+                self.builtins
+                    .call("HEXDECODE", &[Value::Str(hex.to_owned())])?
+                    .ok_or_else(invalid)
+            }
+            Value::Record { .. } => Err(invalid()),
+        }
+    }
+
     fn exec_input(&mut self, input: &InputStmt) -> Result<(), RuntimeError> {
         let keys = input
             .vars
             .iter()
             .map(|var| self.resolve_input_target(var))
             .collect::<Result<Vec<_>, _>>()?;
-        let string_targets = input
+        let target_values = input
             .vars
             .iter()
             .zip(&keys)
-            .map(|(var, key)| {
-                self.input_target_value(var, key)
-                    .map(|v| matches!(v, Value::Str(_)))
-            })
+            .map(|(var, key)| self.input_target_value(var, key))
             .collect::<Result<Vec<_>, _>>()?;
         loop {
             if let Some(p) = &input.prompt {
@@ -1590,19 +1933,15 @@ impl Interpreter {
             }
 
             let mut values = Vec::new();
-            for (is_string, part) in string_targets.iter().zip(parts.iter()) {
-                let val = if *is_string {
-                    Value::Str(part.to_string())
-                } else {
-                    if let Ok(n) = part.trim().parse::<f64>()
-                        && n.is_finite()
-                    {
-                        Value::Numeric(n)
-                    } else {
-                        break;
-                    }
-                };
-                values.push(val);
+            for ((template, part), key) in target_values.iter().zip(parts.iter()).zip(&keys) {
+                match self
+                    .parse_text_value(part, template)
+                    .and_then(|value| self.env.borrow().coerce_assignment(key, &value))
+                {
+                    Ok(value) if value.floating_value().is_some_and(|n| !n.is_finite()) => break,
+                    Ok(value) => values.push(value),
+                    Err(_) => break,
+                }
             }
             if values.len() != input.vars.len() {
                 writeln!(self.output, "? Redo from start")
@@ -1610,7 +1949,7 @@ impl Interpreter {
                 continue;
             }
             for (key, val) in keys.iter().zip(values) {
-                self.env.borrow_mut().set(key, val);
+                self.env.borrow_mut().set_checked(key, val)?;
             }
             break;
         }
@@ -1668,10 +2007,24 @@ impl Interpreter {
             Value::Numeric(1.0)
         };
 
-        let step_val = step.to_f64()?;
-        let end_val = end.to_f64()?;
-        self.env.borrow_mut().declare_var(&for_stmt.var.name);
-        self.env.borrow_mut().set(&for_stmt.var.name, start);
+        if !step.is_numeric() {
+            return Err(RuntimeError::TypeMismatch {
+                msg: "FOR step must be numeric".into(),
+            });
+        }
+        let step_order = step.partial_cmp(&Value::Numeric(0.0));
+        if !end.is_numeric() {
+            return Err(RuntimeError::TypeMismatch {
+                msg: "FOR end must be numeric".into(),
+            });
+        }
+        self.ensure_implicit_type(&for_stmt.var.name);
+        if !self.env.borrow().is_shared(&for_stmt.var.name) {
+            self.env.borrow_mut().declare_var(&for_stmt.var.name);
+        }
+        self.env
+            .borrow_mut()
+            .set_checked(&for_stmt.var.name, start)?;
 
         loop {
             let current = self
@@ -1679,16 +2032,20 @@ impl Interpreter {
                 .borrow()
                 .get(&for_stmt.var.name)
                 .unwrap_or(Value::Numeric(0.0));
-            let cur_val = current.to_f64()?;
+            if !current.is_numeric() {
+                return Err(RuntimeError::TypeMismatch {
+                    msg: "FOR counter must be numeric".into(),
+                });
+            }
 
-            // Check loop condition
-            if step_val > 0.0 && cur_val > end_val {
+            // Compare exact integer counters without a floating-point round trip.
+            if step_order == Some(std::cmp::Ordering::Greater) && current > end {
                 break;
             }
-            if step_val < 0.0 && cur_val < end_val {
+            if step_order == Some(std::cmp::Ordering::Less) && current < end {
                 break;
             }
-            if step_val == 0.0 {
+            if step_order == Some(std::cmp::Ordering::Equal) {
                 break; // Prevent infinite loop
             }
 
@@ -1705,10 +2062,10 @@ impl Interpreter {
                 .borrow()
                 .get(&for_stmt.var.name)
                 .unwrap_or(Value::Numeric(0.0));
-            let new_val = current.to_f64()? + step_val;
+            let new_val = Self::eval_binary_op(&current, BinOp::Add, &step)?;
             self.env
                 .borrow_mut()
-                .set(&for_stmt.var.name, Value::Numeric(new_val));
+                .set_checked(&for_stmt.var.name, new_val)?;
         }
 
         Ok(ControlFlow::Normal)
@@ -1828,49 +2185,39 @@ impl Interpreter {
         body: &[LabeledStmt],
         handler: &[LabeledStmt],
     ) -> Result<ControlFlow, RuntimeError> {
-        loop {
-            let mut should_retry = false;
-            for (i, stmt) in body.iter().enumerate() {
-                match self.exec_stmt(&stmt.stmt) {
-                    Ok(cf) => match cf {
-                        ControlFlow::Normal => {}
-                        other => return Ok(other),
-                    },
-                    Err(err) => {
-                        // Enter exception handler
-                        self.current_exception = Some(ExceptionInfo {
-                            extype: err.ansi_extype(),
-                            extext: err.to_string(),
-                        });
-                        // Execute handler
-                        for h in handler {
-                            match self.exec_stmt(&h.stmt)? {
-                                ControlFlow::Retry => {
-                                    should_retry = true;
-                                    break;
-                                }
-                                ControlFlow::Continue => {
-                                    // Continue executing body from statement i+1,
-                                    // still under exception protection
-                                    self.current_exception = None;
-                                    let cf = self.exec_when_exception(&body[i + 1..], handler)?;
-                                    return Ok(cf);
-                                }
-                                ControlFlow::Normal => {}
-                                other => return Ok(other),
-                            }
-                        }
-                        if should_retry {
-                            break; // break inner for loop, outer loop will retry
-                        }
-                        // Handler completed without RETRY or CONTINUE
-                        self.current_exception = None;
-                        return Ok(ControlFlow::Normal);
+        let mut pc = 0;
+        while pc < body.len() {
+            match self.exec_stmt(&body[pc].stmt) {
+                Ok(ControlFlow::Normal) => pc += 1,
+                Ok(ControlFlow::Goto(label)) => {
+                    if let Some(index) = Self::label_index(body, &label) {
+                        pc = index;
+                    } else {
+                        return Ok(ControlFlow::Goto(label));
                     }
                 }
-            }
-            if !should_retry {
-                break;
+                Ok(other) => return Ok(other),
+                Err(err) => {
+                    self.current_exception = Some(ExceptionInfo {
+                        extype: err.exception_type(),
+                        extext: err.to_string(),
+                    });
+                    match self.exec_block(handler)? {
+                        // Keep the complete body so RETRY still starts at its beginning
+                        // after any number of earlier CONTINUE recoveries.
+                        ControlFlow::Retry => pc = 0,
+                        ControlFlow::Continue => {
+                            self.current_exception = None;
+                            pc += 1;
+                        }
+                        ControlFlow::Normal => {
+                            // A normal handler exit skips the remaining protected body.
+                            self.current_exception = None;
+                            return Ok(ControlFlow::Normal);
+                        }
+                        other => return Ok(other),
+                    }
+                }
             }
         }
         self.current_exception = None;
@@ -1898,9 +2245,29 @@ impl Interpreter {
             let child_env = Environment::new_child(self.env.clone());
             for (param, val) in sub.params.iter().zip(args.iter()) {
                 child_env.borrow_mut().declare_var(&param.name);
-                child_env.borrow_mut().set(&param.name, val.clone());
+                if let Some(ty) = param
+                    .as_type
+                    .clone()
+                    .or_else(|| BasicType::from_suffix(&param.name))
+                {
+                    child_env.borrow_mut().declare_type(&param.name, ty);
+                }
+                child_env
+                    .borrow_mut()
+                    .set_checked(&param.name, val.clone())?;
             }
 
+            // Load static declarations before values, including skipped STATIC statements.
+            if let Some(types) = self.static_types.get(name) {
+                for (key, ty) in types {
+                    child_env.borrow_mut().declare_type(key, ty.clone());
+                }
+            }
+            if let Some(arrays) = self.static_initialized_arrays.get(name) {
+                child_env
+                    .borrow_mut()
+                    .restore_local_array_initialization(arrays);
+            }
             // Load static variables
             if let Some(saved) = self.static_vars.get(name) {
                 for (key, val) in saved {
@@ -1913,6 +2280,7 @@ impl Interpreter {
 
             let prev_env = self.env.clone();
             let prev_static = std::mem::take(&mut self.current_static_vars);
+            self.restore_static_markers(name);
             let targets = sub
                 .gosub_targets
                 .get_or_init(|| Rc::new(Self::collect_label_targets(&sub.body, false)));
@@ -1923,10 +2291,9 @@ impl Interpreter {
             self.gosub_targets = previous_targets;
 
             // Save static variables
+            let param_keys: HashSet<String> = sub.params.iter().map(|p| p.name.clone()).collect();
             if sub.is_static {
                 // Save all non-param local variables
-                let param_keys: HashSet<String> =
-                    sub.params.iter().map(|p| p.name.clone()).collect();
                 let locals: HashMap<String, Value> = child_env
                     .borrow()
                     .var_entries()
@@ -1935,16 +2302,13 @@ impl Interpreter {
                     .collect();
                 self.static_vars.insert(name.to_string(), locals);
             } else if !self.current_static_vars.is_empty() {
-                let saved = self.static_vars.entry(name.to_string()).or_default();
-                for key in &self.current_static_vars {
-                    if let Some(val) = child_env.borrow().vars_ref().get(key) {
-                        saved.insert(key.clone(), val.clone());
-                    }
-                }
+                self.save_explicit_statics(name, &child_env);
             }
+            self.save_static_types(name, &child_env, sub.is_static, &param_keys);
+            self.save_static_array_initialization(name, &child_env, sub.is_static, &param_keys);
             self.current_static_vars = prev_static;
 
-            self.byref_writeback(&sub.params, &argument_targets, &child_env);
+            self.byref_writeback(&sub.params, &argument_targets, &child_env)?;
 
             match result? {
                 ControlFlow::Normal | ControlFlow::ExitSub => Ok(ControlFlow::Normal),
@@ -1966,10 +2330,83 @@ impl Interpreter {
         }
     }
 
+    fn save_explicit_statics(&mut self, procedure: &str, env: &EnvRef) {
+        let names = &self.current_static_vars;
+        let prefixes: Vec<String> = names.iter().map(|name| format!("{name}_")).collect();
+        let is_static = |key: &str| {
+            names.contains(key) || prefixes.iter().any(|prefix| key.starts_with(prefix))
+        };
+        let saved = self.static_vars.entry(procedure.to_owned()).or_default();
+        // Include elements created after STATIC and remove elements erased this call.
+        saved.retain(|key, _| !is_static(key));
+        for (key, value) in env.borrow().var_entries() {
+            if is_static(key) {
+                saved.insert(key.clone(), value.clone());
+            }
+        }
+    }
+
+    fn restore_static_markers(&mut self, procedure: &str) {
+        if let Some(values) = self.static_vars.get(procedure) {
+            self.current_static_vars.extend(values.keys().cloned());
+        }
+        if let Some(types) = self.static_types.get(procedure) {
+            self.current_static_vars.extend(types.keys().cloned());
+        }
+        if let Some(arrays) = self.static_initialized_arrays.get(procedure) {
+            self.current_static_vars.extend(arrays.iter().cloned());
+        }
+    }
+
+    fn save_static_types(
+        &mut self,
+        procedure: &str,
+        env: &EnvRef,
+        all_locals: bool,
+        excluded: &HashSet<String>,
+    ) {
+        let types = env
+            .borrow()
+            .local_type_entries()
+            .into_iter()
+            .filter(|(key, _)| {
+                !excluded.contains(key)
+                    && (all_locals
+                        || self.current_static_vars.contains(key)
+                        || self
+                            .static_vars
+                            .get(procedure)
+                            .is_some_and(|values| values.contains_key(key)))
+            })
+            .collect();
+        self.static_types.insert(procedure.to_owned(), types);
+    }
+
+    fn save_static_array_initialization(
+        &mut self,
+        procedure: &str,
+        env: &EnvRef,
+        all_locals: bool,
+        excluded: &HashSet<String>,
+    ) {
+        let arrays = env
+            .borrow()
+            .local_initialized_arrays()
+            .iter()
+            .filter(|name| {
+                !excluded.contains(*name)
+                    && (all_locals || self.current_static_vars.contains(*name))
+            })
+            .cloned()
+            .collect();
+        self.static_initialized_arrays
+            .insert(procedure.to_owned(), arrays);
+    }
+
     fn eval_call_arguments(
         &mut self,
         expressions: &[Expr],
-    ) -> Result<(Vec<Value>, Vec<Option<String>>), RuntimeError> {
+    ) -> Result<(Vec<Value>, Vec<Option<AssignmentTarget>>), RuntimeError> {
         let mut values = Vec::with_capacity(expressions.len());
         let mut targets = Vec::with_capacity(expressions.len());
         for expression in expressions {
@@ -1980,21 +2417,73 @@ impl Interpreter {
         Ok((values, targets))
     }
 
+    fn procedure_value(
+        &self,
+        env: &EnvRef,
+        name: &str,
+        declared: Option<&BasicType>,
+    ) -> Result<Value, RuntimeError> {
+        if let Some(value) = env.borrow().get(name) {
+            return Ok(value);
+        }
+        let ty = env
+            .borrow()
+            .declared_type(name)
+            .or_else(|| declared.cloned());
+        match ty {
+            Some(BasicType::UserDefined(name)) => self.create_default_record(&name),
+            Some(ty) => Value::default_for(ty),
+            None if name.ends_with('$') => Ok(Value::Str(String::new())),
+            None => Ok(Value::Numeric(0.0)),
+        }
+    }
+
     /// BYREF remains copy-in/copy-out, using locations frozen before the call.
     /// Expressions, BYVAL parameters, and whole-array parameters have no write-back.
-    fn byref_writeback(&self, params: &[Param], targets: &[Option<String>], child_env: &EnvRef) {
+    fn byref_writeback(
+        &mut self,
+        params: &[Param],
+        targets: &[Option<AssignmentTarget>],
+        child_env: &EnvRef,
+    ) -> Result<(), RuntimeError> {
+        let mut updates = Vec::new();
         for (i, param) in params.iter().enumerate() {
             if param.by_val || param.is_array {
                 continue;
             }
-            if let Some(Some(key)) = targets.get(i) {
-                let val = child_env
-                    .borrow()
-                    .get(&param.name)
-                    .unwrap_or(Value::Numeric(0.0));
-                self.env.borrow_mut().set(key, val);
+            if let Some(Some(target)) = targets.get(i) {
+                let val = self.procedure_value(child_env, &param.name, param.as_type.as_ref())?;
+                // A parent read can become a new local binding on copy-back.
+                // Validate its prospective DEFtype without creating a local
+                // declaration that would hide parent values if another update fails.
+                let implicit_type = if self.env.borrow().is_initialized(&target.name) {
+                    None
+                } else {
+                    self.implicit_type(&target.name)
+                };
+                let value = if let Some(ty) = implicit_type {
+                    self.require_nonconstant(&target.key)?;
+                    val.coerce_to(ty)?
+                } else if target.name == target.key {
+                    self.env.borrow().coerce_assignment(&target.key, &val)?
+                } else {
+                    self.env
+                        .borrow()
+                        .coerce_element_assignment(&target.name, &target.key, &val)?
+                };
+                updates.push((target, value));
             }
         }
+        for (target, value) in updates {
+            self.ensure_implicit_type(&target.name);
+            if target.name != target.key {
+                self.env
+                    .borrow_mut()
+                    .bind_element_type(&target.name, &target.key);
+            }
+            self.env.borrow_mut().set_checked(&target.key, value)?;
+        }
+        Ok(())
     }
 
     // ==================== Expression evaluation ====================
@@ -2013,6 +2502,10 @@ impl Interpreter {
 
     fn require_writable(&self, name: &str) -> Result<(), RuntimeError> {
         self.require_declared(name)?;
+        self.require_nonconstant(name)
+    }
+
+    fn require_nonconstant(&self, name: &str) -> Result<(), RuntimeError> {
         if self.env.borrow().is_const(name) {
             return Err(RuntimeError::General {
                 msg: format!("cannot assign to constant: {name}"),
@@ -2037,7 +2530,7 @@ impl Interpreter {
         // DEFtype letter range declares variables starting with that letter.
         if let Some(first) = name.chars().next() {
             let up = first.to_ascii_uppercase();
-            if up.is_ascii_alphabetic() && self.def_typed_letters[(up as u8 - b'A') as usize] {
+            if up.is_ascii_alphabetic() && self.def_types[(up as u8 - b'A') as usize].is_some() {
                 return true;
             }
         }
@@ -2071,17 +2564,25 @@ impl Interpreter {
     fn eval_expr_with_target(
         &mut self,
         expr: &Expr,
-        target: Option<&mut Option<String>>,
+        target: Option<&mut Option<AssignmentTarget>>,
     ) -> Result<Value, RuntimeError> {
         match expr {
             Expr::NumericLit(n) => Ok(Value::Numeric(*n)),
             Expr::StringLit(s) => Ok(Value::Str(s.clone())),
             Expr::Variable(var) => {
-                // Auto-initialize undefined variables (classic BASIC behavior)
+                // Auto-initialize undefined variables.
                 if let Some(val) = self.env.borrow().get(&var.name) {
                     self.capture_argument_target(&var.name, &var.name, target);
                     Ok(val)
                 } else {
+                    if self.env.borrow().declared_type(&var.name).is_some() {
+                        let default = self.default_for_var(&var.name)?;
+                        self.env
+                            .borrow_mut()
+                            .set_checked(&var.name, default.clone())?;
+                        self.capture_argument_target(&var.name, &var.name, target);
+                        return Ok(default);
+                    }
                     // Some 0-arg builtins are commonly used like variables in BASIC (e.g. DATE$, TIME$).
                     // Resolve those before default variable auto-initialization.
                     let builtin_name = &var.name;
@@ -2122,7 +2623,8 @@ impl Interpreter {
                         return self.current_time_value();
                     }
 
-                    let is_implicit_builtin = matches!(builtin_name.as_str(), "TIMER");
+                    let is_implicit_builtin =
+                        matches!(builtin_name.as_str(), "TIMER" | "TRUE" | "FALSE");
                     if is_implicit_builtin
                         && let Some(result) = self.builtins.call(builtin_name, &[])?
                     {
@@ -2137,8 +2639,11 @@ impl Interpreter {
                     }
 
                     self.require_declared(&var.name)?;
-                    let default = self.default_for_var(&var.name);
-                    self.env.borrow_mut().set(&var.name, default.clone());
+                    self.ensure_implicit_type(&var.name);
+                    let default = self.default_for_var(&var.name)?;
+                    self.env
+                        .borrow_mut()
+                        .set_checked(&var.name, default.clone())?;
                     self.capture_argument_target(&var.name, &var.name, target);
                     Ok(default)
                 }
@@ -2159,11 +2664,11 @@ impl Interpreter {
             Expr::BinaryOp { left, op, right } => {
                 let lval = self.eval_expr(left)?;
                 let rval = self.eval_expr(right)?;
-                self.eval_binary_op(&lval, *op, &rval)
+                Self::eval_binary_op(&lval, *op, &rval)
             }
             Expr::UnaryOp { op, operand } => {
                 let val = self.eval_expr(operand)?;
-                self.eval_unary_op(*op, &val)
+                Self::eval_unary_op(*op, &val)
             }
             Expr::FunctionCall { name, args } => {
                 // LBOUND/UBOUND take an array name (not its value) plus an optional dimension.
@@ -2395,11 +2900,7 @@ impl Interpreter {
                                 fh.eof_flag = true;
                             }
                         }
-                        let true_val = if self.dialect == crate::Dialect::QuickBasic {
-                            -1.0
-                        } else {
-                            1.0
-                        };
+                        let true_val = -1.0;
                         return Ok(Value::Numeric(if fh.eof_flag { true_val } else { 0.0 }));
                     }
                     "LOF" => {
@@ -2573,7 +3074,7 @@ impl Interpreter {
         };
         self.require_declared(name)?;
         let (rows, cols) = self
-            .matrix_dims(name)
+            .matrix_dims(name)?
             .ok_or_else(|| RuntimeError::General {
                 msg: format!("DET: array '{name}' must have a two-dimensional shape"),
             })?;
@@ -2587,11 +3088,19 @@ impl Interpreter {
         )?))
     }
 
-    fn capture_argument_target(&self, name: &str, key: &str, target: Option<&mut Option<String>>) {
+    fn capture_argument_target(
+        &self,
+        name: &str,
+        key: &str,
+        target: Option<&mut Option<AssignmentTarget>>,
+    ) {
         if let Some(target) = target {
             let env = self.env.borrow();
             if !env.is_const(name) && !env.is_const(key) {
-                *target = Some(key.to_owned());
+                *target = Some(AssignmentTarget {
+                    name: name.to_owned(),
+                    key: key.to_owned(),
+                });
             }
         }
     }
@@ -2637,7 +3146,7 @@ impl Interpreter {
         &mut self,
         func: &UserFunction,
         args: &[Value],
-        argument_targets: &[Option<String>],
+        argument_targets: &[Option<AssignmentTarget>],
     ) -> Result<Value, RuntimeError> {
         if args.len() != func.params.len() {
             return Err(RuntimeError::ArityMismatch {
@@ -2651,11 +3160,30 @@ impl Interpreter {
         // Bind parameters
         for (param, val) in func.params.iter().zip(args.iter()) {
             child_env.borrow_mut().declare_var(&param.name);
-            child_env.borrow_mut().set(&param.name, val.clone());
+            if let Some(ty) = param
+                .as_type
+                .clone()
+                .or_else(|| BasicType::from_suffix(&param.name))
+            {
+                child_env.borrow_mut().declare_type(&param.name, ty);
+            }
+            child_env
+                .borrow_mut()
+                .set_checked(&param.name, val.clone())?;
         }
 
         // Load static variables
         let func_key = func.name.clone();
+        if let Some(types) = self.static_types.get(&func_key) {
+            for (key, ty) in types {
+                child_env.borrow_mut().declare_type(key, ty.clone());
+            }
+        }
+        if let Some(arrays) = self.static_initialized_arrays.get(&func_key) {
+            child_env
+                .borrow_mut()
+                .restore_local_array_initialization(arrays);
+        }
         if let Some(saved) = self.static_vars.get(&func_key) {
             for (key, val) in saved {
                 child_env
@@ -2667,21 +3195,24 @@ impl Interpreter {
 
         // Initialize function return variable
         child_env.borrow_mut().declare_var(&func.name);
-        let return_type = func.as_type.clone().unwrap_or_else(|| {
-            if func.name.ends_with('$') {
-                BasicType::String
-            } else {
-                BasicType::Numeric
-            }
-        });
-        let return_default = match return_type {
-            BasicType::UserDefined(name) => self.create_default_record(&name)?,
-            other => Value::default_for(other),
+        let return_type = func
+            .as_type
+            .clone()
+            .or_else(|| BasicType::from_suffix(&func.name));
+        let return_default = match &return_type {
+            Some(ty) => self.default_for_declared_type(ty)?,
+            None => Value::Numeric(0.0),
         };
-        child_env.borrow_mut().set(&func.name, return_default);
+        if let Some(ty) = return_type {
+            child_env.borrow_mut().declare_type(&func.name, ty);
+        }
+        child_env
+            .borrow_mut()
+            .set_checked(&func.name, return_default)?;
 
         let prev_env = self.env.clone();
         let prev_static = std::mem::take(&mut self.current_static_vars);
+        self.restore_static_markers(&func_key);
         let targets = func
             .gosub_targets
             .get_or_init(|| Rc::new(Self::collect_label_targets(&func.body, false)));
@@ -2692,27 +3223,24 @@ impl Interpreter {
         self.gosub_targets = previous_targets;
 
         // Save static variables
+        let mut excluded: HashSet<String> = func.params.iter().map(|p| p.name.clone()).collect();
+        excluded.insert(func.name.clone());
         if func.is_static {
-            let param_keys: HashSet<String> = func.params.iter().map(|p| p.name.clone()).collect();
-            let ret_key = func.name.clone();
             let locals: HashMap<String, Value> = child_env
                 .borrow()
                 .var_entries()
-                .filter(|(k, _)| !param_keys.contains(k.as_str()) && *k != &ret_key)
+                .filter(|(k, _)| !excluded.contains(k.as_str()))
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
-            self.static_vars.insert(func_key, locals);
+            self.static_vars.insert(func_key.clone(), locals);
         } else if !self.current_static_vars.is_empty() {
-            let saved = self.static_vars.entry(func_key).or_default();
-            for key in &self.current_static_vars {
-                if let Some(val) = child_env.borrow().vars_ref().get(key) {
-                    saved.insert(key.clone(), val.clone());
-                }
-            }
+            self.save_explicit_statics(&func_key, &child_env);
         }
+        self.save_static_types(&func_key, &child_env, func.is_static, &excluded);
+        self.save_static_array_initialization(&func_key, &child_env, func.is_static, &excluded);
         self.current_static_vars = prev_static;
 
-        self.byref_writeback(&func.params, argument_targets, &child_env);
+        self.byref_writeback(&func.params, argument_targets, &child_env)?;
 
         match result? {
             ControlFlow::Goto(label) => {
@@ -2733,10 +3261,7 @@ impl Interpreter {
             _ => {}
         }
         // Return value is stored in the function name variable
-        Ok(child_env
-            .borrow()
-            .get(&func.name)
-            .unwrap_or(Value::Numeric(0.0)))
+        self.procedure_value(&child_env, &func.name, func.as_type.as_ref())
     }
 
     /// Case-sensitive, whole-string wildcard matching over Unicode scalar values.
@@ -2845,17 +3370,146 @@ impl Interpreter {
         Ok(matched[text.len()])
     }
 
-    fn eval_binary_op(
-        &self,
-        left: &Value,
-        op: BinOp,
-        right: &Value,
-    ) -> Result<Value, RuntimeError> {
-        let true_val = if self.dialect == crate::Dialect::QuickBasic {
-            -1.0
-        } else {
-            1.0
-        };
+    fn eval_binary_op(left: &Value, op: BinOp, right: &Value) -> Result<Value, RuntimeError> {
+        let true_val = -1.0;
+
+        // Native types keep checked integers separate from floating-point expressions.
+        let comparison = matches!(
+            op,
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge
+        );
+        let native = left.get_type().is_native() || right.get_type().is_native();
+        if comparison && native {
+            let compatible = (left.is_numeric() && right.is_numeric())
+                || matches!(
+                    (left, right),
+                    (Value::Bool(_), Value::Bool(_)) | (Value::Bytes(_), Value::Bytes(_))
+                );
+            if !compatible {
+                return Err(RuntimeError::TypeMismatch {
+                    msg: "comparison requires compatible types".into(),
+                });
+            }
+            let order = left.partial_cmp(right);
+            use std::cmp::Ordering::{Equal, Greater, Less};
+            let result = match op {
+                BinOp::Eq => order == Some(Equal),
+                BinOp::Ne => order != Some(Equal),
+                BinOp::Lt => order == Some(Less),
+                BinOp::Gt => order == Some(Greater),
+                BinOp::Le => matches!(order, Some(Less | Equal)),
+                BinOp::Ge => matches!(order, Some(Greater | Equal)),
+                _ => unreachable!(),
+            };
+            return Ok(Value::Bool(result));
+        }
+        if matches!(left, Value::Bool(_)) || matches!(right, Value::Bool(_)) {
+            let a = left.is_truthy()?;
+            let b = right.is_truthy()?;
+            return match op {
+                BinOp::And => Ok(Value::Bool(a && b)),
+                BinOp::Or => Ok(Value::Bool(a || b)),
+                BinOp::Xor => Ok(Value::Bool(a ^ b)),
+                BinOp::Eqv => Ok(Value::Bool(a == b)),
+                BinOp::Imp => Ok(Value::Bool(!a || b)),
+                _ => Err(RuntimeError::TypeMismatch {
+                    msg: "BOOL arithmetic requires an explicit numeric conversion".into(),
+                }),
+            };
+        }
+        if let (Value::Bytes(a), Value::Bytes(b)) = (left, right) {
+            if matches!(op, BinOp::Concat | BinOp::Add) {
+                let mut bytes = Vec::new();
+                let size = a
+                    .len()
+                    .checked_add(b.len())
+                    .ok_or_else(|| RuntimeError::Overflow {
+                        msg: "byte buffer is too large".into(),
+                    })?;
+                bytes
+                    .try_reserve(size)
+                    .map_err(|_| RuntimeError::Overflow {
+                        msg: "byte buffer is too large".into(),
+                    })?;
+                bytes.extend_from_slice(a);
+                bytes.extend_from_slice(b);
+                return Ok(Value::Bytes(bytes));
+            }
+        }
+        if left.integer_value().is_some() || right.integer_value().is_some() {
+            if matches!(
+                op,
+                BinOp::IntDiv | BinOp::And | BinOp::Or | BinOp::Xor | BinOp::Eqv | BinOp::Imp
+            ) {
+                left.to_exact_i64()?;
+                right.to_exact_i64()?;
+            }
+            // Integral mixed operands must fit INT64 before native integer math.
+            // Explicit CDBL opts into floating-point arithmetic for wider reals.
+            if matches!(
+                op,
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Mod | BinOp::Pow
+            ) {
+                for value in [left, right] {
+                    if let Some(number) = value.floating_value() {
+                        if number.is_finite() && number.fract() == 0.0 {
+                            value.to_exact_i64()?;
+                        }
+                    }
+                }
+            }
+            if let (Ok(a), Ok(b)) = (left.to_exact_i64(), right.to_exact_i64()) {
+                let overflow = || RuntimeError::Overflow {
+                    msg: "INT64 arithmetic overflow".into(),
+                };
+                let value = match op {
+                    BinOp::Add => Some(a.checked_add(b).ok_or_else(overflow)?),
+                    BinOp::Sub => Some(a.checked_sub(b).ok_or_else(overflow)?),
+                    BinOp::Mul => Some(a.checked_mul(b).ok_or_else(overflow)?),
+                    BinOp::IntDiv => {
+                        if b == 0 {
+                            return Err(RuntimeError::DivisionByZero);
+                        }
+                        Some(a.checked_div(b).ok_or_else(overflow)?)
+                    }
+                    BinOp::Mod => {
+                        if b == 0 {
+                            return Err(RuntimeError::DivisionByZero);
+                        }
+                        // Preserve Rice's floor-modulo convention, including MIN MOD -1.
+                        let rem = if b == -1 { 0 } else { a % b };
+                        Some(if rem != 0 && (rem < 0) != (b < 0) {
+                            rem.checked_add(b).ok_or_else(overflow)?
+                        } else {
+                            rem
+                        })
+                    }
+                    BinOp::Pow if b >= 0 => Some(match a {
+                        0 if b > 0 => 0,
+                        1 => 1,
+                        -1 => {
+                            if b % 2 == 0 {
+                                1
+                            } else {
+                                -1
+                            }
+                        }
+                        _ => a
+                            .checked_pow(u32::try_from(b).map_err(|_| overflow())?)
+                            .ok_or_else(overflow)?,
+                    }),
+                    BinOp::And => Some(a & b),
+                    BinOp::Or => Some(a | b),
+                    BinOp::Xor => Some(a ^ b),
+                    BinOp::Eqv => Some(!(a ^ b)),
+                    BinOp::Imp => Some(!a | b),
+                    _ => None,
+                };
+                if let Some(n) = value {
+                    return Ok(Value::Int64(n));
+                }
+            }
+        }
 
         if op == BinOp::Like {
             let text = left.to_string_val()?;
@@ -2871,8 +3525,8 @@ impl Interpreter {
             return Ok(Value::Str(format!("{a}{b}")));
         }
 
-        // String concatenation with + (in QuickBASIC mode)
-        if op == BinOp::Add && self.dialect == crate::Dialect::QuickBasic {
+        // String concatenation with +.
+        if op == BinOp::Add {
             if let Value::Str(sa) = left {
                 let sb = right.to_string_val()?;
                 return Ok(Value::Str(format!("{}{}", sa, sb)));
@@ -2917,7 +3571,7 @@ impl Interpreter {
                 Ok(Value::Numeric(a / b))
             }
             BinOp::IntDiv => {
-                // QB rounds operands before dividing; Rice uses signed 64-bit integers.
+                // Round NUMERIC operands before dividing signed 64-bit integers.
                 let dividend = Value::Numeric(a.round_ties_even()).to_i64()?;
                 let divisor = Value::Numeric(b.round_ties_even()).to_i64()?;
                 if divisor == 0 {
@@ -2935,7 +3589,7 @@ impl Interpreter {
                 if b == 0.0 {
                     return Err(RuntimeError::DivisionByZero);
                 }
-                // ANSI MOD operates on reals: a MOD b = a - b * INT(a/b)
+                // Real-number MOD uses a MOD b = a - b * INT(a/b).
                 Ok(Value::Numeric(a - b * (a / b).floor()))
             }
             BinOp::Pow => Ok(Value::Numeric(a.powf(b))),
@@ -2947,35 +3601,19 @@ impl Interpreter {
             BinOp::Ge => Ok(Value::Numeric(if a >= b { true_val } else { 0.0 })),
             // Logical/Bitwise operators
             BinOp::And => {
-                if self.dialect == crate::Dialect::QuickBasic {
-                    let ia = a as i64;
-                    let ib = b as i64;
-                    Ok(Value::Numeric((ia & ib) as f64))
-                } else {
-                    Ok(Value::Numeric(if a != 0.0 && b != 0.0 { 1.0 } else { 0.0 }))
-                }
+                let ia = a as i64;
+                let ib = b as i64;
+                Ok(Value::Numeric((ia & ib) as f64))
             }
             BinOp::Or => {
-                if self.dialect == crate::Dialect::QuickBasic {
-                    let ia = a as i64;
-                    let ib = b as i64;
-                    Ok(Value::Numeric((ia | ib) as f64))
-                } else {
-                    Ok(Value::Numeric(if a != 0.0 || b != 0.0 { 1.0 } else { 0.0 }))
-                }
+                let ia = a as i64;
+                let ib = b as i64;
+                Ok(Value::Numeric((ia | ib) as f64))
             }
             BinOp::Xor => {
-                if self.dialect == crate::Dialect::QuickBasic {
-                    let ia = a as i64;
-                    let ib = b as i64;
-                    Ok(Value::Numeric((ia ^ ib) as f64))
-                } else {
-                    Ok(Value::Numeric(if (a != 0.0) ^ (b != 0.0) {
-                        1.0
-                    } else {
-                        0.0
-                    }))
-                }
+                let ia = a as i64;
+                let ib = b as i64;
+                Ok(Value::Numeric((ia ^ ib) as f64))
             }
             BinOp::Eqv => Ok(Value::Numeric((!((a as i64) ^ (b as i64))) as f64)),
             BinOp::Imp => Ok(Value::Numeric((!(a as i64) | (b as i64)) as f64)),
@@ -2983,7 +3621,29 @@ impl Interpreter {
         }
     }
 
-    fn eval_unary_op(&self, op: UnaryOp, val: &Value) -> Result<Value, RuntimeError> {
+    fn eval_unary_op(op: UnaryOp, val: &Value) -> Result<Value, RuntimeError> {
+        if let Value::Bool(value) = val {
+            return match op {
+                UnaryOp::Not => Ok(Value::Bool(!value)),
+                _ => Err(RuntimeError::TypeMismatch {
+                    msg: "BOOL arithmetic requires an explicit numeric conversion".into(),
+                }),
+            };
+        }
+        if let Some(value) = val.integer_value() {
+            return match op {
+                UnaryOp::Neg => {
+                    value
+                        .checked_neg()
+                        .map(Value::Int64)
+                        .ok_or_else(|| RuntimeError::Overflow {
+                            msg: "INT64 negation overflow".into(),
+                        })
+                }
+                UnaryOp::Pos => Ok(val.clone()),
+                UnaryOp::Not => Ok(Value::Int64(!value)),
+            };
+        }
         match op {
             UnaryOp::Neg => {
                 let n = val.to_f64()?;
@@ -2991,46 +3651,58 @@ impl Interpreter {
             }
             UnaryOp::Not => {
                 let n = val.to_f64()?;
-                if self.dialect == crate::Dialect::QuickBasic {
-                    let inum = n as i64;
-                    Ok(Value::Numeric((!inum) as f64))
-                } else {
-                    Ok(Value::Numeric(if n == 0.0 { 1.0 } else { 0.0 }))
-                }
+
+                let inum = n as i64;
+                Ok(Value::Numeric((!inum) as f64))
             }
             UnaryOp::Pos => Ok(Value::Numeric(val.to_f64()?)),
         }
     }
 
     fn resolve_decl_type(decl: &DimDecl) -> BasicType {
-        if let Some(ref t) = decl.as_type {
-            t.clone()
-        } else if decl.name.ends_with('$') {
-            BasicType::String
-        } else {
-            BasicType::Numeric
-        }
+        decl.as_type
+            .clone()
+            .or_else(|| BasicType::from_suffix(&decl.name))
+            .unwrap_or(BasicType::Numeric)
     }
 
-    /// Return the default value for a variable
-    fn default_for_var(&self, name: &str) -> Value {
-        if name.ends_with('$') {
-            Value::Str(String::new())
-        } else if Self::is_untyped_numeric(name) {
-            // Honor DEFSTR for untyped variables based on their first letter.
-            let first = name.chars().next().unwrap_or('Z').to_ascii_uppercase();
-            if first.is_ascii_alphabetic() && self.def_str_letters[(first as u8 - b'A') as usize] {
-                Value::Str(String::new())
-            } else {
-                Value::Numeric(0.0)
+    fn implicit_type(&self, name: &str) -> Option<BasicType> {
+        BasicType::from_suffix(name).or_else(|| {
+            let first = name.chars().next()?.to_ascii_uppercase();
+            first
+                .is_ascii_alphabetic()
+                .then(|| self.def_types[(first as u8 - b'A') as usize].clone())
+                .flatten()
+        })
+    }
+
+    fn ensure_implicit_type(&mut self, name: &str) {
+        let initialized = self.env.borrow().is_initialized(name);
+        if !initialized {
+            if let Some(ty) = self.implicit_type(name) {
+                if self.env.borrow().is_shared(name) {
+                    self.env.borrow_mut().shared_vars.insert(name.to_owned());
+                }
+                self.env.borrow_mut().declare_type(name, ty);
             }
-        } else {
-            Value::Numeric(0.0)
         }
     }
 
-    fn is_untyped_numeric(name: &str) -> bool {
-        !name.ends_with(['$', '%', '!', '#', '&'])
+    fn default_for_declared_type(&self, ty: &BasicType) -> Result<Value, RuntimeError> {
+        match ty {
+            BasicType::UserDefined(name) => self.create_default_record(name),
+            other => Value::default_for(other.clone()),
+        }
+    }
+
+    fn default_for_var(&self, name: &str) -> Result<Value, RuntimeError> {
+        let ty = self
+            .env
+            .borrow()
+            .declared_type(name)
+            .or_else(|| self.implicit_type(name))
+            .unwrap_or(BasicType::Numeric);
+        self.default_for_declared_type(&ty)
     }
 
     fn environment_key(name: &str) -> String {
@@ -3042,7 +3714,7 @@ impl Interpreter {
     }
 
     fn validate_date_format(s: &str) -> Result<(), RuntimeError> {
-        // Accept MM-DD-YYYY or MM/DD/YYYY (QBasic allows both separators).
+        // Accept MM-DD-YYYY or MM/DD/YYYY.
         let s = s.trim();
         if s.len() != 10 {
             return Err(RuntimeError::IllegalFunctionCall {
@@ -3138,8 +3810,12 @@ impl Interpreter {
     }
 
     fn get_or_init_array_element(&mut self, name: &str, key: &str) -> Result<Value, RuntimeError> {
-        if let Some(v) = self.env.borrow().get(key) {
+        if let Some(v) = self.env.borrow().get_array_element(name, key) {
             return Ok(v);
+        }
+        let initialized = self.env.borrow().array_is_initialized_for_read(name);
+        if !initialized {
+            self.ensure_implicit_type(name);
         }
         // Under OPTION EXPLICIT, arrays must be dimensioned before use.
         if self.option_explicit && !self.is_declared(name) {
@@ -3148,8 +3824,12 @@ impl Interpreter {
             });
         }
         let value = self.default_for_array(name)?;
+        if !initialized {
+            self.env.borrow_mut().mark_array_initialized(name);
+        }
         if matches!(value, Value::Record { .. }) {
-            self.env.borrow_mut().set(key, value.clone());
+            self.env.borrow_mut().bind_element_type(name, key);
+            self.env.borrow_mut().set_checked(key, value.clone())?;
         }
         Ok(value)
     }
@@ -3183,7 +3863,7 @@ impl Interpreter {
                 BasicType::UserDefined(nested) => {
                     self.create_record_fields(nested, active_types)?
                 }
-                other => Value::default_for(other.clone()),
+                other => Value::default_for(other.clone())?,
             };
             fields.insert(name, val);
         }
@@ -3225,10 +3905,10 @@ impl Interpreter {
         };
 
         // Get or auto-init the root value
-        let mut root_val = if let Some(v) = self.env.borrow().get(&root_key) {
-            v
-        } else if let Expr::ArrayIndex { name, .. } = current {
+        let mut root_val = if let Expr::ArrayIndex { name, .. } = current {
             self.get_or_init_array_element(name, &root_key)?
+        } else if let Some(v) = self.env.borrow().get(&root_key) {
+            v
         } else {
             return Err(RuntimeError::General {
                 msg: "variable not initialized".into(),
@@ -3240,9 +3920,10 @@ impl Interpreter {
 
         // Write back
         if let Expr::Variable(var) = current {
-            self.env.borrow_mut().set(&var.name, root_val);
-        } else {
-            self.env.borrow_mut().set(&root_key, root_val);
+            self.env.borrow_mut().set_checked(&var.name, root_val)?;
+        } else if let Expr::ArrayIndex { name, .. } = current {
+            self.env.borrow_mut().bind_element_type(name, &root_key);
+            self.env.borrow_mut().set_checked(&root_key, root_val)?;
         }
         Ok(())
     }
@@ -3296,8 +3977,12 @@ impl Interpreter {
         field_name: &str,
         val: Value,
     ) -> Result<Value, RuntimeError> {
-        // In ANSI BASIC, no fixed-string coercion needed — just pass through
-        let _ = (type_defs, type_name, field_name);
+        if let Some(field) = type_defs
+            .get(type_name)
+            .and_then(|fields| fields.iter().find(|f| f.name == field_name))
+        {
+            return val.coerce_to(field.field_type.clone());
+        }
         Ok(val)
     }
 
@@ -3316,14 +4001,31 @@ impl Interpreter {
         crate::format_using::format_using(&fmt_str, &vals)
     }
 
+    fn matrix_extent(lower: i64, upper: i64) -> Result<usize, RuntimeError> {
+        upper
+            .checked_sub(lower)
+            .and_then(|span| span.checked_add(1))
+            .filter(|length| *length > 0)
+            .and_then(|length| usize::try_from(length).ok())
+            .ok_or_else(|| RuntimeError::Overflow {
+                msg: "MAT dimensions exceed the supported index range".into(),
+            })
+    }
+
+    fn matrix_index(base: i64, offset: usize) -> Result<i64, RuntimeError> {
+        i64::try_from(i128::from(base) + offset as i128).map_err(|_| RuntimeError::Overflow {
+            msg: "MAT destination index exceeds the signed 64-bit range".into(),
+        })
+    }
+
     fn extract_matrix(&self, name: &str) -> Result<Vec<Vec<f64>>, RuntimeError> {
         let prefix = format!("{}_", name);
         let env = self.env.borrow();
         let (row_base, col_base, rows, cols, has_dim_info) =
             if let Some(bounds) = self.array_dim_info.get(name) {
                 if bounds.len() == 2 {
-                    let rows = (bounds[0].1 - bounds[0].0 + 1).max(0) as usize;
-                    let cols = (bounds[1].1 - bounds[1].0 + 1).max(0) as usize;
+                    let rows = Self::matrix_extent(bounds[0].0, bounds[0].1)?;
+                    let cols = Self::matrix_extent(bounds[1].0, bounds[1].1)?;
                     (bounds[0].0, bounds[1].0, rows, cols, true)
                 } else {
                     let base = env.option_base as i64;
@@ -3333,46 +4035,72 @@ impl Interpreter {
                 let base = env.option_base as i64;
                 (base, base, 0, 0, false)
             };
-        let mut max_row: i64 = row_base - 1;
-        let mut max_col: i64 = col_base - 1;
-        let mut cells: Vec<(i64, i64, f64)> = Vec::new();
-        for key in env.var_keys() {
+        let mut max_row: Option<i64> = None;
+        let mut max_col: Option<i64> = None;
+        let mut cells: Vec<(usize, usize, f64)> = Vec::new();
+        for (key, val) in env.array_entries(name) {
             if let Some(suffix) = key.strip_prefix(&prefix) {
                 let parts: Vec<&str> = suffix.split('_').collect();
                 if parts.len() == 2
                     && let (Ok(r), Ok(c)) = (parts[0].parse::<i64>(), parts[1].parse::<i64>())
                 {
-                    let val = env.get(&key).unwrap_or(Value::Numeric(0.0));
-                    let f = val.to_f64().unwrap_or(0.0);
-                    cells.push((r, c, f));
-                    if r > max_row {
-                        max_row = r;
+                    // Shape inference considers each axis independently, even
+                    // when the other coordinate puts this cell outside the matrix.
+                    if r >= row_base {
+                        max_row = Some(max_row.map_or(r, |previous| previous.max(r)));
                     }
-                    if c > max_col {
-                        max_col = c;
+                    if c >= col_base {
+                        max_col = Some(max_col.map_or(c, |previous| previous.max(c)));
                     }
+                    // Ignore stored cells outside the matrix before calculating
+                    // offsets; a distant negative index can overflow subtraction.
+                    let Some(ri) = r
+                        .checked_sub(row_base)
+                        .and_then(|n| usize::try_from(n).ok())
+                    else {
+                        continue;
+                    };
+                    let Some(ci) = c
+                        .checked_sub(col_base)
+                        .and_then(|n| usize::try_from(n).ok())
+                    else {
+                        continue;
+                    };
+                    if has_dim_info && (ri >= rows || ci >= cols) {
+                        continue;
+                    }
+                    let f = if val.get_type().is_native() {
+                        val.to_f64()?
+                    } else {
+                        val.to_f64().unwrap_or(0.0)
+                    };
+                    cells.push((ri, ci, f));
                 }
             }
         }
         let rows = if rows == 0 {
-            (max_row - row_base + 1) as usize
+            max_row
+                .map(|upper| Self::matrix_extent(row_base, upper))
+                .transpose()?
+                .unwrap_or(0)
         } else {
             rows
         };
         let cols = if cols == 0 {
-            (max_col - col_base + 1) as usize
+            max_col
+                .map(|upper| Self::matrix_extent(col_base, upper))
+                .transpose()?
+                .unwrap_or(0)
         } else {
             cols
         };
-        if rows == 0 || cols == 0 || (!has_dim_info && (max_row < row_base || max_col < col_base)) {
+        if rows == 0 || cols == 0 {
             return Err(RuntimeError::General {
                 msg: format!("MAT: array '{}' has no 2-D elements", name),
             });
         }
         let mut mat = vec![vec![0.0; cols]; rows];
-        for (r, c, v) in cells {
-            let ri = (r - row_base) as usize;
-            let ci = (c - col_base) as usize;
+        for (ri, ci, v) in cells {
             if ri < rows && ci < cols {
                 mat[ri][ci] = v;
             }
@@ -3380,7 +4108,9 @@ impl Interpreter {
         Ok(mat)
     }
 
-    fn store_matrix(&mut self, name: &str, mat: &[Vec<f64>]) {
+    fn store_matrix(&mut self, name: &str, mat: &[Vec<f64>]) -> Result<(), RuntimeError> {
+        self.require_writable(name)?;
+        self.ensure_implicit_type(name);
         let (row_base, col_base) = self
             .array_dim_info
             .get(name)
@@ -3395,28 +4125,35 @@ impl Interpreter {
                 let base = self.env.borrow().option_base as i64;
                 (base, base)
             });
-        let prefix = format!("{}_", name);
-        let keys: Vec<String> = self
-            .env
-            .borrow()
-            .var_keys()
-            .into_iter()
-            .filter(|k| k.starts_with(&prefix))
-            .collect();
-        for key in keys {
-            self.env.borrow_mut().vars_mut().remove(&key);
-        }
+        let ty = self.env.borrow().declared_type(name);
+        let mut updates = Vec::new();
         for (i, row) in mat.iter().enumerate() {
             for (j, &val) in row.iter().enumerate() {
-                let key = format!(
-                    "{}_{}_{}",
+                let key = Self::array_key(
                     name,
-                    (i as i64) + row_base,
-                    (j as i64) + col_base
+                    &[
+                        Self::matrix_index(row_base, i)?,
+                        Self::matrix_index(col_base, j)?,
+                    ],
                 );
-                self.env.borrow_mut().set(&key, Value::Numeric(val));
+                let value = match &ty {
+                    Some(ty) => Value::Numeric(val).coerce_to(ty.clone())?,
+                    _ => Value::Numeric(val),
+                };
+                if self.env.borrow().is_const(&key) {
+                    return Err(RuntimeError::General {
+                        msg: format!("cannot assign to constant: {key}"),
+                    });
+                }
+                updates.push((key, value));
             }
         }
+        self.env.borrow_mut().clear_array_elements(name);
+        for (key, value) in updates {
+            self.env.borrow_mut().bind_element_type(name, &key);
+            self.env.borrow_mut().set_checked(&key, value)?;
+        }
+        Ok(())
     }
 
     fn string_slice_byte_range(s: &str, start_f: f64, end_f: f64) -> (usize, usize) {
@@ -3438,14 +4175,14 @@ impl Interpreter {
         (start_byte, end_byte)
     }
 
-    fn matrix_dims(&self, name: &str) -> Option<(usize, usize)> {
+    fn matrix_dims(&self, name: &str) -> Result<Option<(usize, usize)>, RuntimeError> {
         // First check DIM metadata
         if let Some(bounds) = self.array_dim_info.get(name)
             && bounds.len() == 2
         {
-            let rows = (bounds[0].1 - bounds[0].0 + 1) as usize;
-            let cols = (bounds[1].1 - bounds[1].0 + 1) as usize;
-            return Some((rows, cols));
+            let rows = Self::matrix_extent(bounds[0].0, bounds[0].1)?;
+            let cols = Self::matrix_extent(bounds[1].0, bounds[1].1)?;
+            return Ok(Some((rows, cols)));
         }
         // Fall back to scanning existing keys
         let prefix = format!("{}_", name);
@@ -3469,9 +4206,12 @@ impl Interpreter {
             }
         }
         if max_row >= base && max_col >= base {
-            Some(((max_row - base + 1) as usize, (max_col - base + 1) as usize))
+            Ok(Some((
+                Self::matrix_extent(base, max_row)?,
+                Self::matrix_extent(base, max_col)?,
+            )))
         } else {
-            None
+            Ok(None)
         }
     }
 
@@ -3512,7 +4252,7 @@ impl Interpreter {
     fn exec_mat_file_input(&mut self, file_num: i64, name: &str) -> Result<(), RuntimeError> {
         self.require_writable(name)?;
         let (rows, cols) = self
-            .matrix_dims(name)
+            .matrix_dims(name)?
             .ok_or_else(|| RuntimeError::General {
                 msg: format!("MAT INPUT: array '{name}' must be DIMed first"),
             })?;
@@ -3528,7 +4268,13 @@ impl Interpreter {
         // Validate every destination before reading, including flattened constant aliases.
         for row in 0..rows {
             for column in 0..cols {
-                let key = Self::array_key(name, &[row_base + row as i64, col_base + column as i64]);
+                let key = Self::array_key(
+                    name,
+                    &[
+                        Self::matrix_index(row_base, row)?,
+                        Self::matrix_index(col_base, column)?,
+                    ],
+                );
                 if self.env.borrow().is_const(&key) {
                     return Err(RuntimeError::General {
                         msg: format!("cannot assign to constant: {key}"),
@@ -3581,7 +4327,7 @@ impl Interpreter {
                     .collect::<Result<Vec<_>, _>>()
             })
             .collect::<Result<Vec<_>, _>>()?;
-        self.store_matrix(name, &matrix);
+        self.store_matrix(name, &matrix)?;
         Ok(())
     }
 
@@ -3609,11 +4355,11 @@ impl Interpreter {
                 Ok(ControlFlow::Normal)
             }
             MatOp::Read { name } => {
-                let (rows, cols) = self
-                    .matrix_dims(name)
-                    .ok_or_else(|| RuntimeError::General {
-                        msg: format!("MAT READ: array '{}' must be DIMed first", name),
-                    })?;
+                let (rows, cols) =
+                    self.matrix_dims(name)?
+                        .ok_or_else(|| RuntimeError::General {
+                            msg: format!("MAT READ: array '{}' must be DIMed first", name),
+                        })?;
                 let mut m = vec![vec![0.0; cols]; rows];
                 for row in m.iter_mut().take(rows) {
                     for cell in row.iter_mut().take(cols) {
@@ -3631,7 +4377,7 @@ impl Interpreter {
                         };
                     }
                 }
-                self.store_matrix(name, &m);
+                self.store_matrix(name, &m)?;
                 Ok(ControlFlow::Normal)
             }
             MatOp::Input { channel, name } => {
@@ -3640,11 +4386,11 @@ impl Interpreter {
                     self.exec_mat_file_input(file_num, name)?;
                     return Ok(ControlFlow::Normal);
                 }
-                let (rows, cols) = self
-                    .matrix_dims(name)
-                    .ok_or_else(|| RuntimeError::General {
-                        msg: format!("MAT INPUT: array '{}' must be DIMed first", name),
-                    })?;
+                let (rows, cols) =
+                    self.matrix_dims(name)?
+                        .ok_or_else(|| RuntimeError::General {
+                            msg: format!("MAT INPUT: array '{}' must be DIMed first", name),
+                        })?;
                 let mut m = vec![vec![0.0; cols]; rows];
                 for row in m.iter_mut().take(rows) {
                     write!(self.output, "? ").ok();
@@ -3661,64 +4407,64 @@ impl Interpreter {
                             .unwrap_or(0.0);
                     }
                 }
-                self.store_matrix(name, &m);
+                self.store_matrix(name, &m)?;
                 Ok(ControlFlow::Normal)
             }
             MatOp::Assign { target, source } => {
                 match source {
                     MatExpr::Name(src) => {
                         let m = self.extract_matrix(src)?;
-                        self.store_matrix(target, &m);
+                        self.store_matrix(target, &m)?;
                     }
                     MatExpr::Add(a, b) => {
                         let ma = self.extract_matrix(a)?;
                         let mb = self.extract_matrix(b)?;
-                        self.store_matrix(target, &mat::mat_add(&ma, &mb)?);
+                        self.store_matrix(target, &mat::mat_add(&ma, &mb)?)?;
                     }
                     MatExpr::Sub(a, b) => {
                         let ma = self.extract_matrix(a)?;
                         let mb = self.extract_matrix(b)?;
-                        self.store_matrix(target, &mat::mat_sub(&ma, &mb)?);
+                        self.store_matrix(target, &mat::mat_sub(&ma, &mb)?)?;
                     }
                     MatExpr::Mul(a, b) => {
                         let ma = self.extract_matrix(a)?;
                         let mb = self.extract_matrix(b)?;
-                        self.store_matrix(target, &mat::mat_mul(&ma, &mb)?);
+                        self.store_matrix(target, &mat::mat_mul(&ma, &mb)?)?;
                     }
                     MatExpr::ScalarMul(expr, a) => {
                         let k = self.eval_expr(expr)?.to_f64()?;
                         let ma = self.extract_matrix(a)?;
-                        self.store_matrix(target, &mat::mat_scalar_mul(k, &ma));
+                        self.store_matrix(target, &mat::mat_scalar_mul(k, &ma))?;
                     }
                     MatExpr::Inv(a) => {
                         let ma = self.extract_matrix(a)?;
                         let (inv, det) = mat::mat_inv(&ma)?;
+                        self.store_matrix(target, &inv)?;
                         self.last_det = det;
-                        self.store_matrix(target, &inv);
                     }
                     MatExpr::Trn(a) => {
                         let ma = self.extract_matrix(a)?;
-                        self.store_matrix(target, &mat::mat_trn(&ma));
+                        self.store_matrix(target, &mat::mat_trn(&ma))?;
                     }
                     MatExpr::Zer => {
                         let (rows, cols) =
-                            self.matrix_dims(target)
+                            self.matrix_dims(target)?
                                 .ok_or_else(|| RuntimeError::General {
                                     msg: format!("MAT ZER: array '{}' must be DIMed first", target),
                                 })?;
-                        self.store_matrix(target, &mat::mat_zer(rows, cols));
+                        self.store_matrix(target, &mat::mat_zer(rows, cols))?;
                     }
                     MatExpr::Con => {
                         let (rows, cols) =
-                            self.matrix_dims(target)
+                            self.matrix_dims(target)?
                                 .ok_or_else(|| RuntimeError::General {
                                     msg: format!("MAT CON: array '{}' must be DIMed first", target),
                                 })?;
-                        self.store_matrix(target, &mat::mat_con(rows, cols));
+                        self.store_matrix(target, &mat::mat_con(rows, cols))?;
                     }
                     MatExpr::Idn => {
                         let (rows, cols) =
-                            self.matrix_dims(target)
+                            self.matrix_dims(target)?
                                 .ok_or_else(|| RuntimeError::General {
                                     msg: format!("MAT IDN: array '{}' must be DIMed first", target),
                                 })?;
@@ -3727,7 +4473,7 @@ impl Interpreter {
                                 msg: "MAT IDN: matrix must be square".into(),
                             });
                         }
-                        self.store_matrix(target, &mat::mat_idn(rows));
+                        self.store_matrix(target, &mat::mat_idn(rows))?;
                     }
                 }
                 Ok(ControlFlow::Normal)
@@ -3881,7 +4627,6 @@ impl Interpreter {
         };
 
         if record_len.is_none()
-            && self.dialect == crate::Dialect::QuickBasic
             && open.access == FileAccess::OutIn
             && open.organization == Some(FileOrg::Sequential)
         {
@@ -3989,15 +4734,11 @@ impl Interpreter {
         let file_num = self.eval_expr(file_num_expr)?.to_i64()?;
         let mut specs = Vec::new();
         for field in fields {
+            self.require_string_target(&field.var.name, "FIELD")?;
             let width = self.eval_expr(&field.width)?.to_i64()?;
             if width < 0 {
                 return Err(RuntimeError::IllegalFunctionCall {
                     msg: format!("FIELD width must be non-negative, got {width}"),
-                });
-            }
-            if !field.var.name.ends_with('$') {
-                return Err(RuntimeError::TypeMismatch {
-                    msg: "FIELD variables must be strings".into(),
                 });
             }
             specs.push((width as usize, field.var.name.clone()));
@@ -4052,7 +4793,28 @@ impl Interpreter {
         };
 
         for (name, value) in updates {
-            self.env.borrow_mut().set(&name, Value::Str(value));
+            self.env
+                .borrow_mut()
+                .set_checked(&name, Value::Str(value))?;
+        }
+        Ok(())
+    }
+
+    fn require_string_target(&mut self, name: &str, operation: &str) -> Result<(), RuntimeError> {
+        self.require_writable(name)?;
+        self.ensure_implicit_type(name);
+        let declared = self.env.borrow().declared_type(name);
+        let is_string = match declared {
+            Some(BasicType::String | BasicType::FixedLengthString(_)) => true,
+            Some(_) => false,
+            None => {
+                matches!(self.env.borrow().get(name), Some(Value::Str(_))) || name.ends_with('$')
+            }
+        };
+        if !is_string {
+            return Err(RuntimeError::TypeMismatch {
+                msg: format!("{operation} target must be a string variable"),
+            });
         }
         Ok(())
     }
@@ -4063,11 +4825,7 @@ impl Interpreter {
         expr: &Expr,
         right_align: bool,
     ) -> Result<(), RuntimeError> {
-        if !var.name.ends_with('$') {
-            return Err(RuntimeError::TypeMismatch {
-                msg: "LSET/RSET target must be a string variable".into(),
-            });
-        }
+        self.require_string_target(&var.name, "LSET/RSET")?;
         let value = self.eval_expr(expr)?.to_string_val()?;
         let bytes = basic_string_to_bytes(&value);
         let mut field_update = None;
@@ -4088,16 +4846,27 @@ impl Interpreter {
         let value = if let Some(value) = field_update {
             value
         } else {
-            let width = self
-                .env
-                .borrow()
-                .get(&var.name)
+            let current = self.env.borrow().get(&var.name);
+            let current = match current {
+                Some(value) => Some(value),
+                None if matches!(
+                    self.env.borrow().declared_type(&var.name),
+                    Some(BasicType::FixedLengthString(_))
+                ) =>
+                {
+                    Some(self.default_for_var(&var.name)?)
+                }
+                None => None,
+            };
+            let width = current
                 .and_then(|v| v.to_string_val().ok())
                 .map(|s| basic_string_to_bytes(&s).len())
                 .unwrap_or(bytes.len());
             bytes_to_basic_string(&Self::aligned_bytes(&bytes, width, right_align))
         };
-        self.env.borrow_mut().set(&var.name, Value::Str(value));
+        self.env
+            .borrow_mut()
+            .set_checked(&var.name, Value::Str(value))?;
         Ok(())
     }
 
@@ -4196,6 +4965,7 @@ impl Interpreter {
     ) -> Result<(), RuntimeError> {
         let file_num = self.eval_expr(file_num_expr)?.to_i64()?;
         self.require_writable(&var.name)?;
+        self.ensure_implicit_type(&var.name);
         let fh = self
             .file_handles
             .get_mut(&file_num)
@@ -4221,7 +4991,9 @@ impl Interpreter {
         };
         // ASK POINTER returns 1-based byte position
         let result = byte_pos as f64 + 1.0;
-        self.env.borrow_mut().set(&var.name, Value::Numeric(result));
+        self.env
+            .borrow_mut()
+            .set_checked(&var.name, Value::Numeric(result))?;
         Ok(())
     }
 
@@ -4403,21 +5175,12 @@ impl Interpreter {
             .zip(fields)
             .map(|((var, key), field)| {
                 let existing = self.input_target_value(var, key)?;
-                match existing {
-                    Value::Str(_) => Ok(Value::Str(field)),
-                    Value::Numeric(_) => field.parse::<f64>().map(Value::Numeric).map_err(|_| {
-                        RuntimeError::TypeMismatch {
-                            msg: format!("INPUT expected a number for {}", var.name),
-                        }
-                    }),
-                    Value::Record { .. } => Err(RuntimeError::TypeMismatch {
-                        msg: "INPUT cannot read a record value".into(),
-                    }),
-                }
+                let value = self.parse_text_value(&field, &existing)?;
+                self.env.borrow().coerce_assignment(key, &value)
             })
             .collect::<Result<Vec<_>, _>>()?;
         for (key, value) in keys.iter().zip(values) {
-            self.env.borrow_mut().set(key, value);
+            self.env.borrow_mut().set_checked(key, value)?;
         }
         Ok(())
     }
@@ -4560,43 +5323,52 @@ impl Interpreter {
                 .to_string()
         };
 
-        self.env.borrow_mut().set(&key, Value::Str(line));
+        self.env.borrow_mut().set_checked(&key, Value::Str(line))?;
         Ok(())
     }
 
     fn get_var_basic_type(&self, name: &str, value: &Value) -> BasicType {
-        if let Value::Record { type_name, .. } = value {
-            return BasicType::UserDefined(type_name.clone());
-        }
-        if name.ends_with('%') {
-            BasicType::Integer
-        } else if name.ends_with('&') {
-            BasicType::Long
-        } else if name.ends_with('!') {
-            BasicType::Single
-        } else if name.ends_with('#') {
-            BasicType::Double
-        } else if name.ends_with('$') {
-            BasicType::String
-        } else {
-            if let Some(BasicType::UserDefined(type_name)) = self.array_type_map.get(name) {
-                BasicType::UserDefined(type_name.clone())
-            } else {
-                // Primitive AS declarations select defaults, not binary widths.
-                BasicType::Numeric
-            }
-        }
+        self.env
+            .borrow()
+            .declared_type(name)
+            .or_else(|| BasicType::from_suffix(name))
+            .unwrap_or_else(|| value.get_type())
     }
 
     /// Count the same payload that serialize_value writes, without allocating it.
     fn serialized_value_size(&self, val: &Value, ty: &BasicType) -> Result<usize, RuntimeError> {
         match ty {
+            BasicType::Int64 => {
+                val.coerce_to(ty.clone())?;
+                Ok(8)
+            }
+            BasicType::Bool | BasicType::Byte => {
+                val.coerce_to(ty.clone())?;
+                Ok(1)
+            }
+            BasicType::Bytes => {
+                let Value::Bytes(bytes) = val else {
+                    return Err(RuntimeError::TypeMismatch {
+                        msg: "expected BYTES".into(),
+                    });
+                };
+                u32::try_from(bytes.len()).map_err(|_| RuntimeError::Overflow {
+                    msg: "binary buffer exceeds 32-bit record length".into(),
+                })?;
+                bytes
+                    .len()
+                    .checked_add(4)
+                    .ok_or_else(|| RuntimeError::Overflow {
+                        msg: "binary buffer is too large".into(),
+                    })
+            }
+
             BasicType::Integer => {
-                val.to_f64()?;
+                val.coerce_to(ty.clone())?;
                 Ok(2)
             }
             BasicType::Long | BasicType::Single => {
-                val.to_f64()?;
+                val.coerce_to(ty.clone())?;
                 Ok(4)
             }
             BasicType::Double | BasicType::Numeric => {
@@ -4658,20 +5430,60 @@ impl Interpreter {
         ty: &BasicType,
     ) -> Result<(), RuntimeError> {
         match ty {
+            BasicType::Int64 => {
+                writer
+                    .write_all(&val.to_exact_i64()?.to_le_bytes())
+                    .map_err(|e| RuntimeError::from_io("write", e))?;
+            }
+            BasicType::Bool => {
+                let Value::Bool(value) = val.coerce_to(BasicType::Bool)? else {
+                    unreachable!()
+                };
+                writer
+                    .write_all(&[u8::from(value)])
+                    .map_err(|e| RuntimeError::from_io("write", e))?;
+            }
+            BasicType::Byte => {
+                let Value::Byte(value) = val.coerce_to(BasicType::Byte)? else {
+                    unreachable!()
+                };
+                writer
+                    .write_all(&[value])
+                    .map_err(|e| RuntimeError::from_io("write", e))?;
+            }
+            BasicType::Bytes => {
+                let Value::Bytes(bytes) = val else {
+                    return Err(RuntimeError::TypeMismatch {
+                        msg: "expected BYTES".into(),
+                    });
+                };
+                let len = u32::try_from(bytes.len()).map_err(|_| RuntimeError::Overflow {
+                    msg: "binary buffer exceeds 32-bit record length".into(),
+                })?;
+                writer
+                    .write_all(&len.to_le_bytes())
+                    .and_then(|_| writer.write_all(bytes))
+                    .map_err(|e| RuntimeError::from_io("write", e))?;
+            }
+
             BasicType::Integer => {
-                let n = val.to_f64()? as i16;
+                let Value::Integer(n) = val.coerce_to(BasicType::Integer)? else {
+                    unreachable!()
+                };
                 writer
                     .write_all(&n.to_le_bytes())
                     .map_err(|e| RuntimeError::from_io("write", e))?;
             }
             BasicType::Long => {
-                let n = val.to_f64()? as i32;
+                let Value::Long(n) = val.coerce_to(BasicType::Long)? else {
+                    unreachable!()
+                };
                 writer
                     .write_all(&n.to_le_bytes())
                     .map_err(|e| RuntimeError::from_io("write", e))?;
             }
             BasicType::Single => {
-                let n = val.to_f64()? as f32;
+                let n = val.to_f32()?;
                 writer
                     .write_all(&n.to_le_bytes())
                     .map_err(|e| RuntimeError::from_io("write", e))?;
@@ -4683,9 +5495,10 @@ impl Interpreter {
                     .map_err(|e| RuntimeError::from_io("write", e))?;
             }
             BasicType::FixedLengthString(len) => {
-                let s = val.to_string_val()?;
-                let mut bytes = basic_string_to_bytes(&s);
-                bytes.resize(*len, 0);
+                let Value::Str(s) = val.coerce_to(BasicType::FixedLengthString(*len))? else {
+                    unreachable!()
+                };
+                let bytes = basic_string_to_bytes(&s);
                 writer
                     .write_all(&bytes)
                     .map_err(|e| RuntimeError::from_io("write", e))?;
@@ -4737,29 +5550,83 @@ impl Interpreter {
         ty: &BasicType,
     ) -> Result<Value, RuntimeError> {
         match ty {
+            BasicType::Int64 => {
+                let mut buf = [0u8; 8];
+                reader
+                    .read_exact(&mut buf)
+                    .map_err(|e| RuntimeError::from_io("read", e))?;
+                Ok(Value::Int64(i64::from_le_bytes(buf)))
+            }
+            BasicType::Bool | BasicType::Byte => {
+                let mut buf = [0u8; 1];
+                reader
+                    .read_exact(&mut buf)
+                    .map_err(|e| RuntimeError::from_io("read", e))?;
+                if *ty == BasicType::Byte {
+                    return Ok(Value::Byte(buf[0]));
+                }
+                match buf[0] {
+                    0 => Ok(Value::Bool(false)),
+                    1 => Ok(Value::Bool(true)),
+                    _ => Err(RuntimeError::TypeMismatch {
+                        msg: "invalid binary BOOL: expected 0 or 1".into(),
+                    }),
+                }
+            }
+            BasicType::Bytes => {
+                let mut size = [0u8; 4];
+                reader
+                    .read_exact(&mut size)
+                    .map_err(|e| RuntimeError::from_io("read", e))?;
+                let len = u32::from_le_bytes(size) as usize;
+                let remaining = reader
+                    .get_ref()
+                    .metadata()
+                    .map_err(|e| RuntimeError::from_io("read", e))?
+                    .len()
+                    .saturating_sub(
+                        reader
+                            .stream_position()
+                            .map_err(|e| RuntimeError::from_io("read", e))?,
+                    );
+                if len as u64 > remaining {
+                    return Err(RuntimeError::IoError {
+                        msg: "BYTES record extends past end of file".into(),
+                        code: 62,
+                    });
+                }
+                let mut buf = Vec::new();
+                buf.try_reserve_exact(len)
+                    .map_err(|_| RuntimeError::Overflow {
+                        msg: "byte buffer is too large".into(),
+                    })?;
+                buf.resize(len, 0);
+                reader
+                    .read_exact(&mut buf)
+                    .map_err(|e| RuntimeError::from_io("read", e))?;
+                Ok(Value::Bytes(buf))
+            }
+
             BasicType::Integer => {
                 let mut buf = [0u8; 2];
                 reader
                     .read_exact(&mut buf)
                     .map_err(|e| RuntimeError::from_io("read", e))?;
-                let val = i16::from_le_bytes(buf) as f64;
-                Ok(Value::Numeric(val))
+                Ok(Value::Integer(i16::from_le_bytes(buf)))
             }
             BasicType::Long => {
                 let mut buf = [0u8; 4];
                 reader
                     .read_exact(&mut buf)
                     .map_err(|e| RuntimeError::from_io("read", e))?;
-                let val = i32::from_le_bytes(buf) as f64;
-                Ok(Value::Numeric(val))
+                Ok(Value::Long(i32::from_le_bytes(buf)))
             }
             BasicType::Single => {
                 let mut buf = [0u8; 4];
                 reader
                     .read_exact(&mut buf)
                     .map_err(|e| RuntimeError::from_io("read", e))?;
-                let val = f32::from_le_bytes(buf) as f64;
-                Ok(Value::Numeric(val))
+                Ok(Value::Single(f32::from_le_bytes(buf)))
             }
             BasicType::Double | BasicType::Numeric => {
                 let mut buf = [0u8; 8];
@@ -4774,9 +5641,6 @@ impl Interpreter {
                 reader
                     .read_exact(&mut buf)
                     .map_err(|e| RuntimeError::from_io("read", e))?;
-                while buf.last() == Some(&0) {
-                    buf.pop();
-                }
                 Ok(Value::Str(bytes_to_basic_string(&buf)))
             }
             BasicType::String => {
@@ -4811,6 +5675,19 @@ impl Interpreter {
         }
     }
 
+    fn read_field_record<R: IoRead>(reader: &mut R, buffer: &mut [u8]) -> io::Result<usize> {
+        let mut bytes_read = 0;
+        while bytes_read < buffer.len() {
+            match reader.read(&mut buffer[bytes_read..]) {
+                Ok(0) => break,
+                Ok(count) => bytes_read += count,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(bytes_read)
+    }
+
     fn exec_get_put_inner(
         &mut self,
         fh: &mut FileHandle,
@@ -4839,40 +5716,42 @@ impl Interpreter {
             })?;
 
             if let Some((key, existing, var_type)) = operand {
-                if self.dialect == crate::Dialect::QuickBasic {
-                    let val = self.deserialize_value(reader, var_type)?;
-                    self.env.borrow_mut().set(key, val);
-                } else {
-                    let read_len = match existing {
-                        Value::Str(s) if !s.is_empty() => s.len(),
-                        _ => 128,
-                    };
-                    let mut buf = vec![0u8; read_len];
-                    let bytes_read = reader
-                        .read(&mut buf)
+                if let Value::Bytes(buffer) = existing {
+                    let mut bytes = Vec::new();
+                    bytes
+                        .try_reserve_exact(buffer.len())
+                        .map_err(|_| RuntimeError::Overflow {
+                            msg: "byte buffer is too large".into(),
+                        })?;
+                    reader
+                        .take(buffer.len() as u64)
+                        .read_to_end(&mut bytes)
                         .map_err(|e| RuntimeError::from_io("GET", e))?;
-                    if bytes_read == 0 {
-                        fh.eof_flag = true;
-                    }
-                    buf.truncate(bytes_read);
-                    let s = String::from_utf8_lossy(&buf)
-                        .trim_end_matches('\0')
-                        .to_string();
-                    self.env.borrow_mut().set(key, Value::Str(s));
+                    fh.eof_flag = reader
+                        .fill_buf()
+                        .map_err(|e| RuntimeError::from_io("GET", e))?
+                        .is_empty();
+                    self.env
+                        .borrow_mut()
+                        .set_checked(key, Value::Bytes(bytes))?;
+                } else {
+                    let val = self.deserialize_value(reader, var_type)?;
+                    self.env.borrow_mut().set_checked(key, val)?;
                 }
             } else if fh.record_len.is_some() && !fh.field_layout.is_empty() {
                 let record_len = fh.record_len.unwrap_or(fh.field_buffer.len());
                 fh.field_buffer.resize(record_len, b' ');
                 fh.field_buffer.fill(b' ');
-                let bytes_read = reader
-                    .read(&mut fh.field_buffer)
+                let bytes_read = Self::read_field_record(reader, &mut fh.field_buffer)
                     .map_err(|e| RuntimeError::from_io("read", e))?;
                 if bytes_read == 0 {
                     fh.eof_flag = true;
                 }
                 let updates = Self::field_variable_values(fh);
                 for (name, value) in updates {
-                    self.env.borrow_mut().set(&name, Value::Str(value));
+                    self.env
+                        .borrow_mut()
+                        .set_checked(&name, Value::Str(value))?;
                 }
             }
         } else {
@@ -4890,16 +5769,12 @@ impl Interpreter {
             })?;
 
             if let Some((_, val, var_type)) = operand {
-                if self.dialect == crate::Dialect::QuickBasic {
-                    self.serialize_value(writer, val, var_type)?;
-                } else {
-                    let s = match val {
-                        Value::Str(s) => s.clone(),
-                        other => other.format_for_write(),
-                    };
+                if let Value::Bytes(bytes) = val {
                     writer
-                        .write_all(s.as_bytes())
+                        .write_all(bytes)
                         .map_err(|e| RuntimeError::from_io("PUT", e))?;
+                } else {
+                    self.serialize_value(writer, val, var_type)?;
                 }
             } else if fh.record_len.is_some() && !fh.field_layout.is_empty() {
                 writer
@@ -4935,17 +5810,17 @@ impl Interpreter {
                     .collect::<Result<Vec<_>, _>>()?;
                 Self::array_key(&var.name, &indices)
             };
-            let value = if var.indices.is_empty() {
-                self.env.borrow().get(&key).unwrap_or_else(|| {
-                    if self.dialect == crate::Dialect::QuickBasic {
-                        Value::Numeric(0.0)
-                    } else {
-                        Value::Str(String::new())
-                    }
-                })
-            } else {
-                self.input_target_value(var, &key)?
-            };
+            let value =
+                if var.indices.is_empty() && self.env.borrow().declared_type(&var.name).is_some() {
+                    self.input_target_value(var, &key)?
+                } else if var.indices.is_empty() {
+                    self.env
+                        .borrow()
+                        .get(&key)
+                        .unwrap_or_else(|| Value::Numeric(0.0))
+                } else {
+                    self.input_target_value(var, &key)?
+                };
             let var_type = self.get_var_basic_type(&var.name, &value);
             Some((key, value, var_type))
         } else {
@@ -5048,43 +5923,31 @@ mod like_tests {
     }
 
     #[test]
-    fn like_requires_strings_and_returns_dialect_truth_values() {
-        for (dialect, truth) in [
-            (crate::Dialect::QuickBasic, -1.0),
-            (crate::Dialect::Ansi, 1.0),
+    fn like_requires_strings_and_returns_numeric_truth_values() {
+        let text = Value::Str("abc".into());
+        let pattern = Value::Str("a*".into());
+        assert_eq!(
+            Interpreter::eval_binary_op(&text, BinOp::Like, &pattern)
+                .unwrap()
+                .to_f64()
+                .unwrap(),
+            -1.0
+        );
+        assert_eq!(
+            Interpreter::eval_binary_op(&pattern, BinOp::Like, &text)
+                .unwrap()
+                .to_f64()
+                .unwrap(),
+            0.0
+        );
+        for (left, right) in [
+            (Value::Numeric(1.0), pattern.clone()),
+            (text.clone(), Value::Numeric(1.0)),
         ] {
-            let mut interpreter = Interpreter::with_io(
-                Box::new(Vec::new()),
-                Box::new(std::io::Cursor::new(Vec::new())),
-            );
-            interpreter.dialect = dialect;
-            let text = Value::Str("abc".into());
-            let pattern = Value::Str("a*".into());
-            assert_eq!(
-                interpreter
-                    .eval_binary_op(&text, BinOp::Like, &pattern)
-                    .unwrap()
-                    .to_f64()
-                    .unwrap(),
-                truth
-            );
-            assert_eq!(
-                interpreter
-                    .eval_binary_op(&pattern, BinOp::Like, &text)
-                    .unwrap()
-                    .to_f64()
-                    .unwrap(),
-                0.0
-            );
-            for (left, right) in [
-                (Value::Numeric(1.0), pattern.clone()),
-                (text.clone(), Value::Numeric(1.0)),
-            ] {
-                assert!(matches!(
-                    interpreter.eval_binary_op(&left, BinOp::Like, &right),
-                    Err(RuntimeError::TypeMismatch { .. })
-                ));
-            }
+            assert!(matches!(
+                Interpreter::eval_binary_op(&left, BinOp::Like, &right),
+                Err(RuntimeError::TypeMismatch { .. })
+            ));
         }
     }
 }
@@ -5198,6 +6061,125 @@ mod file_io_tests {
             Err(RuntimeError::IoError { .. })
         ));
         assert!(interpreter.file_handles.contains_key(&1));
+    }
+
+    #[test]
+    fn positioning_does_not_seek_when_flushing_fails() {
+        for statement in [
+            Stmt::Seek {
+                file_num: Expr::NumericLit(1.0),
+                position: Expr::NumericLit(10.0),
+            },
+            Stmt::SetPointer {
+                file_num: Expr::NumericLit(1.0),
+                position: Expr::NumericLit(10.0),
+            },
+        ] {
+            let file = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(file.path(), b"original").unwrap();
+            let mut read_only = File::open(file.path()).unwrap();
+            read_only.seek(SeekFrom::Start(2)).unwrap();
+            let mut handle = empty_handle();
+            handle.reader = Some(BufReader::new(read_only.try_clone().unwrap()));
+            let mut writer = BufWriter::new(read_only);
+            writer.write_all(b"pending").unwrap();
+            handle.writer = Some(writer);
+            handle.eof_flag = true;
+            let mut interpreter =
+                Interpreter::with_io(Box::new(Vec::new()), Box::new(Cursor::new(Vec::new())));
+            interpreter.file_handles.insert(1, handle);
+
+            assert!(matches!(
+                interpreter.exec_stmt(&statement),
+                Err(RuntimeError::IoError { .. })
+            ));
+            let handle = interpreter.file_handles.get_mut(&1).unwrap();
+            assert_eq!(
+                handle.reader.as_mut().unwrap().stream_position().unwrap(),
+                2
+            );
+            assert_eq!(handle.writer.as_ref().unwrap().buffer(), b"pending");
+            assert!(handle.eof_flag);
+        }
+    }
+
+    #[test]
+    fn reset_reports_flush_failure_and_preserves_all_handles() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let read_only = File::open(file.path()).unwrap();
+        let mut writer = BufWriter::new(read_only);
+        writer.write_all(b"pending buffered output").unwrap();
+        let mut handle = empty_handle();
+        handle.writer = Some(writer);
+        let mut interpreter =
+            Interpreter::with_io(Box::new(Vec::new()), Box::new(Cursor::new(Vec::new())));
+        interpreter.file_handles.insert(1, handle);
+        interpreter.file_handles.insert(2, empty_handle());
+
+        assert!(matches!(
+            interpreter.exec_stmt(&Stmt::Reset),
+            Err(RuntimeError::IoError { .. })
+        ));
+        assert_eq!(interpreter.file_handles.len(), 2);
+        assert_eq!(
+            interpreter.file_handles[&1]
+                .writer
+                .as_ref()
+                .unwrap()
+                .buffer(),
+            b"pending buffered output"
+        );
+
+        // Replacing the failed destination lets the same buffered write be retried.
+        let recovered = tempfile::tempfile().unwrap();
+        let handle = interpreter.file_handles.get_mut(&1).unwrap();
+        *handle.writer.as_mut().unwrap().get_mut() = recovered.try_clone().unwrap();
+        interpreter.exec_stmt(&Stmt::Reset).unwrap();
+        assert!(interpreter.file_handles.is_empty());
+        let mut recovered = recovered;
+        recovered.rewind().unwrap();
+        let mut bytes = Vec::new();
+        recovered.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"pending buffered output");
+    }
+
+    #[test]
+    fn field_records_retry_short_and_interrupted_reads() {
+        struct ChunkedReader {
+            data: Cursor<Vec<u8>>,
+            calls: usize,
+        }
+        impl IoRead for ChunkedReader {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                self.calls += 1;
+                if self.calls == 1 || self.calls == 3 {
+                    return Err(io::ErrorKind::Interrupted.into());
+                }
+                let count = buffer.len().min(2);
+                self.data.read(&mut buffer[..count])
+            }
+        }
+
+        let mut reader = ChunkedReader {
+            data: Cursor::new(b"ABCDEFG".to_vec()),
+            calls: 0,
+        };
+        let mut buffer = [b' '; 4];
+        assert_eq!(
+            Interpreter::read_field_record(&mut reader, &mut buffer).unwrap(),
+            4
+        );
+        assert_eq!(&buffer, b"ABCD");
+        buffer.fill(b' ');
+        assert_eq!(
+            Interpreter::read_field_record(&mut reader, &mut buffer).unwrap(),
+            3
+        );
+        assert_eq!(&buffer, b"EFG ");
+        assert_eq!(
+            Interpreter::read_field_record(&mut reader, &mut buffer).unwrap(),
+            0
+        );
     }
 
     #[test]

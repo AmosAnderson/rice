@@ -1,6 +1,6 @@
 # Console input and output
 
-All features on this page are accepted in both Rice dialects. They implement text output and terminal escape sequences, with an internal byte buffer for limited screen queries. They do not provide a graphical screen, DOS video memory, or a complete terminal emulator.
+All features on this page are accepted. They implement text output and terminal escape sequences, with an internal byte buffer for limited screen queries. They do not provide a graphical screen, DOS video memory, or a complete terminal emulator.
 
 ## PRINT and WRITE
 
@@ -33,13 +33,13 @@ LINE INPUT "Description: "; descriptions$(1)
 
 `INPUT ["literal prompt";] variable [, variable ...]` always prints `? `, prefixed by the supplied literal prompt. A comma instead of the prompt semicolon is accepted but does not suppress `? `. Prompt expressions and leading-semicolon variants are not implemented.
 
-For a single target, the entire line is the input field. With several targets, input is split at commas and fields are trimmed. Interactive `INPUT` does not implement quoted-CSV parsing: quote characters remain part of string input, and quoted commas still split fields. Numeric targets require finite numbers accepted by the numeric parser. A wrong field count or invalid number prints `? Redo from start` and requests the full line again, without assigning any targets from the rejected line. The existing value/declaration or `$` suffix determines whether a target is a string.
+For a single target, the entire line is its input field. Multiple fields split at commas and are trimmed; interactive INPUT does not implement quoted CSV. Integer targets parse decimal integers directly with their range checks. SINGLE rounds to binary32; NUMERIC/DOUBLE uses binary64. Numeric console input must be finite. BOOL accepts TRUE/FALSE/1/0, and BYTES accepts hex pairs with optional &H. STRING * n pads/truncates text. Invalid input prints ? Redo from start and retries the full line without assigning any target. Declared destination types take precedence over stored values.
 
-Both statements accept scalar names and indexed array elements in either dialect. Record members, slices, and empty subscripts (`a()`) are rejected. Index expressions use checked integer conversion, truncating fractions toward zero. Arrays retain their usual flattened storage, defaults, and lack of bounds/rank enforcement. Explicit `AS STRING` or `AS STRING * n` array declarations supply empty string defaults for untouched elements; without AS, suffix/DEFSTR defaults apply. Existing element values determine input conversion when present. Declaration checks under OPTION EXPLICIT apply to the base name, and constant destinations are rejected.
+Both statements accept scalar names and array elements. Members, slices, and empty subscripts are rejected. Indices truncate through checked integer conversion; bounds/rank remain unenforced. Missing elements use declared defaults, including spaces for STRING * n. Constants and undeclared names under OPTION EXPLICIT are rejected before input consumption.
 
 INPUT resolves all destination indices once, left to right, before prompting. Retries keep those locations and assign no values from a rejected line. For example, `i = 1: INPUT i, a(i)` always writes the second field to `a(1)`, even when the first field changes `i`. This differs from READ, which assigns each target before resolving the next. Index-expression side effects are not rolled back after failures.
 
-`LINE INPUT ["literal prompt";] variable` prints only the supplied prompt, with no automatic `? `, and reads one complete line, stripping LF/CR. Its destination is resolved once before reading. It stores a string even in an unsuffixed target or array element that previously held a number; use a `$` name to keep intent clear. Both statements report error 62 when the input stream ends and leave destination values unchanged on EOF. Console `LINE INPUT` differs from `LINE INPUT #`, which checks that its target is a string.
+LINE INPUT accepts an optional literal prompt and one destination. It reads one complete line, removes LF/CR, and assigns text through the destination type rules. A declared numeric destination rejects text; use STRING or a dynamic implicit variable. STRING * n pads/truncates. Both input statements report error 62 on EOF and leave values unchanged. LINE INPUT # additionally requires a string destination before reading.
 
 ## Screen statements
 
@@ -96,7 +96,7 @@ column = POS(0)          ' 4
 
 Ordinary characters are returned as strings, including Unicode characters. Enter returns `CHR$(13)`, Escape `CHR$(27)`, Backspace `CHR$(8)`, and Tab `CHR$(9)`. Ctrl+A–Z returns codes 1–26; supported ASCII control combinations are mapped similarly. Unsupported key events return `""`.
 
-Extended keys return two characters: NUL (`CHR$(0)`) followed by the code below. Modifiers on these special keys do not select additional QB scan-code variants.
+Extended keys return two characters: NUL (`CHR$(0)`) followed by the code below. Modifiers on these special keys do not select additional scan-code variants.
 
 | Key | Second character/code |
 |---|---|

@@ -1,26 +1,19 @@
 # RICE BASIC syntax index
 
-This index covers the implemented statement families and links to their specifications. Read the [language reference](docs/language-reference.md) for semantics, the [dialect table](docs/dialects.md) for mode differences, and [compatibility limits](docs/compatibility.md) for deviations and unknowns. Rice defaults to QBasic 1.1 compatibility mode; its ANSI mode is selected explicitly. Neither mode is a claim of complete historical conformance.
+This index covers Rice BASIC and links to its authoritative [language reference](docs/language-reference.md). [Implementation limits](docs/compatibility.md) describe unsupported and partial features.
 
-In the syntax forms below, `[ ... ]` means optional text, `{ ... }` means alternatives, and `...` means repetition. These markers are not literal BASIC syntax. `name` is a bare identifier, `expr` is an expression, `label` is a named label or literal line number, and `type` is a supported type name. Block bodies and terminators should be on separate physical lines. Forms marked **QB only** are rejected in ANSI mode; other forms are available in both modes, subject to the linked limits.
+In the syntax forms below, `[ ... ]` means optional text, `{ ... }` means alternatives, and `...` means repetition. These markers are not literal BASIC syntax. `name` is a bare identifier, `expr` is an expression, `label` is a named label or literal line number, and `type` is a supported type name. Block bodies and terminators should be on separate physical lines.
 
-## Running and selecting a dialect
+## Running Rice
 
 ```sh
 cargo build
 cargo run -- program.bas
 cargo run -- --check program.bas
-cargo run -- --dialect ansi program.bas
-cargo run -- --dialect qb program.bas
-cargo run -- --compat program.bas
 cargo run
 ```
 
-```basic
-OPTION DIALECT "ANSI"
-```
-
-Source selectors `QB`, `QBASIC`, `QBASIC 1.1`, `QBASIC1.1`, and `QUICKBASIC` select QB, case-insensitively. The first recognized source directive selects the mode for the whole source and overrides the CLI selection. See [Runtime and tooling](docs/runtime.md) for installed-binary usage, REPL commands, and the LSP.
+See [Runtime and tooling](docs/runtime.md) for installed-binary usage, REPL commands, and the LSP.
 
 ## Source structure and expressions
 
@@ -33,9 +26,9 @@ done:
 PRINT "named label"
 ```
 
-Keywords and identifiers are case-insensitive. Identifiers begin with an ASCII letter or `_`, followed by ASCII letters, digits, or `_`. `$` is accepted in both modes; QB additionally accepts `%`, `!`, `#`, and `&`. Suffixes distinguish names but do not enforce primitive assignment types. Use spaces around concatenation `&`, especially after an unsuffixed name in QB.
+Keywords and identifiers are case-insensitive. Identifiers begin with an ASCII letter or `_`, followed by ASCII letters, digits, or `_`. Supported suffixes are `$`, `%`, `!`, `#`, and `&`. Suffixes distinguish names and enforce INTEGER (`%`), LONG (`&`), SINGLE (`!`), DOUBLE (`#`), and STRING (`$`), unless an explicit AS overrides them. Use spaces around concatenation `&`, especially after an unsuffixed name.
 
-Numbers include `12`, `.5`, `1.5E-3`, and `1D3`. QB additionally accepts unsigned hexadecimal `&HFF` and octal `&O77`, with optional trailing `&`. Decimal numeric suffixes are unsupported. Strings use double quotes; a doubled quote inside a literal represents one quote in both modes (`"say ""hi"""`). Backslashes remain literal. There is no line continuation or `?` PRINT abbreviation.
+Numbers include `12`, `.5`, `1.5E-3`, and `1D3`. Rice also accepts unsigned hexadecimal `&HFF` and octal `&O77`, with optional trailing `&`. Decimal numeric suffixes are unsupported. Strings use double quotes; a doubled quote inside a literal represents one quote (`"say ""hi"""`). Backslashes remain literal. There is no line continuation or `?` PRINT abbreviation.
 
 | Precedence, highest first | Operators |
 |---|---|
@@ -43,7 +36,7 @@ Numbers include `12`, `.5`, `1.5E-3`, and `1D3`. QB additionally accepts unsigne
 | Power, right associative | `^` |
 | Unary sign | `+`, `-` |
 | Multiplicative | `*`, `/` |
-| Integer division (QB only) | `\` |
+| Integer division | `\` |
 | Modulus | `MOD` |
 | Additive/concatenation | `+`, `-`, `&` |
 | Comparison | `=`, `<>`, `<`, `>`, `<=`, `>=`, `LIKE` |
@@ -51,12 +44,12 @@ Numbers include `12`, `.5`, `1.5E-3`, and `1D3`. QB additionally accepts unsigne
 | Conjunction | `AND` |
 | Disjunction | `OR` |
 | Exclusive OR | `XOR` |
-| Equivalence (QB only) | `EQV` |
-| Implication (QB only) | `IMP` |
+| Equivalence | `EQV` |
+| Implication | `IMP` |
 
-QB comparisons return `-1`/`0`; ANSI comparisons return `1`/`0`. QB logical operators are 64-bit bitwise operations; ANSI uses logical nonzero/zero tests. Both eagerly evaluate operands. QB-only EQV complements XOR; IMP combines the complement of the left operand with the right using OR, after integer conversion. QB `\` rounds operands to nearest-even signed 64-bit integers and truncates the quotient toward zero, with zero-divisor and overflow checks. MOD uses real-number floor modulus in both modes. `&` concatenates strings in both modes; string `+` is QB-only. See [Expressions and operators](docs/language-reference.md#expressions-and-operators).
+Legacy numeric/string comparisons return `-1` for true and `0` for false. Comparisons involving native INT64/BYTE/BOOL/BYTES return BOOL. Numeric logical operators are 64-bit bitwise operations; native BOOL logic is logical. Both eagerly evaluate operands. EQV complements XOR; IMP combines the complement of the left operand with the right using OR, after integer conversion. With legacy numeric operands, `\` rounds operands to nearest-even signed 64-bit integers and truncates the quotient toward zero, with zero-divisor and overflow checks. MOD uses floor modulus for both exact integers and real numbers. Both `&` and `+` concatenate two strings or two BYTES buffers. See [Expressions and operators](docs/language-reference.md#expressions-and-operators).
 
-`text$ LIKE pattern$` performs case-sensitive whole-string wildcard matching in both modes: `*` matches any sequence, `?` one Unicode scalar, `#` one ASCII digit, and `[abc]`, `[a-z]`, `[!abc]` match sets/ranges or their complements. Malformed classes raise an error. See [wildcard matching](docs/language-reference.md#wildcard-matching) for literal escapes and exact rules.
+`text$ LIKE pattern$` performs case-sensitive whole-string wildcard matching: `*` matches any sequence, `?` one Unicode scalar, `#` one ASCII digit, and `[abc]`, `[a-z]`, `[!abc]` match sets/ranges or their complements. Malformed classes raise an error. See [wildcard matching](docs/language-reference.md#wildcard-matching) for literal escapes and exact rules.
 
 ## Values, declarations, arrays, and assignment
 
@@ -64,7 +57,7 @@ QB comparisons return `-1`/`0`; ANSI comparisons return `1`/`0`. QB logical oper
 [LET] name = expr
 [LET] name(index [, index ...]) = expr
 DIM [SHARED] declaration [, declaration ...]
-CONST name = expr [, name = expr ...]
+CONST name [AS type] = expr [, name [AS type] = expr ...]
 OPTION BASE {0 | 1}
 REDIM [PRESERVE] declaration [, declaration ...]
 ERASE name [, name ...]
@@ -72,7 +65,7 @@ SWAP target, target
 CLEAR
 ```
 
-A `declaration` is `name [(bound [, bound ...])] [AS type]`. A `bound` is `upper` or `lower TO upper`, both inclusive. Types are `NUMERIC`, `INTEGER`, `LONG`, `SINGLE`, `DOUBLE`, `STRING`, `STRING * integer-literal`, or a declared TYPE name. Every number is stored as `f64` regardless of its type spelling.
+A `declaration` is `name [(bound [, bound ...])] [AS type]`. A `bound` is `upper` or `lower TO upper`, both inclusive. Types are `NUMERIC`, `INTEGER`, `LONG`, `SINGLE`, `DOUBLE`, `INT64`, `BOOL`/`BOOLEAN`, `BYTE`, `BYTES`, `STRING`, `STRING * integer-literal`, or a declared TYPE name. All declarations enforce conversion. INTEGER is i16, LONG i32, SINGLE f32, INT64 i64, BYTE u8, and NUMERIC/DOUBLE f64; STRING * n pads/truncates Unicode characters. See [Data types and declarations](docs/data-types.md).
 
 ```basic
 OPTION BASE 0
@@ -84,11 +77,11 @@ PRINT LBOUND(table, 1); UBOUND(table, 2)
 REDIM PRESERVE values(20)
 ```
 
-Rice's initial OPTION BASE is **1 in both modes**. Ordinary array access does not enforce declared bounds/rank. Arrays use flattened variable keys. Explicit array AS chooses defaults for untouched elements: numeric zero, empty string, or a fresh record, overriding suffix/DEFSTR. It does not coerce existing elements or enforce fixed string lengths. Array metadata is interpreter-wide; REDIM/ERASE retain prefix-based removal and metadata limitations. SWAP accepts scalar names and array elements and resolves both locations once before exchanging their values. Members and slices are not SWAP targets. See [Arrays](docs/language-reference.md#arrays) and [Values, variables, and assignment](docs/language-reference.md#values-variables-and-assignment).
+Rice's initial OPTION BASE is **1**. Ordinary array access does not enforce declared bounds/rank. Arrays use flattened variable keys. Explicit array AS chooses defaults for untouched elements: a typed zero, false, empty buffer/string, or fresh record, overriding suffix/DEFSTR. Every declared element type validates assignments and DIM converts retained elements before replacing the declaration. Fixed strings initialize with spaces. Array metadata is interpreter-wide; REDIM/ERASE retain prefix-based removal and metadata limitations. SWAP accepts scalar names and array elements and resolves both locations once before exchanging their values. Members and slices are not SWAP targets. See [Arrays](docs/language-reference.md#arrays) and [Values, variables, and assignment](docs/language-reference.md#values-variables-and-assignment).
 
-CONST lists execute left to right, so later initializers can use earlier names. Earlier definitions and expression side effects survive a later failure. AS clauses and trailing commas are not accepted.
+CONST lists execute left to right, so later initializers can use earlier names. Earlier definitions and expression side effects survive a later failure. An optional AS clause enforces each constant initializer's type; trailing commas are not accepted.
 
-QB-only declaration forms:
+Declaration forms:
 
 ```text
 OPTION EXPLICIT
@@ -141,9 +134,9 @@ EXIT {FOR | DO | WHILE | SELECT | SUB | FUNCTION}
 {END | STOP | SYSTEM | QUIT}
 ```
 
-A CASE `test` is `expr`, `lower TO upper`, or `IS comparison-operator expr`. CASE uses the first matching branch. FOR evaluates its limit/step once; STEP 0 skips its body. `NEXT j, i` closes nested FOR loops from innermost to outermost in both modes; names must match, and intervening blocks must already be closed. `EXIT WHILE` and `EXIT SELECT` leave the nearest active matching construct in the current procedure or top-level execution, passing through intervening blocks; unmatched exits raise an error. Both are Rice extensions in both modes. Loop-continue remains unsupported. Both WEND and END WHILE are accepted in both modes.
+A CASE `test` is `expr`, `lower TO upper`, or `IS comparison-operator expr`. CASE uses the first matching branch. FOR evaluates its limit/step once; STEP 0 skips its body. `NEXT j, i` closes nested FOR loops from innermost to outermost; names must match, and intervening blocks must already be closed. `EXIT WHILE` and `EXIT SELECT` leave the nearest active matching construct in the current procedure or top-level execution, passing through intervening blocks; unmatched exits raise an error. Both are Rice extensions. Loop-continue remains unsupported. Both WEND and END WHILE are accepted.
 
-QB-only legacy jumps:
+Legacy jumps:
 
 ```text
 IF expr THEN line-number [ELSE line-number]
@@ -168,12 +161,12 @@ END FUNCTION
 CALL name [(expr [, expr ...])]
 name [expr [, expr ...]]
 DECLARE SUB name [(parameter [, parameter ...])]
-DECLARE FUNCTION name [(parameter [, parameter ...])]
-SHARED name [, name ...]
+DECLARE FUNCTION name [(parameter [, parameter ...])] [AS type]
+SHARED name[()] [AS type] [, name[()] [AS type] ...]
 STATIC declaration [, declaration ...]
 ```
 
-A `parameter` is `[BYVAL | BYREF] name[()] [AS type]`. QB parameters default to BYREF; ANSI defaults to BYVAL. BYREF copies modified values back to variables and individual array elements, capturing each destination during argument evaluation; indices run once, and later aliases win on writeback. Assign to the function name to provide its result. A FUNCTION return AS clause initializes a fresh numeric zero, empty string, or nested record at each call, overriding suffix defaults. Array parameter annotations do not implement whole-array passing, and primitive return/parameter type clauses do not guarantee coercion. Use explicit CALL syntax with parentheses for multiple arguments; QB `name (x)` makes its argument an expression and suppresses BYREF writeback. The [Procedures reference](docs/procedures.md) specifies available call forms, copy-in/copy-out behavior, scope, STATIC, declaration limits, and QB `DEF FN` syntax.
+A `parameter` is `[BYVAL | BYREF] name[()] [AS type]`. parameters default to BYREF. BYREF copies modified values back to variables and individual array elements, capturing each destination during argument evaluation; indices run once, and later aliases win on writeback. Assign to the function name to provide its result. A FUNCTION return AS clause initializes a fresh value of its declared type at each call, overriding suffix defaults. All explicit parameter and return types enforce conversion; suffix shorthand also enforces its type. Unsuffixed parameters/results without AS remain dynamic. Array parameter annotations do not implement whole-array passing. Use explicit CALL syntax with parentheses for multiple arguments; `name (x)` makes its argument an expression and suppresses BYREF writeback. The [Procedures reference](docs/procedures.md) specifies available call forms, copy-in/copy-out behavior, scope, STATIC, declaration limits, and `DEF FN` syntax.
 
 ## Records and strings
 
@@ -190,14 +183,14 @@ name$(start:end)
 [LET] name$(start:end) = string-expression
 ```
 
-QB substring assignment:
+Substring assignment:
 
 ```text
 MID$(target, start [, length]) = string-expression
 MID$(names$(i), start [, length]) = string-expression
 ```
 
-Slices use 1-based inclusive endpoints. Slice assignment replaces the selected region and can change the string length. QB MID$ assignment overwrites a scalar or array element without changing its length; indices resolve once before the other expressions. See [User-defined types](docs/user-defined-types.md) and [String slicing](docs/string-slicing.md).
+Slices use 1-based inclusive endpoints. Slice assignment replaces the selected region and can change the string length. MID$ assignment overwrites a scalar or array element without changing its length; indices resolve once before the other expressions. See [User-defined types](docs/user-defined-types.md) and [String slicing](docs/string-slicing.md).
 
 ## DATA and console I/O
 
@@ -214,11 +207,11 @@ INPUT ["literal prompt" {; | ,}] target [, target ...]
 LINE INPUT ["literal prompt" {; | ,}] target
 ```
 
-PRINT items are expressions, `TAB(expr)`, or `SPC(expr)`, separated by `;` or `,`. A trailing separator suppresses the newline. Commas use 16-column zones; numbers have no automatic leading/trailing spaces in either mode. LPRINT writes to the normal output stream. INPUT prompt commas and semicolons both append `? ` in Rice.
+PRINT items are expressions, `TAB(expr)`, or `SPC(expr)`, separated by `;` or `,`. A trailing separator suppresses the newline. Commas use 16-column zones; numbers have no automatic leading/trailing spaces. LPRINT writes to the normal output stream. INPUT prompt commas and semicolons both append `? ` in Rice.
 
-An input `target` is a scalar `name` or an array element `name(expr [, expr ...])`, including string arrays such as `names$(i)`. Record members, slices, and empty subscripts are rejected. INPUT resolves all indices once before reading and keeps them across retries; READ resolves and assigns each target in order. Existing integer conversion, declaration, and array-storage rules apply. These destinations work in both modes and in the file forms below.
+An input `target` is a scalar `name` or an array element `name(expr [, expr ...])`, including string arrays such as `names$(i)`. Record members, slices, and empty subscripts are rejected. INPUT resolves all indices once before reading and keeps them across retries; READ resolves and assigns each target in order. Existing integer conversion, declaration, and array-storage rules apply. These destinations work and in the file forms below.
 
-DATA contains literal numbers with optional leading `+`/`-`, strings, or single unquoted identifiers; unquoted text is uppercased. Empty comma-separated fields, including leading/trailing fields, supply numeric zero or an empty string according to the READ destination's current/default value. Bare DATA has no items; `DATA ,` has two empty items. Empty fields cannot initialize a record; MAT READ treats them as zero. RESTORE labels must be attached directly to DATA; unknown labels silently rewind. See [DATA / READ / RESTORE](docs/language-reference.md#data--read--restore), [Input and output](docs/language-reference.md#input-and-output), and [PRINT USING](docs/print-using.md).
+DATA contains literal numbers with optional leading `+`/`-`, strings, or single unquoted identifiers; unquoted text is uppercased. Empty comma-separated fields, including leading/trailing fields, supply the destination's typed zero, false, empty buffer, or empty string. Bare DATA has no items; `DATA ,` has two empty items. Empty fields cannot initialize a record; MAT READ treats them as zero. RESTORE labels must be attached directly to DATA; unknown labels silently rewind. See [DATA / READ / RESTORE](docs/language-reference.md#data--read--restore), [Input and output](docs/language-reference.md#input-and-output), and [PRINT USING](docs/print-using.md).
 
 Text-console statements:
 
@@ -252,7 +245,7 @@ SET #number: POINTER position
 ASK #number: POINTER name
 ```
 
-Both OPEN spellings are accepted in both modes; pointer/record interpretation can depend on the dialect. GET/PUT operands may be scalar names or individual array elements, including record arrays, for example `GET #1, , records(i)` and `PUT #1, , values%(i, j)`. Channel, position, and indices evaluate once before transfer. GET/PUT can omit their operand for QB FIELD buffers. QB-only record field declarations/alignment include:
+Both OPEN spellings are accepted; record positions depend on the configured record length. GET/PUT operands may be scalar names or individual array elements, including record arrays, for example `GET #1, , records(i)` and `PUT #1, , values%(i, j)`. Channel, position, and indices evaluate once before transfer. GET/PUT can omit their operand for FIELD buffers. Record field layouts include:
 
 ```text
 FIELD [#]number, width AS name$ [, width AS name$ ...]
@@ -260,7 +253,7 @@ LSET name$ = expr
 RSET name$ = expr
 ```
 
-The [File I/O specification](docs/file-io.md) is authoritative for exact OPEN clause ordering, optional commas and targets, supported modes, pointer units, binary record types, FIELD, `MK*`/`CV*` functions, UTF-8/byte conversion, and error handling. Do not infer that all syntactic modes implement complete QBasic file semantics.
+The [File I/O specification](docs/file-io.md) is authoritative for exact OPEN clause ordering, optional commas and targets, supported modes, pointer units, binary record types, FIELD, `MK*`/`CV*` functions, UTF-8/byte conversion, and error handling. Supported syntax and runtime effects are documented separately.
 
 ## Exception handling
 
@@ -276,7 +269,7 @@ CONTINUE
 
 `IN` is required. EXTYPE and EXTEXT$ expose structured exception information. RETRY repeats the protected block, and CONTINUE exits the handler and continues with the protected statement after the failed direct statement; neither is a generic loop control.
 
-QB-only classic forms:
+Classic forms:
 
 ```text
 ON ERROR GOTO label
@@ -319,7 +312,7 @@ FILES [path]
 SHELL [command]
 ```
 
-QB-only system assignments:
+System assignments:
 
 ```text
 ENVIRON string-expression
@@ -329,11 +322,11 @@ ENVIRON string-expression
 
 See [System and filesystem statements](docs/language-reference.md#system-and-filesystem-statements) for host behavior and no-op cases. ENVIRON and date/time assignments set interpreter-local overrides.
 
-The complete [Built-in function reference](docs/builtins.md) lists every implemented function, alias, argument count, type expectation, and known limitation. `MIN(number [, number ...])` and `MAX(number [, number ...])` select numeric extrema in both modes; each requires at least one numeric argument. Call spelling matters: use `RND()`, `PI()`, and `MAXNUM()` with parentheses; use bare `TIMER` and `FREEFILE`. An unknown `name(args)` may resolve as an array element instead of producing an unknown-function error. `VAL` accepts decimal prefixes with E/D exponents, and `ENVIRON$(index)` enumerates sorted environment entries (including interpreter overrides) from index 1; see the builtin reference for limits.
+The complete [Built-in function reference](docs/builtins.md) lists every implemented function, alias, argument count, type expectation, and known limitation. `MIN(number [, number ...])` and `MAX(number [, number ...])` select numeric extrema; each requires at least one numeric argument. Call spelling matters: use `RND()`, `PI()`, and `MAXNUM()` with parentheses; use bare `TIMER` and `FREEFILE`. An unknown `name(args)` may resolve as an array element instead of producing an unknown-function error. `VAL` accepts decimal prefixes with E/D exponents, and `ENVIRON$(index)` enumerates sorted environment entries (including interpreter overrides) from index 1; see the builtin reference for limits.
 
-`LEN(string)` counts Unicode scalar values. `LEN(record)` returns its current typed binary PUT byte count, including nested records and variable-string length headers; this size query works in both modes, while typed PUT serialization remains QB-specific.
+`LEN(string)` counts Unicode scalar values; `LEN(buffer)` and `BYTELEN(buffer)` count bytes. `LEN(record)` returns its current typed binary PUT byte count, including nested records and variable-string length headers; native scalar INT64/BOOL/BYTE layouts and raw BYTES transfers retain their native representations.
 
-Both modes also support these Rice extensions:
+Rice also supports these features:
 
 ```text
 REPLACE$(text$, find$, replacement$ [, start [, count]])

@@ -11,46 +11,6 @@ pub mod repl;
 pub mod token;
 pub mod value;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Dialect {
-    Ansi,
-    QuickBasic,
-}
-
-pub const DEFAULT_DIALECT: Dialect = Dialect::QuickBasic;
-
-/// Detect a source directive using BASIC tokens so strings, comments, and
-/// identifiers containing directive-like text do not change the dialect.
-pub fn detect_dialect(source: &str) -> Option<Dialect> {
-    use token::Token;
-
-    // Inspect lines independently so an unrelated lexical error does not hide
-    // a directive elsewhere. QuickBasic accepts both dialects' identifier forms.
-    for line in source.lines() {
-        let Ok(tokens) = lexer::Lexer::with_dialect(line, Dialect::QuickBasic).tokenize() else {
-            continue;
-        };
-        for window in tokens.windows(3) {
-            if let [
-                Token::KwOption,
-                Token::Identifier(name),
-                Token::StringLiteral(value),
-            ] = [&window[0].token, &window[1].token, &window[2].token]
-                && name == "DIALECT"
-            {
-                match value.to_ascii_uppercase().as_str() {
-                    "ANSI" => return Some(Dialect::Ansi),
-                    "QB" | "QBASIC" | "QBASIC 1.1" | "QBASIC1.1" | "QUICKBASIC" => {
-                        return Some(Dialect::QuickBasic);
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-    None
-}
-
 /// Non-blocking read of a single keypress using crossterm.
 /// Returns empty string if no key available or on error.
 pub fn poll_inkey() -> String {
@@ -145,54 +105,6 @@ pub fn update_screen_buffer(
 mod tests {
     use super::*;
 
-    #[test]
-    fn dialect_detection_ignores_strings_comments_and_identifier_fragments() {
-        for source in [
-            r#"PRINT "OPTION DIALECT ""ANSI""""#,
-            r#"REM OPTION DIALECT "ANSI""#,
-            r#"PRINT 1 ' OPTION DIALECT "ANSI""#,
-            r#"MYOPTION DIALECT "ANSI""#,
-            r#"OPTIONDIALECT "ANSI""#,
-        ] {
-            assert_eq!(detect_dialect(source), None, "{source}");
-        }
-    }
-
-    #[test]
-    fn dialect_detection_accepts_labels_comments_and_whitespace() {
-        assert_eq!(
-            detect_dialect("10 option\tdialect \"ANSI\" ' comment"),
-            Some(Dialect::Ansi)
-        );
-        assert_eq!(
-            detect_dialect("label: OPTION DIALECT \"QBasic 1.1\""),
-            Some(Dialect::QuickBasic)
-        );
-        assert_eq!(
-            detect_dialect("PREM = 1: OPTION DIALECT \"ANSI\""),
-            Some(Dialect::Ansi)
-        );
-        assert_eq!(
-            detect_dialect("REM$ = \"text\": OPTION DIALECT \"ANSI\""),
-            Some(Dialect::Ansi)
-        );
-    }
-
-    #[test]
-    fn dialect_detection_respects_doubled_quotes() {
-        let quoted_directive = r#"PRINT "text "" : OPTION DIALECT ""ANSI"" : ' REM"" text""#;
-        assert_eq!(detect_dialect(quoted_directive), None);
-        assert_eq!(
-            detect_dialect(&format!("{quoted_directive}: OPTION DIALECT \"QB\"")),
-            Some(Dialect::QuickBasic)
-        );
-        assert_eq!(
-            detect_dialect("PRINT \"\"\"\"\r\nOPTION DIALECT \"ANSI\""),
-            Some(Dialect::Ansi)
-        );
-        // The escaped quotation marks are part of the directive value.
-        assert_eq!(detect_dialect("OPTION DIALECT \"\"\"ANSI\"\"\""), None);
-    }
     #[test]
     fn inkey_maps_control_characters_without_truncating_unicode() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};

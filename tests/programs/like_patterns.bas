@@ -1,4 +1,4 @@
-' LIKE is a Rice extension in both dialects; matches cover the entire string.
+' LIKE matches cover the entire string.
 PRINT "report42.bas" LIKE "report##.bas"; "|"; "report4.bas" LIKE "report##.bas"
 PRINT "é漢🙂" LIKE "???"; "|"; "é漢🙂" LIKE "??"
 PRINT "abc" LIKE "a*c"; "|"; "ac" LIKE "a*c"; "|"; "abc" LIKE "b"

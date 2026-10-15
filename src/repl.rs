@@ -20,9 +20,7 @@ const COLOR_OPERATOR: &str = "\x1b[38;2;212;212;212m";
 const COLOR_COMMENT: &str = "\x1b[38;2;106;153;85m";
 const COLOR_RESET: &str = "\x1b[0m";
 
-struct BasicHelper {
-    dialect: crate::Dialect,
-}
+struct BasicHelper;
 
 impl rustyline::Helper for BasicHelper {}
 impl rustyline::completion::Completer for BasicHelper {
@@ -38,7 +36,7 @@ impl Highlighter for BasicHelper {
         if line.is_empty() {
             return Cow::Borrowed(line);
         }
-        Cow::Owned(highlight_line(line, self.dialect))
+        Cow::Owned(highlight_line(line))
     }
 
     fn highlight_char(
@@ -79,11 +77,11 @@ fn find_comment_start(line: &str) -> Option<usize> {
     None
 }
 
-fn highlight_line(line: &str, dialect: crate::Dialect) -> String {
+fn highlight_line(line: &str) -> String {
     if line.contains('\n') {
         return line
             .split('\n')
-            .map(|part| highlight_line(part, dialect))
+            .map(|part| highlight_line(part))
             .collect::<Vec<_>>()
             .join("\n");
     }
@@ -96,7 +94,7 @@ fn highlight_line(line: &str, dialect: crate::Dialect) -> String {
     let mut result = String::with_capacity(line.len() * 3);
 
     if !code_part.is_empty() {
-        let tokens = match Lexer::with_dialect(code_part, dialect).tokenize() {
+        let tokens = match Lexer::new(code_part).tokenize() {
             Ok(t) => t,
             Err(_) => {
                 // Lex error — return line uncolored
@@ -128,7 +126,17 @@ fn highlight_line(line: &str, dialect: crate::Dialect) -> String {
                 .unwrap_or(code_part.len());
             let end = start + code_part[start..next_start].trim_end().len();
             result.push_str(&code_part[last_end..start]);
-            result.push_str(token_color(&st.token));
+            let explicit_type = matches!(
+                &st.token,
+                Token::Identifier(name)
+                    if matches!(name.as_str(), "NUMERIC" | "INT64" | "BOOL" | "BOOLEAN" | "BYTE" | "BYTES")
+            ) && index > 0
+                && matches!(tokens[index - 1].token, Token::KwAs);
+            result.push_str(if explicit_type {
+                COLOR_KEYWORD
+            } else {
+                token_color(&st.token)
+            });
             result.push_str(&code_part[start..end]);
             result.push_str(COLOR_RESET);
             last_end = end;
@@ -284,11 +292,10 @@ fn is_file_command_assignment(command: &str, arg: &str) -> bool {
     // target; quoted paths never reach this branch.
     arg.match_indices('=').any(|(index, _)| {
         let candidate = format!("{command} {} = 0", &arg[..index]);
-        let dialect = crate::Dialect::QuickBasic;
-        let Ok(tokens) = Lexer::with_dialect(&candidate, dialect).tokenize() else {
+        let Ok(tokens) = Lexer::new(&candidate).tokenize() else {
             return false;
         };
-        let Ok(program) = Parser::with_dialect(tokens, dialect).parse_program() else {
+        let Ok(program) = Parser::new(tokens).parse_program() else {
             return false;
         };
         program.statements.len() == 1
@@ -378,15 +385,6 @@ impl Repl {
         }
     }
 
-    pub fn with_dialect(dialect: crate::Dialect) -> Self {
-        let mut interpreter = Interpreter::new();
-        interpreter.dialect = dialect;
-        Self {
-            interpreter,
-            program: BTreeMap::new(),
-        }
-    }
-
     pub fn run(&mut self) {
         println!("RICE BASIC v{}", env!("CARGO_PKG_VERSION"));
         println!("Type SYSTEM or press Ctrl+D to exit.");
@@ -394,9 +392,7 @@ impl Repl {
         println!();
 
         let mut editor = Editor::new().expect("failed to create editor");
-        editor.set_helper(Some(BasicHelper {
-            dialect: self.interpreter.dialect,
-        }));
+        editor.set_helper(Some(BasicHelper));
         let history_file = dirs_history_path();
         let _ = editor.load_history(&history_file);
 
@@ -404,9 +400,6 @@ impl Repl {
         let mut depth: i32 = 0;
 
         loop {
-            if let Some(helper) = editor.helper_mut() {
-                helper.dialect = self.interpreter.dialect;
-            }
             let input = if depth > 0 {
                 let indent = "    ".repeat(depth as usize);
                 editor.readline_with_initial(". ", (&indent, ""))
@@ -474,7 +467,7 @@ impl Repl {
                         }
                     }
 
-                    let delta = compute_depth_delta(trimmed, self.interpreter.dialect);
+                    let delta = compute_depth_delta(trimmed);
 
                     if depth == 0 {
                         if delta <= 0 {
@@ -523,9 +516,8 @@ impl Repl {
     }
 
     fn execute_line(&mut self, line: &str) -> Result<bool, Box<dyn std::error::Error>> {
-        let dialect = crate::detect_dialect(line).unwrap_or(self.interpreter.dialect);
-        let tokens = Lexer::with_dialect(line, dialect).tokenize()?;
-        let program = Parser::with_dialect(tokens, dialect).parse_program()?;
+        let tokens = Lexer::new(line).tokenize()?;
+        let program = Parser::new(tokens).parse_program()?;
         // Check if any statement is END
         let has_end = program
             .statements
@@ -587,10 +579,8 @@ impl Repl {
         }
         let source = self.stored_source();
 
-        // Fresh interpreter for each RUN (classic behavior: RUN clears variables)
-        let dialect = self.interpreter.dialect;
+        // Each RUN starts with a fresh interpreter and clears variables.
         self.interpreter = Interpreter::new();
-        self.interpreter.dialect = dialect;
 
         match self.interpreter.run_source(&source) {
             Ok(()) => {}
@@ -625,8 +615,8 @@ impl Repl {
 
 /// Compute the net nesting depth change for a single line of BASIC code.
 /// Returns positive for block openers, negative for block closers.
-fn compute_depth_delta(line: &str, dialect: crate::Dialect) -> i32 {
-    let tokens = match Lexer::with_dialect(line, dialect).tokenize() {
+fn compute_depth_delta(line: &str) -> i32 {
+    let tokens = match Lexer::new(line).tokenize() {
         Ok(t) => t,
         Err(_) => return 0,
     };
@@ -704,14 +694,6 @@ fn dirs_history_path() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn compute_depth_delta(line: &str) -> i32 {
-        super::compute_depth_delta(line, crate::Dialect::Ansi)
-    }
-
-    fn highlight_line(line: &str) -> String {
-        super::highlight_line(line, crate::Dialect::Ansi)
-    }
 
     #[test]
     fn test_depth_single_line_if() {
@@ -1158,11 +1140,9 @@ mod tests {
             Box::new(output.clone()),
             Box::new(std::io::Cursor::new(Vec::<u8>::new())),
         );
-        repl.execute_line("OPTION DIALECT \"ANSI\": KEEP = 42")
-            .unwrap();
+        repl.execute_line("KEEP = 42").unwrap();
         repl.load_program(file.path()).unwrap();
         assert_eq!(output.clone().into_string(), "");
-        assert_eq!(repl.interpreter.dialect, crate::Dialect::Ansi);
         repl.execute_line("PRINT KEEP").unwrap();
         assert_eq!(output.into_string(), "42\n");
 
@@ -1204,11 +1184,7 @@ mod tests {
             "RESUME NEXT",
             r#"OPEN "test.txt" FOR INPUT AS #1"#,
         ] {
-            assert_eq!(
-                super::compute_depth_delta(line, crate::Dialect::QuickBasic),
-                0,
-                "{line}"
-            );
+            assert_eq!(super::compute_depth_delta(line), 0, "{line}");
         }
         assert_eq!(compute_depth_delta("LOOP WHILE x < 3"), -1);
         assert_eq!(compute_depth_delta("DEF FNdouble(x)"), 1);
@@ -1226,7 +1202,7 @@ mod tests {
             "PRINT \"你好\"\nPRINT 42",
             "PRINT é",
         ] {
-            let highlighted = super::highlight_line(line, crate::Dialect::QuickBasic);
+            let highlighted = super::highlight_line(line);
             let plain = [
                 COLOR_KEYWORD,
                 COLOR_STRING,
@@ -1240,6 +1216,31 @@ mod tests {
             .fold(highlighted, |text, code| text.replace(code, ""));
             assert_eq!(plain, line);
         }
+    }
+
+    #[test]
+    fn test_native_types_highlight_only_in_type_positions() {
+        for name in ["INT64", "BOOL", "BOOLEAN", "BYTE", "BYTES"] {
+            let line = format!("DIM item AS {name}: {name} = 1: PRINT {name}()");
+            let highlighted = super::highlight_line(&line);
+            assert_eq!(
+                highlighted
+                    .matches(&format!("{COLOR_KEYWORD}{name}{COLOR_RESET}"))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                highlighted
+                    .matches(&format!("{COLOR_IDENT}{name}{COLOR_RESET}"))
+                    .count(),
+                2
+            );
+        }
+        let line = "PRINT UTF8DECODE$(UTF8ENCODE(\"é😀\")) ' AS BYTES";
+        let highlighted = super::highlight_line(line);
+        assert!(highlighted.contains(&format!("{COLOR_IDENT}UTF8DECODE${COLOR_RESET}")));
+        assert!(highlighted.contains(&format!("{COLOR_STRING}\"é😀\"{COLOR_RESET}")));
+        assert!(highlighted.contains(&format!("{COLOR_COMMENT}' AS BYTES{COLOR_RESET}")));
     }
 
     #[test]
@@ -1270,21 +1271,30 @@ mod tests {
     }
 
     #[test]
-    fn test_immediate_dialect_directive_applies_before_parsing() {
-        let mut repl = Repl::with_dialect(crate::Dialect::Ansi);
-        assert!(!repl.execute_line("OPTION DIALECT \"QB\": X% = 7").unwrap());
-        assert_eq!(repl.interpreter.dialect, crate::Dialect::QuickBasic);
+    fn test_removed_dialect_directives_fail_without_changing_state() {
+        let output = crate::interpreter::SharedOutput::new();
+        let mut repl = Repl::new();
+        repl.interpreter = Interpreter::with_io(
+            Box::new(output.clone()),
+            Box::new(std::io::Cursor::new(Vec::<u8>::new())),
+        );
+        repl.execute_line("KEEP = 42").unwrap();
+        for name in ["QB", "ANSI", "unknown"] {
+            assert!(
+                repl.execute_line(&format!("OPTION DIALECT \"{name}\": KEEP = 0"))
+                    .is_err()
+            );
+        }
+        repl.execute_line("PRINT KEEP; \":\"; (1 = 1); \":\"; (2 AND 1)")
+            .unwrap();
+        assert_eq!(output.into_string(), "42:-1:0\n");
     }
 
     #[test]
     fn test_integer_division_highlight_and_numeric_if_depth() {
-        let dialect = crate::Dialect::QuickBasic;
-        let highlighted = super::highlight_line("PRINT 7 \\ 2", dialect);
+        let highlighted = super::highlight_line("PRINT 7 \\ 2");
         assert!(highlighted.contains(&format!("{COLOR_OPERATOR}\\{COLOR_RESET}")));
-        assert_eq!(
-            super::compute_depth_delta("IF 1 THEN 100 ELSE 200", dialect),
-            0
-        );
+        assert_eq!(super::compute_depth_delta("IF 1 THEN 100 ELSE 200"), 0);
     }
 
     #[test]
@@ -1292,20 +1302,18 @@ mod tests {
         let line = r#"PRINT "é ""' REM 😀"""; value ' 日本語"#;
         let literal = r#""é ""' REM 😀""""#;
         assert_eq!(find_comment_start(line), line.find("' 日本語"));
-        for dialect in [crate::Dialect::QuickBasic, crate::Dialect::Ansi] {
-            let highlighted = super::highlight_line(line, dialect);
-            assert!(highlighted.contains(&format!("{COLOR_STRING}{literal}{COLOR_RESET}")));
-            assert!(highlighted.contains(&format!("{COLOR_COMMENT}' 日本語{COLOR_RESET}")));
-            assert_eq!(
-                super::compute_depth_delta(r#"PRINT """THEN"": FOR i = 1 TO 3""""#, dialect),
-                0
-            );
-        }
+        let highlighted = super::highlight_line(line);
+        assert!(highlighted.contains(&format!("{COLOR_STRING}{literal}{COLOR_RESET}")));
+        assert!(highlighted.contains(&format!("{COLOR_COMMENT}' 日本語{COLOR_RESET}")));
+        assert_eq!(
+            super::compute_depth_delta(r#"PRINT """THEN"": FOR i = 1 TO 3""""#),
+            0
+        );
     }
 
     #[test]
     fn test_eqv_imp_highlight_as_keywords() {
-        let highlighted = super::highlight_line("PRINT 1 EQV 2 IMP 3", crate::Dialect::QuickBasic);
+        let highlighted = super::highlight_line("PRINT 1 EQV 2 IMP 3");
         for operator in ["EQV", "IMP"] {
             assert!(highlighted.contains(&format!("{COLOR_KEYWORD}{operator}{COLOR_RESET}")));
         }
@@ -1313,27 +1321,18 @@ mod tests {
 
     #[test]
     fn test_depth_next_lists_close_each_named_loop() {
-        for dialect in [crate::Dialect::QuickBasic, crate::Dialect::Ansi] {
-            for (source, expected) in [
-                ("NEXT", -1),
-                ("NEXT inner, outer", -2),
-                ("NEXT k, J, I ' comment", -3),
-                ("100 NEXT k, j, i", -3),
-                ("NEXT k, j: NEXT i", -3),
-                ("NEXT j, i: FOR n = 1 TO 2", -1),
-                ("RESUME NEXT", 0),
-                ("PRINT \"NEXT j, i\"", 0),
-            ] {
-                assert_eq!(
-                    super::compute_depth_delta(source, dialect),
-                    expected,
-                    "{source}"
-                );
-            }
+        for (source, expected) in [
+            ("NEXT", -1),
+            ("NEXT inner, outer", -2),
+            ("NEXT k, J, I ' comment", -3),
+            ("100 NEXT k, j, i", -3),
+            ("NEXT k, j: NEXT i", -3),
+            ("NEXT j, i: FOR n = 1 TO 2", -1),
+            ("RESUME NEXT", 0),
+            ("PRINT \"NEXT j, i\"", 0),
+        ] {
+            assert_eq!(super::compute_depth_delta(source), expected, "{source}");
         }
-        assert_eq!(
-            super::compute_depth_delta("NEXT J%, I%", crate::Dialect::QuickBasic),
-            -2
-        );
+        assert_eq!(super::compute_depth_delta("NEXT J%, I%"), -2);
     }
 }

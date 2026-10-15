@@ -33,14 +33,10 @@ fn run_file(path: &str) -> String {
 }
 
 #[test]
-fn test_strcomp_in_both_dialects() {
+fn test_strcomp() {
     let source = std::fs::read_to_string("tests/programs/string_compare.bas").unwrap();
-    for dialect in ["QB", "ANSI"] {
-        assert_eq!(
-            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{source}")),
-            "-1\n0\n1\n-1\n0\n0\n-1\n1\n1\nmatched\n",
-        );
-    }
+
+    assert_eq!(run_bas(&source), "-1\n0\n1\n-1\n0\n0\n-1\n1\n1\nmatched\n",);
 }
 
 #[test]
@@ -65,12 +61,8 @@ FUNCTION Mode()
     Mode = 1
 END FUNCTION
 "#;
-    for dialect in ["QB", "ANSI"] {
-        assert_eq!(
-            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{source}")),
-            "0\nLRM\n"
-        );
-    }
+
+    assert_eq!(run_bas(&source), "0\nLRM\n");
 }
 
 #[test]
@@ -97,20 +89,12 @@ fn test_strcomp_reports_invalid_mode_as_catchable_basic_error() {
 }
 
 #[test]
-fn test_like_patterns_in_both_dialects() {
+fn test_like_patterns() {
     let source = std::fs::read_to_string("tests/programs/like_patterns.bas").unwrap();
     let expected =
         "-1|0\n-1|0\n-1|-1|0\n-1|-1|0\n-1|-1|0\n-1|0|-1\n-1|-1|-1\n0|-1\n-1|0\ntext file\n";
-    for dialect in ["QB", "ANSI"] {
-        assert_eq!(
-            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{source}")),
-            if dialect == "ANSI" {
-                expected.replace("-1", "1")
-            } else {
-                expected.into()
-            },
-        );
-    }
+
+    assert_eq!(run_bas(&source), expected,);
 }
 
 #[test]
@@ -130,16 +114,11 @@ FUNCTION PatternValue$()
     PatternValue$ = "file#.*"
 END FUNCTION
 "#;
-    for (dialect, expected) in [("QB", "-1\nLR\n"), ("ANSI", "1\nLR\n")] {
-        assert_eq!(
-            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{source}")),
-            expected
-        );
-    }
+    assert_eq!(run_bas(source), "-1\nLR\n");
 }
 
 #[test]
-fn test_like_pattern_and_type_errors_are_catchable_in_both_dialects() {
+fn test_like_pattern_and_type_errors_are_catchable() {
     for expression in [
         "\"x\" LIKE \"[]\"",
         "\"x\" LIKE \"[!]\"",
@@ -149,16 +128,11 @@ fn test_like_pattern_and_type_errors_are_catchable_in_both_dialects() {
         "1 LIKE \"*\"",
         "\"1\" LIKE 1",
     ] {
-        for dialect in ["QB", "ANSI"] {
-            let source = format!(
-                "OPTION DIALECT \"{dialect}\"\nWHEN EXCEPTION IN\nPRINT {expression}\nUSE\nPRINT \"caught\"\nEND WHEN\nPRINT \"done\"\n"
-            );
-            assert_eq!(
-                run_bas(&source),
-                "caught\ndone\n",
-                "{dialect}: {expression}"
-            );
-        }
+        let source = format!(
+            "WHEN EXCEPTION IN\nPRINT {expression}\nUSE\nPRINT \"caught\"\nEND WHEN\nPRINT \"done\"\n"
+        );
+        assert_eq!(run_bas(&source), "caught\ndone\n", "{expression}");
+
         let expected = if expression.starts_with("1 LIKE") || expression.ends_with("LIKE 1") {
             "13\n"
         } else {
@@ -292,7 +266,6 @@ fn test_indexed_mid_assignment_errors_leave_target_unchanged() {
         "MID$(a$(1:2), 1) = \"x\"",
         "MID$(a(1).text, 1) = \"x\"",
         "MID$(\"literal\", 1) = \"x\"",
-        "OPTION DIALECT \"ANSI\"\nMID$(a$(1), 1) = \"x\"",
     ] {
         let (_, result) = run_bas_may_fail(source);
         assert!(
@@ -308,20 +281,13 @@ fn test_indexed_mid_assignment_errors_leave_target_unchanged() {
 #[test]
 fn test_byref_array_elements_in_subs_functions_and_records() {
     let source = std::fs::read_to_string("tests/programs/byref_elements.bas").unwrap();
-    for dialect in ["QB", "ANSI"] {
-        assert_eq!(
-            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{source}")),
-            "11\n130|13\nupdated\n42|0\n"
-        );
-    }
+
+    assert_eq!(run_bas(&source), "11\n130|13\nupdated\n42|0\n");
 }
 
 #[test]
 fn test_byref_array_indices_are_evaluated_once_and_frozen_left_to_right() {
-    for dialect in ["QB", "ANSI"] {
-        let source = format!(
-            r#"
-OPTION DIALECT "{dialect}"
+    let source = r#"
 DIM a(2)
 a(1) = 10: a(2) = 20
 i = 1: calls = 0
@@ -349,17 +315,13 @@ FUNCTION MoveIndex()
     MoveIndex = 0
 END FUNCTION
 "#
-        );
-        assert_eq!(run_bas(&source), "1|2|30|20\n40|2|2|40|20\n");
-    }
+    .to_owned();
+    assert_eq!(run_bas(&source), "1|2|30|20\n40|2|2|40|20\n");
 }
 
 #[test]
 fn test_byref_array_copyback_aliases_defaults_and_expression_suppression() {
-    for dialect in ["QB", "ANSI"] {
-        let source = format!(
-            r#"
-OPTION DIALECT "{dialect}"
+    let source = r#"
 DIM a(1), s$(1)
 a(1) = 5
 CALL Pair(a(1), a(1))
@@ -397,29 +359,26 @@ SUB Implicit(target)
     target = 88
 END SUB
 "#
-        );
-        let (parenthesized_call, result) = if dialect == "QB" { (7, 88) } else { (99, 99) };
-        assert_eq!(
-            run_bas(&source),
-            format!("7\n7\n{parenthesized_call}\n0\nok\n{result}\n")
-        );
-    }
+    .to_owned();
+    let (parenthesized_call, result) = (7, 88);
+    assert_eq!(
+        run_bas(&source),
+        format!("7\n7\n{parenthesized_call}\n0\nok\n{result}\n")
+    );
 }
 
 #[test]
 fn test_byref_array_copyback_on_errors_and_nested_calls() {
     for kind in ["SUB", "FUNCTION"] {
-        for dialect in ["QB", "ANSI"] {
-            let call = if kind == "SUB" {
-                "CALL Change(a(1))"
-            } else {
-                "result = Change(a(1))"
-            };
-            let (mut interpreter, output) = input_session("");
-            let error = interpreter
-                .run_source(&format!(
-                    r#"
-OPTION DIALECT "{dialect}"
+        let call = if kind == "SUB" {
+            "CALL Change(a(1))"
+        } else {
+            "result = Change(a(1))"
+        };
+        let (mut interpreter, output) = input_session("");
+        let error = interpreter
+            .run_source(&format!(
+                r#"
 DIM a(1)
 a(1) = 3
 {call}
@@ -431,15 +390,14 @@ SUB Nested(BYREF target)
     target = 17
 END SUB
 "#
-                ))
-                .unwrap_err();
-            assert!(matches!(
-                error.downcast_ref::<rice::error::RuntimeError>(),
-                Some(rice::error::RuntimeError::DivisionByZero)
-            ));
-            interpreter.run_source("PRINT a(1)\n").unwrap();
-            assert_eq!(output.into_string(), "17\n");
-        }
+            ))
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<rice::error::RuntimeError>(),
+            Some(rice::error::RuntimeError::DivisionByZero)
+        ));
+        interpreter.run_source("PRINT a(1)\n").unwrap();
+        assert_eq!(output.into_string(), "17\n");
     }
 }
 
@@ -451,10 +409,9 @@ CONST values_1 = 12
 boxed(1) = 14
 CONST boxed = 13
 "#;
-    for dialect in ["QB", "ANSI"] {
-        let source = format!(
-            r#"
-OPTION DIALECT "{dialect}"
+
+    let source = format!(
+        r#"
 {source}
 CALL Change(values(1))
 CALL Change(boxed(1))
@@ -477,9 +434,8 @@ FUNCTION Answer()
     Answer = 42
 END FUNCTION
 "#
-        );
-        assert_eq!(run_bas(&source), "12|14\n5|6|42\na\n");
-    }
+    );
+    assert_eq!(run_bas(&source), "12|14\n5|6|42\na\n");
 }
 
 #[test]
@@ -525,22 +481,14 @@ fn test_hello() {
 }
 
 #[test]
-fn test_indexed_swap_in_both_dialects() {
-    let source = std::fs::read_to_string("tests/programs/indexed_swap.bas").unwrap();
+fn test_indexed_swap() {
     let expected = "20;10\n20;1\n10\n[hello][]\n[second][]\n10;0\n";
     assert_eq!(run_file("tests/programs/indexed_swap.bas"), expected);
-    assert_eq!(
-        run_bas(&format!("OPTION DIALECT \"ANSI\"\n{source}")),
-        expected
-    );
 }
 
 #[test]
 fn test_indexed_swap_resolves_once_before_reading_values() {
-    for dialect in ["QB", "ANSI"] {
-        let source = format!(
-            r#"
-OPTION DIALECT "{dialect}"
+    let source = r#"
 DIM values(2)
 values(1) = 10
 values(2) = 20
@@ -563,9 +511,8 @@ END FUNCTION
 SWAP left, values(ChangeIndex())
 PRINT left; ";"; values(1)
 "#
-        );
-        assert_eq!(run_bas(&source), "20;10;2;12\n20;40\n");
-    }
+    .to_owned();
+    assert_eq!(run_bas(&source), "20;10;2;12\n20;40\n");
 }
 
 #[test]
@@ -652,7 +599,7 @@ fn test_logical_eqv_imp() {
 }
 
 #[test]
-fn test_logical_eqv_imp_errors_and_dialect() {
+fn test_logical_eqv_imp_errors() {
     for operator in ["EQV", "IMP"] {
         let (_, result) = run_bas_may_fail(&format!("PRINT 0 {operator} (1 / 0)\n"));
         assert!(matches!(
@@ -670,9 +617,6 @@ fn test_logical_eqv_imp_errors_and_dialect() {
                 Some(rice::error::RuntimeError::TypeMismatch { .. })
             ));
         }
-        let (_, result) =
-            run_bas_may_fail(&format!("OPTION DIALECT \"ANSI\"\nPRINT 1 {operator} 0\n"));
-        assert!(result.unwrap_err().to_string().contains("ANSI"));
     }
 }
 
@@ -742,22 +686,6 @@ PRINT ERR; ";"; ERL
 RESUME NEXT
 "#;
     assert_eq!(run_bas(source), "11;10\n6;20\nrecovered\n");
-}
-
-#[test]
-fn test_integer_division_dialect_selection() {
-    let (_, result) = run_bas_may_fail("OPTION DIALECT \"ANSI\"\nPRINT 7 \\ 2\n");
-    assert!(result.unwrap_err().to_string().contains("ANSI"));
-    let output = SharedOutput::new();
-    let mut interp = rice::interpreter::Interpreter::with_io(
-        Box::new(output.clone()),
-        Box::new(Cursor::new(Vec::<u8>::new())),
-    );
-    interp.run_source("OPTION DIALECT \"ANSI\"\n").unwrap();
-    assert!(interp.run_source("PRINT 7 \\ 2\n").is_err());
-    interp.run_source("OPTION DIALECT \"QB\"\n").unwrap();
-    interp.run_source("PRINT 7 \\ 2\n").unwrap();
-    assert_eq!(output.into_string(), "3\n");
 }
 
 #[test]
@@ -833,7 +761,7 @@ fn test_decimal_place_math_functions() {
 }
 
 #[test]
-fn test_default_dialect_is_qbasic() {
+fn test_default_language_behavior() {
     let output = run_bas(
         r#"
 PRINT 5 > 3
@@ -845,28 +773,6 @@ RETURN
 "#,
     );
     assert_eq!(output, "-1\nhello world\ngosub\n");
-}
-
-#[test]
-fn test_option_dialect_ansi_overrides_default() {
-    let output = run_bas(
-        r#"
-OPTION DIALECT "ANSI"
-PRINT 5 > 3
-"#,
-    );
-    assert_eq!(output, "1\n");
-}
-
-#[test]
-fn test_option_dialect_qbasic_11_alias() {
-    let output = run_bas(
-        r#"
-OPTION DIALECT "QBasic 1.1"
-PRINT 5 > 3
-"#,
-    );
-    assert_eq!(output, "-1\n");
 }
 
 #[test]
@@ -882,8 +788,8 @@ fn test_instr_start_uses_character_positions() {
 }
 
 #[test]
-fn test_qbasic_string_functions() {
-    let output = run_file("tests/programs/qbasic_strings.bas");
+fn test_string_search_and_slicing_functions() {
+    let output = run_file("tests/programs/string_functions.bas");
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(lines[0], "Hello");
     assert_eq!(lines[1], "World");
@@ -1110,7 +1016,7 @@ CLOSE #1
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(lines[0], "Hello, File!");
     assert_eq!(lines[1], "Second line");
-    assert_eq!(lines[2].trim(), "-1"); // EOF should be true in QBasic mode
+    assert_eq!(lines[2].trim(), "-1"); // EOF returns numeric true.
 }
 
 #[test]
@@ -1668,7 +1574,6 @@ IF k = "" THEN PRINT "empty" ELSE PRINT "key"
     assert_eq!(output.trim(), "empty");
 }
 
-// INPUT$ function tests removed — INPUT$ is not part of ANSI BASIC.
 // Use LINE INPUT #n for reading strings from files.
 
 // ── Phase 4: SCREEN() function ───────────────────────────────────────
@@ -1742,7 +1647,7 @@ PRINT p
 CLOSE #1
 "#,
     );
-    // QBasic variable-length string records include a 2-byte length prefix.
+    // Variable-length string records include a 2-byte length prefix.
     // After PUT of 12 bytes, position should be 13 (1-based).
     // After SET POINTER to 1, position should be 1
     let lines: Vec<&str> = output.lines().collect();
@@ -1754,7 +1659,7 @@ CLOSE #1
 
 #[test]
 fn test_byref_sub() {
-    // QBasic mode is the default, so parameters are BYREF unless BYVAL is explicit.
+    // Parameters are BYREF unless BYVAL is explicit.
     let output = run_bas(
         r#"
 DIM x AS NUMERIC
@@ -1789,7 +1694,7 @@ END SUB
 
 #[test]
 fn test_byval_paren_forces_byval() {
-    // In QBasic mode, a parenthesized call argument forces BYVAL.
+    // A parenthesized call argument forces BYVAL.
     let output = run_bas(
         r#"
 DIM x AS NUMERIC
@@ -1824,7 +1729,7 @@ END SUB
 
 #[test]
 fn test_byref_function() {
-    // QBasic mode is the default, so function parameters are BYREF unless BYVAL is explicit.
+    // Function parameters are BYREF unless BYVAL is explicit.
     let output = run_bas(
         r#"
 DIM x AS NUMERIC
@@ -1864,6 +1769,22 @@ END FUNCTION
 }
 
 // ── MAT (matrix) operations ──────────────────────────────────────────
+
+#[test]
+fn test_mat_extreme_indices_do_not_overflow_or_replace_values_on_failure() {
+    assert_eq!(
+        run_file("tests/programs/broad_matrix_index_limits.bas"),
+        "0\n1\n1\n1\n1\n7\nindex overflow\n8\nextent overflow\ninitializer extent overflow\n5 0\n1 1\n"
+    );
+}
+
+#[test]
+fn test_failed_inverse_destination_preserves_saved_determinant() {
+    assert_eq!(
+        run_file("tests/programs/broad_matrix_failed_inverse.bas"),
+        "2\ntype rejected\n2|0\nconstant rejected\n2|7\n3\n"
+    );
+}
 
 #[test]
 fn test_mat_zer_con_idn() {
@@ -1944,8 +1865,8 @@ fn test_mat_copy() {
 }
 
 #[test]
-fn test_qb_compat() {
-    let output = run_file("tests/programs/qb_compat.bas");
+fn test_language_features() {
+    let output = run_file("tests/programs/language_features.bas");
     let lines: Vec<&str> = output.lines().map(|l| l.trim()).collect();
     assert_eq!(lines[0], "10");
     assert_eq!(lines[1], "200000");
@@ -1987,7 +1908,7 @@ fn test_qb_compat() {
     assert_eq!(lines[21], "10");
 }
 
-// ==================== Tier 1 QBasic features ====================
+// ==================== Procedure and control-flow features ====================
 
 #[test]
 fn test_while_wend() {
@@ -2045,7 +1966,7 @@ RESET
     assert_eq!(output.trim(), "3");
 }
 
-// ==================== Tier 2 QBasic features ====================
+// ==================== Declarations and file features ====================
 
 #[test]
 fn test_on_error_resume_next_err_erl() {
@@ -2117,42 +2038,13 @@ CLOSE #1
 }
 
 #[test]
-fn test_ansi_rejects_qbasic_only_tier2_syntax() {
-    let cases = [
-        "OPTION DIALECT \"ANSI\"\nDEFSTR A-Z\n",
-        "OPTION DIALECT \"ANSI\"\nDEF FNX(X) = X\nPRINT FNX(1)\n",
-        "OPTION DIALECT \"ANSI\"\nA$ = \"ABC\"\nMID$(A$, 1, 1) = \"Z\"\n",
-    ];
-    for source in cases {
-        let (_output, result) = run_bas_may_fail(source);
-        assert!(result.is_err(), "source should fail in ANSI mode: {source}");
-    }
-}
-
-#[test]
-fn test_ansi_rejects_qbasic_only_business_features() {
-    let cases = [
-        "OPTION DIALECT \"ANSI\"\nOPTION EXPLICIT\n",
-        "OPTION DIALECT \"ANSI\"\nENVIRON \"X=1\"\n",
-        "OPTION DIALECT \"ANSI\"\nDATE$ = \"12-25-2024\"\n",
-        "OPTION DIALECT \"ANSI\"\nTIME$ = \"14:30:00\"\n",
-        "OPTION DIALECT \"ANSI\"\nCOMMON SHARED x\n",
-        "OPTION DIALECT \"ANSI\"\nCOMMON x\n",
-    ];
-    for source in cases {
-        let (_output, result) = run_bas_may_fail(source);
-        assert!(result.is_err(), "source should fail in ANSI mode: {source}");
-    }
-}
-
-#[test]
 fn test_seek_function_prefers_writer_position() {
     let (output, _dir) = run_bas_with_tmpdir(
         r#"
-OPTION DIALECT "ANSI"
 OPEN #1: NAME "{DIR}/seek-outin.dat", ORGANIZATION STREAM, ACCESS OUTIN
-s$ = "ABC"
-PUT #1, 1, s$
+DIM payload AS BYTES
+payload = BYTES(65, 66, 67)
+PUT #1, 1, payload
 PRINT SEEK(1)
 RESET
 "#,
@@ -2813,56 +2705,31 @@ fn test_if_line_number_shorthand_before_exception_boundaries() {
 }
 
 #[test]
-fn test_if_line_number_shorthand_rejects_ansi() {
-    for statement in ["IF 1 THEN 100", "IF 1 THEN PRINT 1 ELSE 100"] {
-        let (output, result) = run_bas_may_fail(&format!(
-            "OPTION DIALECT \"ANSI\"\n{statement}\n100 PRINT 2\n"
-        ));
-        assert!(output.is_empty());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("IF line-number shorthand is not supported in ANSI BASIC; use GOTO")
-        );
-    }
-}
-
-#[test]
-fn test_minmax_functions_in_both_dialects() {
+fn test_minmax_functions() {
     let expected = "7\n-2.5\n-8\n-3\n4\n5\n2\n1\n312\n3\n231\n";
     assert_eq!(run_file("tests/programs/minmax.bas"), expected);
-    let source = std::fs::read_to_string("tests/programs/minmax.bas").unwrap();
-    assert_eq!(
-        run_bas(&format!("OPTION DIALECT \"ANSI\"\n{source}")),
-        expected,
-    );
 }
 
 #[test]
 fn test_minmax_rejects_missing_or_nonnumeric_arguments() {
-    for dialect in ["QB", "ANSI"] {
-        for name in ["MIN", "MAX"] {
-            for arguments in ["", "\"2\"", "1, \"2\"", "VAL(\"NaN\"), \"2\""] {
-                let (_, result) = run_bas_may_fail(&format!(
-                    "OPTION DIALECT \"{dialect}\"\nPRINT {name}({arguments})\n"
-                ));
-                let message = result.unwrap_err().to_string();
-                assert!(
-                    message.contains(if arguments.is_empty() {
-                        "wrong number of arguments"
-                    } else {
-                        "type mismatch"
-                    }),
-                    "{dialect} {name}({arguments}): {message}",
-                );
-            }
+    for name in ["MIN", "MAX"] {
+        for arguments in ["", "\"2\"", "1, \"2\"", "VAL(\"NaN\"), \"2\""] {
+            let (_, result) = run_bas_may_fail(&format!("PRINT {name}({arguments})\n"));
+            let message = result.unwrap_err().to_string();
+            assert!(
+                message.contains(if arguments.is_empty() {
+                    "wrong number of arguments"
+                } else {
+                    "type mismatch"
+                }),
+                "{name}({arguments}): {message}",
+            );
         }
     }
 }
 
 #[test]
-fn test_doubled_quote_literals_in_both_dialects() {
+fn test_doubled_quote_literals() {
     let expected = concat!(
         "\n\"\n\"\"\nHe said \"hello\".\n",
         "a\"b|\"start|end\"\n",
@@ -2870,74 +2737,50 @@ fn test_doubled_quote_literals_in_both_dialects() {
         "é\"😀:3\n",
         "quote \" ' REM : remain text\n",
         "one \"quoted\" value|\"|\n",
-        "OPTION DIALECT \"ANSI\"\n",
+        "PRINT \"quoted\"\n",
     );
     assert_eq!(run_file("tests/programs/quoted_strings.bas"), expected);
     let source = std::fs::read_to_string("tests/programs/quoted_strings.bas").unwrap();
-    for dialect in ["QB", "ANSI"] {
-        assert_eq!(
-            run_bas(&format!(
-                "OPTION DIALECT \"{dialect}\"\r\n{}",
-                source.replace('\n', "\r\n")
-            )),
-            expected,
-        );
-    }
+
+    assert_eq!(run_bas(&source.replace('\n', "\r\n")), expected,);
 }
 
 #[test]
 fn test_unterminated_doubled_quote_literal_reports_opening_span() {
-    for dialect in ["QB", "ANSI"] {
-        let (_, result) = run_bas_may_fail(&format!(
-            "OPTION DIALECT \"{dialect}\"\nPRINT \"unfinished\"\"\n"
-        ));
-        assert!(matches!(
-            result.unwrap_err().downcast_ref::<rice::error::LexError>(),
-            Some(rice::error::LexError::UnterminatedString { line: 2, col: 7 })
-        ));
-    }
+    let (_, result) = run_bas_may_fail("PRINT \"unfinished\"\"\n");
+    assert!(matches!(
+        result.unwrap_err().downcast_ref::<rice::error::LexError>(),
+        Some(rice::error::LexError::UnterminatedString { line: 1, col: 7 })
+    ));
 }
 
 #[test]
-fn test_indexed_read_in_both_dialects() {
+fn test_indexed_read() {
     let expected = "2|11|22|rice|33|44\n2|11\nfresh|55\n";
     assert_eq!(run_file("tests/programs/indexed_input.bas"), expected);
-    let source = std::fs::read_to_string("tests/programs/indexed_input.bas").unwrap();
+}
+
+#[test]
+fn test_indexed_console_input() {
+    let source = r#"
+DIM numbers(2, 3), words$(2), lines(2, 3) AS STRING
+INPUT "Values"; scalar, numbers(1, 2), words$(1)
+LINE INPUT "Line: "; words$(2)
+LINE INPUT lines(2, 3)
+PRINT scalar; "|"; numbers(1, 2); "|"; words$(1)
+PRINT "["; words$(2); "]"
+PRINT lines(2, 3)
+"#
+    .to_owned();
     assert_eq!(
-        run_bas(&format!("OPTION DIALECT \"ANSI\"\n{source}")),
-        expected
+        run_bas_with_input(&source, "7, 4.5, hello\n  with, commas  \r\nconverted\n"),
+        "Values? Line: 7|4.5|hello\n[  with, commas  ]\nconverted\n",
     );
 }
 
 #[test]
-fn test_indexed_console_input_in_both_dialects() {
-    for dialect in ["QB", "ANSI"] {
-        let source = format!(
-            r#"
-OPTION DIALECT "{dialect}"
-DIM numbers(2, 3), words$(2)
-INPUT "Values"; scalar, numbers(1, 2), words$(1)
-LINE INPUT "Line: "; words$(2)
-LINE INPUT numbers(2, 3)
-PRINT scalar; "|"; numbers(1, 2); "|"; words$(1)
-PRINT "["; words$(2); "]"
-PRINT numbers(2, 3)
-"#
-        );
-        assert_eq!(
-            run_bas_with_input(&source, "7, 4.5, hello\n  with, commas  \r\nconverted\n"),
-            "Values? Line: 7|4.5|hello\n[  with, commas  ]\nconverted\n",
-            "{dialect}"
-        );
-    }
-}
-
-#[test]
 fn test_indexed_input_resolves_indices_once_across_retries() {
-    for dialect in ["QB", "ANSI"] {
-        let source = format!(
-            r#"
-OPTION DIALECT "{dialect}"
+    let source = r#"
 DIM values(2)
 calls = 0
 INPUT values(Pick()), values(Pick())
@@ -2951,23 +2794,19 @@ FUNCTION Pick()
     Pick = calls
 END FUNCTION
 "#
-        );
-        assert_eq!(
-            run_bas_with_input(&source, "123,bad\n1\n7,8\n2,99\n"),
-            "? ? Redo from start\n? ? Redo from start\n? 2|7|8\n? 2|99|8\n",
-            "{dialect}"
-        );
-    }
+    .to_owned();
+    assert_eq!(
+        run_bas_with_input(&source, "123,bad\n1\n7,8\n2,99\n"),
+        "? ? Redo from start\n? ? Redo from start\n? 2|7|8\n? 2|99|8\n",
+    );
 }
 
 #[test]
 fn test_indexed_input_rejected_line_does_not_partially_assign() {
-    for dialect in ["QB", "ANSI"] {
-        let (mut interpreter, output) = input_session("123,bad\n");
-        let error = interpreter
-            .run_source(&format!(
-                r#"
-OPTION DIALECT "{dialect}"
+    let (mut interpreter, output) = input_session("123,bad\n");
+    let error = interpreter
+        .run_source(
+            r#"
 DIM values(2)
 values(1) = 10
 values(2) = 20
@@ -2978,32 +2817,25 @@ FUNCTION Pick()
     calls = calls + 1
     Pick = calls
 END FUNCTION
-"#
-            ))
-            .unwrap_err();
-        assert_eq!(
-            error
-                .downcast_ref::<rice::error::RuntimeError>()
-                .unwrap()
-                .basic_err_code(),
-            62
-        );
-        interpreter
-            .run_source("PRINT calls; \"|\"; values(1); \"|\"; values(2)\n")
-            .unwrap();
-        assert_eq!(
-            output.into_string(),
-            "? ? Redo from start\n? 2|10|20\n",
-            "{dialect}"
-        );
-    }
+"#,
+        )
+        .unwrap_err();
+    assert_eq!(
+        error
+            .downcast_ref::<rice::error::RuntimeError>()
+            .unwrap()
+            .basic_err_code(),
+        62
+    );
+    interpreter
+        .run_source("PRINT calls; \"|\"; values(1); \"|\"; values(2)\n")
+        .unwrap();
+    assert_eq!(output.into_string(), "? ? Redo from start\n? 2|10|20\n",);
 }
 
 #[test]
-fn test_indexed_file_input_in_both_dialects() {
-    for dialect in ["QB", "ANSI"] {
-        let source = r#"
-OPTION DIALECT "{DIALECT}"
+fn test_indexed_file_input() {
+    let source = r#"
 DIM values(2, 2), words$(2)
 OPEN "{DIR}/indexed.txt" FOR OUTPUT AS #1
 WRITE #1, 2, "hello, ""rice""", 12.5
@@ -3022,14 +2854,9 @@ FUNCTION Pick()
     calls = calls + 1
     Pick = calls
 END FUNCTION
-"#
-        .replace("{DIALECT}", dialect);
-        let (output, _dir) = run_bas_with_tmpdir(&source);
-        assert_eq!(
-            output, "2|12.5|0|hello, \"rice\"\n[  raw, \"text\"  ]|2\n",
-            "{dialect}"
-        );
-    }
+"#;
+    let (output, _dir) = run_bas_with_tmpdir(&source);
+    assert_eq!(output, "2|12.5|0|hello, \"rice\"\n[  raw, \"text\"  ]|2\n",);
 }
 
 #[test]
@@ -3038,165 +2865,154 @@ fn test_indexed_input_validates_targets_before_consuming_input() {
     let path = dir.path().join("unread.txt");
     std::fs::write(&path, "40,50\n").unwrap();
     let path = path.to_str().unwrap().replace('\\', "/");
-    for dialect in ["QB", "ANSI"] {
-        let mut cases = vec![
-            ("CONST locked = 5\n", "locked(1)", 5),
-            ("DIM values(2)\nCONST values_1 = 5\n", "values(1)", 5),
-            ("DIM values(2)\n", "values(1 / 0)", 11),
-            ("DIM values(2)\n", "values(VAL(\"NaN\"))", 6),
-            ("DIM values(2)\n", "values(\"bad\")", 13),
-        ];
-        if dialect == "QB" {
-            cases.push(("OPTION EXPLICIT\n", "missing(1)", 5));
-        }
-        for (setup, target, expected_code) in cases {
-            for kind in ["READ", "INPUT", "LINE INPUT", "INPUT #", "LINE INPUT #"] {
-                let statement = match kind {
-                    "READ" => format!("READ {target}"),
-                    "INPUT" => format!("INPUT good, {target}"),
-                    "LINE INPUT" => format!("LINE INPUT {target}"),
-                    "INPUT #" => format!("INPUT #1, good, {target}"),
-                    _ => format!("LINE INPUT #1, {target}"),
-                };
-                let (mut interpreter, output) = input_session("40,50\n");
-                let error = interpreter
+
+    let mut cases = vec![
+        ("CONST locked = 5\n", "locked(1)", 5),
+        ("DIM values(2)\nCONST values_1 = 5\n", "values(1)", 5),
+        ("DIM values(2)\n", "values(1 / 0)", 11),
+        ("DIM values(2)\n", "values(VAL(\"NaN\"))", 6),
+        ("DIM values(2)\n", "values(\"bad\")", 13),
+    ];
+
+    cases.push(("OPTION EXPLICIT\n", "missing(1)", 5));
+
+    for (setup, target, expected_code) in cases {
+        for kind in ["READ", "INPUT", "LINE INPUT", "INPUT #", "LINE INPUT #"] {
+            let statement = match kind {
+                "READ" => format!("READ {target}"),
+                "INPUT" => format!("INPUT good, {target}"),
+                "LINE INPUT" => format!("LINE INPUT {target}"),
+                "INPUT #" => format!("INPUT #1, good, {target}"),
+                _ => format!("LINE INPUT #1, {target}"),
+            };
+            let (mut interpreter, output) = input_session("40,50\n");
+            let error = interpreter
                     .run_source(&format!(
-                        "OPTION DIALECT \"{dialect}\"\n{setup}DIM good\ngood = 10\nDATA 40, 50\nOPEN \"{path}\" FOR INPUT AS #1\n{statement}\n"
+                        "{setup}DIM good\ngood = 10\nDATA 40, 50\nOPEN \"{path}\" FOR INPUT AS #1\n{statement}\n"
                     ))
                     .unwrap_err();
-                assert_eq!(
-                    error
-                        .downcast_ref::<rice::error::RuntimeError>()
-                        .unwrap()
-                        .basic_err_code(),
-                    expected_code,
-                    "{dialect} {statement}: {error}"
-                );
-                assert!(
-                    output.clone().into_string().is_empty(),
-                    "{statement} prompted before validation"
-                );
-                let recovery = if kind == "READ" {
-                    "DIM recovered\nREAD recovered\nPRINT recovered\n"
-                } else if kind.ends_with('#') {
-                    "PRINT LOC(1)\nLINE INPUT #1, remaining$\nPRINT remaining$\n"
-                } else {
-                    "LINE INPUT remaining$\nPRINT remaining$\n"
-                };
-                interpreter
-                    .run_source(&format!("{recovery}PRINT good\nCLOSE #1\n"))
-                    .unwrap();
-                let expected = if kind == "READ" {
-                    "40\n10\n"
-                } else if kind.ends_with('#') {
-                    "0\n40,50\n10\n"
-                } else {
-                    "40,50\n10\n"
-                };
-                assert_eq!(output.into_string(), expected, "{dialect} {statement}");
-            }
+            assert_eq!(
+                error
+                    .downcast_ref::<rice::error::RuntimeError>()
+                    .unwrap()
+                    .basic_err_code(),
+                expected_code,
+                "{statement}: {error}"
+            );
+            assert!(
+                output.clone().into_string().is_empty(),
+                "{statement} prompted before validation"
+            );
+            let recovery = if kind == "READ" {
+                "DIM recovered\nREAD recovered\nPRINT recovered\n"
+            } else if kind.ends_with('#') {
+                "PRINT LOC(1)\nLINE INPUT #1, remaining$\nPRINT remaining$\n"
+            } else {
+                "LINE INPUT remaining$\nPRINT remaining$\n"
+            };
+            interpreter
+                .run_source(&format!("{recovery}PRINT good\nCLOSE #1\n"))
+                .unwrap();
+            let expected = if kind == "READ" {
+                "40\n10\n"
+            } else if kind.ends_with('#') {
+                "0\n40,50\n10\n"
+            } else {
+                "40,50\n10\n"
+            };
+            assert_eq!(output.into_string(), expected, "{statement}");
         }
     }
 }
 
 #[test]
 fn test_indexed_read_validates_each_target_before_its_data_item() {
-    for dialect in ["QB", "ANSI"] {
+    let (mut interpreter, output) = input_session("");
+    let error = interpreter
+        .run_source("DIM values(2)\nDATA 10, 20\nREAD values(1), values(1 / 0)\n")
+        .unwrap_err();
+    assert_eq!(
+        error
+            .downcast_ref::<rice::error::RuntimeError>()
+            .unwrap()
+            .basic_err_code(),
+        11
+    );
+    interpreter
+        .run_source("READ values(2)\nPRINT values(1); \"|\"; values(2)\n")
+        .unwrap();
+    assert_eq!(output.into_string(), "10|20\n");
+}
+
+#[test]
+fn test_indexed_input_eof_preserves_existing_values() {
+    for statement in ["INPUT values(1), values(2)", "LINE INPUT words$(1)"] {
         let (mut interpreter, output) = input_session("");
         let error = interpreter
-            .run_source(&format!(
-                "OPTION DIALECT \"{dialect}\"\nDIM values(2)\nDATA 10, 20\nREAD values(1), values(1 / 0)\n"
-            ))
-            .unwrap_err();
+                .run_source(&format!(
+                    "DIM values(2), words$(1)\nvalues(1) = 10\nvalues(2) = 20\nwords$(1) = \"kept\"\n{statement}\n"
+                ))
+                .unwrap_err();
         assert_eq!(
             error
                 .downcast_ref::<rice::error::RuntimeError>()
                 .unwrap()
                 .basic_err_code(),
-            11
+            62
         );
         interpreter
-            .run_source("READ values(2)\nPRINT values(1); \"|\"; values(2)\n")
+            .run_source("PRINT values(1); \"|\"; values(2); \"|\"; words$(1)\n")
             .unwrap();
-        assert_eq!(output.into_string(), "10|20\n");
+        let prompt = if statement.starts_with("INPUT") {
+            "? "
+        } else {
+            ""
+        };
+        assert_eq!(output.into_string(), format!("{prompt}10|20|kept\n"));
     }
-}
-
-#[test]
-fn test_indexed_input_eof_preserves_existing_values() {
-    for dialect in ["QB", "ANSI"] {
-        for statement in ["INPUT values(1), values(2)", "LINE INPUT words$(1)"] {
-            let (mut interpreter, output) = input_session("");
-            let error = interpreter
+    for (statement, contents) in [
+        ("INPUT #1, values(1), values(2)", "99"),
+        ("LINE INPUT #1, words$(1)", ""),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("short.txt");
+        std::fs::write(&path, contents).unwrap();
+        let path = path.to_str().unwrap().replace('\\', "/");
+        let (mut interpreter, output) = input_session("");
+        let error = interpreter
                 .run_source(&format!(
-                    "OPTION DIALECT \"{dialect}\"\nDIM values(2), words$(1)\nvalues(1) = 10\nvalues(2) = 20\nwords$(1) = \"kept\"\n{statement}\n"
+                    "DIM values(2), words$(1)\nvalues(1) = 10\nvalues(2) = 20\nwords$(1) = \"kept\"\nOPEN \"{path}\" FOR INPUT AS #1\n{statement}\n"
                 ))
                 .unwrap_err();
-            assert_eq!(
-                error
-                    .downcast_ref::<rice::error::RuntimeError>()
-                    .unwrap()
-                    .basic_err_code(),
-                62
-            );
-            interpreter
-                .run_source("PRINT values(1); \"|\"; values(2); \"|\"; words$(1)\n")
-                .unwrap();
-            let prompt = if statement.starts_with("INPUT") {
-                "? "
-            } else {
-                ""
-            };
-            assert_eq!(output.into_string(), format!("{prompt}10|20|kept\n"));
-        }
-        for (statement, contents) in [
-            ("INPUT #1, values(1), values(2)", "99"),
-            ("LINE INPUT #1, words$(1)", ""),
-        ] {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("short.txt");
-            std::fs::write(&path, contents).unwrap();
-            let path = path.to_str().unwrap().replace('\\', "/");
-            let (mut interpreter, output) = input_session("");
-            let error = interpreter
-                .run_source(&format!(
-                    "OPTION DIALECT \"{dialect}\"\nDIM values(2), words$(1)\nvalues(1) = 10\nvalues(2) = 20\nwords$(1) = \"kept\"\nOPEN \"{path}\" FOR INPUT AS #1\n{statement}\n"
-                ))
-                .unwrap_err();
-            assert_eq!(
-                error
-                    .downcast_ref::<rice::error::RuntimeError>()
-                    .unwrap()
-                    .basic_err_code(),
-                62
-            );
-            interpreter
-                .run_source("PRINT values(1); \"|\"; values(2); \"|\"; words$(1)\nCLOSE #1\n")
-                .unwrap();
-            assert_eq!(output.into_string(), "10|20|kept\n");
-        }
+        assert_eq!(
+            error
+                .downcast_ref::<rice::error::RuntimeError>()
+                .unwrap()
+                .basic_err_code(),
+            62
+        );
+        interpreter
+            .run_source("PRINT values(1); \"|\"; values(2); \"|\"; words$(1)\nCLOSE #1\n")
+            .unwrap();
+        assert_eq!(output.into_string(), "10|20|kept\n");
     }
 }
 
 #[test]
 fn test_indexed_input_uses_declared_string_defaults() {
-    for dialect in ["QB", "ANSI"] {
-        let source = format!(
-            r#"
-OPTION DIALECT "{dialect}"
+    let source = r#"
 DIM words$(2), labels(2) AS STRING
 labels(1) = ""
 INPUT words$(1), labels(1)
 INPUT labels(2)
 PRINT words$(1); "|"; labels(1); "|"; labels(2)
 "#
-        );
-        assert_eq!(
-            run_bas_with_input(&source, "alpha,beta\ngamma\n"),
-            "? ? alpha|beta|gamma\n",
-            "{dialect}"
-        );
-    }
+    .to_owned();
+    assert_eq!(
+        run_bas_with_input(&source, "alpha,beta\ngamma\n"),
+        "? ? alpha|beta|gamma\n",
+    );
+
     assert_eq!(
         run_bas_with_input(
             "DEFSTR A-A\nINPUT alphabet(1)\nPRINT alphabet(1)\n",
@@ -3227,35 +3043,28 @@ PRINT values(1); "|"; values(2); "|"; words$(1); "|"; words$(2)
 #[test]
 fn test_mat_file_channels_roundtrip_and_preserve_console_input() {
     let fixture = std::fs::read_to_string("tests/programs/mat_file_channels.bas").unwrap();
-    for dialect in ["QB", "ANSI"] {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().to_str().unwrap().replace('\\', "/");
-        let source = format!(
-            "OPTION DIALECT \"{dialect}\"\n{}",
-            fixture.replace("{DIR}", &path)
-        );
-        let (mut interpreter, output) = input_session("console untouched\n");
-        interpreter.run_source(&source).unwrap();
-        interpreter
-            .run_source("LINE INPUT text$\nPRINT text$\n")
-            .unwrap();
-        assert_eq!(
-            output.into_string(),
-            "11\neof\n2\n1.5 -2\n3 4\n4|5|-2|-1\nconsole untouched\n",
-            "{dialect}"
-        );
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("matrix.csv")).unwrap(),
-            "1.5,-2\n3,4\n"
-        );
-    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().to_str().unwrap().replace('\\', "/");
+    let source = fixture.replace("{DIR}", &path);
+    let (mut interpreter, output) = input_session("console untouched\n");
+    interpreter.run_source(&source).unwrap();
+    interpreter
+        .run_source("LINE INPUT text$\nPRINT text$\n")
+        .unwrap();
+    assert_eq!(
+        output.into_string(),
+        "11\neof\n2\n1.5 -2\n3 4\n4|5|-2|-1\nconsole untouched\n",
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("matrix.csv")).unwrap(),
+        "1.5,-2\n3,4\n"
+    );
 }
 
 #[test]
 fn test_mat_file_print_uses_current_position_and_resets_column() {
-    for dialect in ["QB", "ANSI"] {
-        let source = r#"
-OPTION DIALECT "{DIALECT}"
+    let source = r#"
 DIM m(1, 2)
 DATA 1, 2
 MAT READ m
@@ -3267,22 +3076,18 @@ CLOSE #1
 OPEN "{DIR}/matrix.txt" FOR APPEND AS #1
 MAT PRINT #1, m
 CLOSE #1
-"#
-        .replace("{DIALECT}", dialect);
-        let (output, dir) = run_bas_with_tmpdir(&source);
-        assert!(output.is_empty());
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("matrix.txt")).unwrap(),
-            "prefix:1,2\n    x\n1,2\n"
-        );
-    }
+"#;
+    let (output, dir) = run_bas_with_tmpdir(&source);
+    assert!(output.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("matrix.txt")).unwrap(),
+        "prefix:1,2\n    x\n1,2\n"
+    );
 }
 
 #[test]
 fn test_mat_file_input_uses_numeric_fields_independent_of_rows() {
-    for dialect in ["QB", "ANSI"] {
-        let source = r#"
-OPTION DIALECT "{DIALECT}"
+    let source = r#"
 DIM m(2, 2)
 OPEN "{DIR}/matrix.txt" FOR OUTPUT AS #1
 WRITE #1, "1", 2, 3
@@ -3295,48 +3100,46 @@ PRINT remainder
 MAT PRINT m
 PRINT EOF(1)
 CLOSE #1
-"#
-        .replace("{DIALECT}", dialect);
-        let (output, _dir) = run_bas_with_tmpdir(&source);
-        let eof = if dialect == "QB" { -1 } else { 1 };
-        assert_eq!(output, format!("99\n1 2\n3 4\n{eof}\n"));
-    }
+"#;
+    let (output, _dir) = run_bas_with_tmpdir(&source);
+    let eof = -1;
+    assert_eq!(output, format!("99\n1 2\n3 4\n{eof}\n"));
 }
 
 #[test]
 fn test_mat_file_input_errors_preserve_matrix_and_consumed_position() {
-    for dialect in ["QB", "ANSI"] {
-        for (contents, code, recovery) in [
-            ("2,bad,4,5,99\n", 13, "INPUT #1, rest\nPRINT rest\n"),
-            ("2,3,4", 62, ""),
-            ("2,\"unfinished", 62, ""),
-        ] {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("matrix.txt");
-            std::fs::write(&path, contents).unwrap();
-            let path = path.to_str().unwrap().replace('\\', "/");
-            let (mut interpreter, output) = input_session("");
-            let error = interpreter.run_source(&format!(
-                "OPTION DIALECT \"{dialect}\"\nDIM m(2, 2)\nMAT m = CON\nOPEN \"{path}\" FOR INPUT AS #1\nMAT INPUT #1, m\n"
-            )).unwrap_err();
-            assert_eq!(
-                error
-                    .downcast_ref::<rice::error::RuntimeError>()
-                    .unwrap()
-                    .basic_err_code(),
-                code
-            );
-            assert!(output.clone().into_string().is_empty());
-            interpreter
-                .run_source(&format!("MAT PRINT m\n{recovery}CLOSE #1\n"))
-                .unwrap();
-            let expected = if code == 13 {
-                "1 1\n1 1\n99\n"
-            } else {
-                "1 1\n1 1\n"
-            };
-            assert_eq!(output.into_string(), expected, "{dialect} {contents:?}");
-        }
+    for (contents, code, recovery) in [
+        ("2,bad,4,5,99\n", 13, "INPUT #1, rest\nPRINT rest\n"),
+        ("2,3,4", 62, ""),
+        ("2,\"unfinished", 62, ""),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("matrix.txt");
+        std::fs::write(&path, contents).unwrap();
+        let path = path.to_str().unwrap().replace('\\', "/");
+        let (mut interpreter, output) = input_session("");
+        let error = interpreter
+            .run_source(&format!(
+                "DIM m(2, 2)\nMAT m = CON\nOPEN \"{path}\" FOR INPUT AS #1\nMAT INPUT #1, m\n"
+            ))
+            .unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<rice::error::RuntimeError>()
+                .unwrap()
+                .basic_err_code(),
+            code
+        );
+        assert!(output.clone().into_string().is_empty());
+        interpreter
+            .run_source(&format!("MAT PRINT m\n{recovery}CLOSE #1\n"))
+            .unwrap();
+        let expected = if code == 13 {
+            "1 1\n1 1\n99\n"
+        } else {
+            "1 1\n1 1\n"
+        };
+        assert_eq!(output.into_string(), expected, "{contents:?}");
     }
 }
 
@@ -3346,34 +3149,31 @@ fn test_mat_file_channels_validate_handles_without_console_io() {
     let path = dir.path().join("matrix.txt");
     std::fs::write(&path, "1,2\n").unwrap();
     let path = path.to_str().unwrap().replace('\\', "/");
-    for dialect in ["QB", "ANSI"] {
-        for (setup, statement, message) in [
-            (String::new(), "MAT PRINT #99, m", "file #99 is not open"),
-            (String::new(), "MAT INPUT #99, m", "file #99 is not open"),
-            (
-                format!("OPEN \"{path}\" FOR INPUT AS #1\n"),
-                "MAT PRINT #1, m",
-                "not open for writing",
-            ),
-            (
-                format!("OPEN \"{path}\" FOR OUTPUT AS #1\n"),
-                "MAT INPUT #1, m",
-                "not open for reading",
-            ),
-        ] {
-            let (mut interpreter, output) = input_session("console untouched\n");
-            let error = interpreter
-                .run_source(&format!(
-                    "OPTION DIALECT \"{dialect}\"\nDIM m(1, 2)\n{setup}{statement}\n"
-                ))
-                .unwrap_err();
-            assert!(error.to_string().contains(message), "{error}");
-            assert!(output.clone().into_string().is_empty());
-            interpreter
-                .run_source("LINE INPUT rest$\nPRINT rest$\nCLOSE\n")
-                .unwrap();
-            assert_eq!(output.into_string(), "console untouched\n");
-        }
+
+    for (setup, statement, message) in [
+        (String::new(), "MAT PRINT #99, m", "file #99 is not open"),
+        (String::new(), "MAT INPUT #99, m", "file #99 is not open"),
+        (
+            format!("OPEN \"{path}\" FOR INPUT AS #1\n"),
+            "MAT PRINT #1, m",
+            "not open for writing",
+        ),
+        (
+            format!("OPEN \"{path}\" FOR OUTPUT AS #1\n"),
+            "MAT INPUT #1, m",
+            "not open for reading",
+        ),
+    ] {
+        let (mut interpreter, output) = input_session("console untouched\n");
+        let error = interpreter
+            .run_source(&format!("DIM m(1, 2)\n{setup}{statement}\n"))
+            .unwrap_err();
+        assert!(error.to_string().contains(message), "{error}");
+        assert!(output.clone().into_string().is_empty());
+        interpreter
+            .run_source("LINE INPUT rest$\nPRINT rest$\nCLOSE\n")
+            .unwrap();
+        assert_eq!(output.into_string(), "console untouched\n");
     }
 }
 
@@ -3383,144 +3183,123 @@ fn test_mat_file_input_validates_destinations_before_reading() {
     let path = dir.path().join("matrix.txt");
     std::fs::write(&path, "1,2\n").unwrap();
     let path = path.to_str().unwrap().replace('\\', "/");
-    for dialect in ["QB", "ANSI"] {
-        let mut setups = vec![
-            "DIM m(2)\n",
-            "DIM m(1, 2)\nCONST m = 5\n",
-            "DIM m(1, 2)\nCONST m_1_2 = 5\n",
-        ];
-        if dialect == "QB" {
-            setups.push("OPTION EXPLICIT\nDIM m_1_1\nm_1_1 = 1\n");
-        }
-        for setup in setups {
-            let (mut interpreter, output) = input_session("");
-            let error = interpreter.run_source(&format!(
-                "OPTION DIALECT \"{dialect}\"\n{setup}OPEN \"{path}\" FOR INPUT AS #1\nMAT INPUT #1, m\n"
-            )).unwrap_err();
-            assert_eq!(
-                error
-                    .downcast_ref::<rice::error::RuntimeError>()
-                    .unwrap()
-                    .basic_err_code(),
-                5
-            );
-            interpreter
-                .run_source("PRINT LOC(1)\nLINE INPUT #1, rest$\nPRINT rest$\nCLOSE #1\n")
-                .unwrap();
-            assert_eq!(output.into_string(), "0\n1,2\n", "{dialect} {setup}");
-        }
+
+    let mut setups = vec![
+        "DIM m(2)\n",
+        "DIM m(1, 2)\nCONST m = 5\n",
+        "DIM m(1, 2)\nCONST m_1_2 = 5\n",
+    ];
+
+    setups.push("OPTION EXPLICIT\nDIM m_1_1\nm_1_1 = 1\n");
+
+    for setup in setups {
+        let (mut interpreter, output) = input_session("");
+        let error = interpreter
+            .run_source(&format!(
+                "{setup}OPEN \"{path}\" FOR INPUT AS #1\nMAT INPUT #1, m\n"
+            ))
+            .unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<rice::error::RuntimeError>()
+                .unwrap()
+                .basic_err_code(),
+            5
+        );
+        interpreter
+            .run_source("PRINT LOC(1)\nLINE INPUT #1, rest$\nPRINT rest$\nCLOSE #1\n")
+            .unwrap();
+        assert_eq!(output.into_string(), "0\n1,2\n", "{setup}");
     }
 }
 
 #[test]
 fn test_mat_file_channels_preserve_numeric_matrix_storage_rules() {
-    for dialect in ["QB", "ANSI"] {
-        let source = r#"
-OPTION DIALECT "{DIALECT}"
-DIM text$(1, 2)
-text$(1, 1) = "not numeric"
-text$(1, 2) = 5
+    let source = r#"
+DIM values(1, 2) AS SINGLE, received(1, 2) AS INTEGER
+values(1, 1) = 0
+values(1, 2) = 5
 OPEN "{DIR}/matrix.txt" FOR OUTPUT AS #1
-MAT PRINT #1, text$
+MAT PRINT #1, values
 CLOSE #1
 OPEN "{DIR}/matrix.txt" FOR INPUT AS #1
-MAT INPUT #1, text$
+MAT INPUT #1, received
 CLOSE #1
-PRINT text$(1, 1) + 1; "|"; text$(1, 2) + 1
-"#
-        .replace("{DIALECT}", dialect);
-        let (output, dir) = run_bas_with_tmpdir(&source);
-        assert_eq!(output, "1|6\n");
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("matrix.txt")).unwrap(),
-            "0,5\n"
-        );
-    }
-}
-
-#[test]
-fn test_command_line_arguments_are_isolated_and_persist_across_execution() {
-    for dialect in [rice::Dialect::QuickBasic, rice::Dialect::Ansi] {
-        let (mut interpreter, output) = input_session("");
-        interpreter.dialect = dialect;
-        interpreter.set_command_line_args(["", "MiXeD Case", "é😀", ""]);
-        interpreter
-            .run_file("tests/programs/command_line.bas")
-            .unwrap();
-        interpreter
-            .run_source("CLEAR\nPRINT \"[\"; COMMAND$(); \"]\"\n")
-            .unwrap();
-
-        let (mut other, other_output) = input_session("");
-        other
-            .run_source("PRINT \"[\"; COMMAND$(); \"]\"\nPRINT \"[\"; COMMAND(); \"]\"\n")
-            .unwrap();
-        assert_eq!(other_output.into_string(), "[]\n[]\n");
-
-        interpreter.set_command_line_args(["replacement"]);
-        interpreter
-            .run_source("PRINT command$()\nPRINT command()\n")
-            .unwrap();
-        interpreter.set_command_line_args(std::iter::empty::<&str>());
-        interpreter
-            .run_source("PRINT \"[\"; COMMAND$(); \"]\"\n")
-            .unwrap();
-        let truth = if dialect == rice::Dialect::QuickBasic {
-            -1
-        } else {
-            1
-        };
-        assert_eq!(
-            output.into_string(),
-            format!(
-                "[ MiXeD Case é😀 ]\n[ MiXeD Case é😀 ]\n{truth}\n[ MiXeD Case é😀 ]\nreplacement\nreplacement\n[]\n"
-            )
-        );
-    }
-}
-
-#[test]
-fn test_command_line_calls_preserve_bare_variables_and_validate_arity() {
-    for dialect in [rice::Dialect::QuickBasic, rice::Dialect::Ansi] {
-        let (mut interpreter, output) = input_session("");
-        interpreter.dialect = dialect;
-        interpreter.set_command_line_args(["payload"]);
-        interpreter
-            .run_source("PRINT LEN(COMMAND$)\nPRINT COMMAND\nCOMMAND$ = \"shadow\"\nPRINT COMMAND$\nPRINT COMMAND$()\nPRINT COMMAND()\n")
-            .unwrap();
-        assert_eq!(output.into_string(), "0\n0\nshadow\npayload\npayload\n");
-        for name in ["COMMAND$", "COMMAND"] {
-            let error = interpreter
-                .run_source(&format!("PRINT {name}(1)\n"))
-                .unwrap_err();
-            assert!(matches!(
-                error.downcast_ref::<rice::error::RuntimeError>(),
-                Some(rice::error::RuntimeError::ArityMismatch {
-                    expected: 0,
-                    got: 1
-                })
-            ));
-        }
-    }
-}
-
-#[test]
-fn test_multi_next_in_both_dialects() {
-    let expected = "111213212223\n927\n1121:done\nskipped\n22211211\n";
-    assert_eq!(run_file("tests/programs/multi_next.bas"), expected);
-    let source = std::fs::read_to_string("tests/programs/multi_next.bas").unwrap();
+PRINT received(1, 1) + 1; "|"; received(1, 2) + 1; "|"; TYPEOF$(received(1, 2))
+"#;
+    let (output, dir) = run_bas_with_tmpdir(source);
+    assert_eq!(output, "1|6|INTEGER\n");
     assert_eq!(
-        run_bas(&format!("OPTION DIALECT \"ANSI\"\n{source}")),
-        expected
+        std::fs::read_to_string(dir.path().join("matrix.txt")).unwrap(),
+        "0,5\n"
     );
 }
 
 #[test]
+fn test_command_line_arguments_are_isolated_and_persist_across_execution() {
+    let (mut interpreter, output) = input_session("");
+    interpreter.set_command_line_args(["", "MiXeD Case", "é😀", ""]);
+    interpreter
+        .run_file("tests/programs/command_line.bas")
+        .unwrap();
+    interpreter
+        .run_source("CLEAR\nPRINT \"[\"; COMMAND$(); \"]\"\n")
+        .unwrap();
+
+    let (mut other, other_output) = input_session("");
+    other
+        .run_source("PRINT \"[\"; COMMAND$(); \"]\"\nPRINT \"[\"; COMMAND(); \"]\"\n")
+        .unwrap();
+    assert_eq!(other_output.into_string(), "[]\n[]\n");
+
+    interpreter.set_command_line_args(["replacement"]);
+    interpreter
+        .run_source("PRINT command$()\nPRINT command()\n")
+        .unwrap();
+    interpreter.set_command_line_args(std::iter::empty::<&str>());
+    interpreter
+        .run_source("PRINT \"[\"; COMMAND$(); \"]\"\n")
+        .unwrap();
+    let truth = -1;
+    assert_eq!(
+        output.into_string(),
+        format!(
+            "[ MiXeD Case é😀 ]\n[ MiXeD Case é😀 ]\n{truth}\n[ MiXeD Case é😀 ]\nreplacement\nreplacement\n[]\n"
+        )
+    );
+}
+
+#[test]
+fn test_command_line_calls_preserve_bare_variables_and_validate_arity() {
+    let (mut interpreter, output) = input_session("");
+    interpreter.set_command_line_args(["payload"]);
+    interpreter
+            .run_source("PRINT LEN(COMMAND$)\nPRINT COMMAND\nCOMMAND$ = \"shadow\"\nPRINT COMMAND$\nPRINT COMMAND$()\nPRINT COMMAND()\n")
+            .unwrap();
+    assert_eq!(output.into_string(), "0\n0\nshadow\npayload\npayload\n");
+    for name in ["COMMAND$", "COMMAND"] {
+        let error = interpreter
+            .run_source(&format!("PRINT {name}(1)\n"))
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<rice::error::RuntimeError>(),
+            Some(rice::error::RuntimeError::ArityMismatch {
+                expected: 0,
+                got: 1
+            })
+        ));
+    }
+}
+
+#[test]
+fn test_multi_next() {
+    let expected = "111213212223\n927\n1121:done\nskipped\n22211211\n";
+    assert_eq!(run_file("tests/programs/multi_next.bas"), expected);
+}
+
+#[test]
 fn test_multi_next_three_loops_and_procedure_scope() {
-    for dialect in ["QB", "ANSI"] {
-        let source = format!(
-            r#"
-OPTION DIALECT "{dialect}"
+    let source = r#"
 IF 1 THEN
     FOR i = 1 TO 2
         FOR j = 1 TO 2
@@ -3539,12 +3318,12 @@ SUB Worker
     NEXT j, i: PRINT ":sub"
 END SUB
 "#
-        );
-        assert_eq!(
-            run_bas(&source),
-            "111;112;121;122;211;212;221;222;\n11122122:sub\n"
-        );
-    }
+    .to_owned();
+    assert_eq!(
+        run_bas(&source),
+        "111;112;121;122;211;212;221;222;\n11122122:sub\n"
+    );
+
     assert_eq!(
         run_bas("FOR i% = 1 TO 2\nFOR j% = 1 TO 2\nPRINT i%; j%;\nNEXT J%, I%: PRINT\n"),
         "11122122\n"
@@ -3580,13 +3359,8 @@ fn test_multi_next_rejects_malformed_lists_before_execution() {
 #[test]
 fn test_record_len_nested_arrays_and_function_results() {
     let fixture = std::fs::read_to_string("tests/programs/record_len.bas").unwrap();
-    for dialect in ["QB", "ANSI"] {
-        assert_eq!(
-            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{fixture}")),
-            "34|5|3\n31|0\n32\n34|1\n36\n",
-            "{dialect}"
-        );
-    }
+
+    assert_eq!(run_bas(&fixture), "34|5|3\n31|0\n32\n34|1\n36\n",);
 }
 
 #[test]
@@ -3605,60 +3379,57 @@ fn test_record_len_matches_binary_put_bytes() {
 
 #[test]
 fn test_record_len_validates_serialized_values_and_arity() {
-    for dialect in ["QB", "ANSI"] {
-        for (assignment, expression, code) in [
-            ("item.number = \"bad\"", "LEN(item)", 13),
-            ("item.text = 42", "LEN(item)", 13),
-            ("item.fixed = 42", "LEN(item)", 13),
-            ("item.child = 42", "LEN(item)", 13),
-            ("item.text = STRING$(65536, \"x\")", "LEN(item)", 5),
-            ("", "LEN(42)", 13),
-            ("", "LEN()", 5),
-            ("", "LEN(item, item)", 5),
-        ] {
-            let source = format!(
-                "OPTION DIALECT \"{dialect}\"\nTYPE Child\n value AS NUMERIC\nEND TYPE\nTYPE Item\n number AS NUMERIC\n text AS STRING\n fixed AS STRING * 2\n child AS Child\nEND TYPE\nDIM item AS Item\n{assignment}\nPRINT {expression}\n"
-            );
-            let (output, result) = run_bas_may_fail(&source);
-            assert!(output.is_empty());
-            assert_eq!(
-                result
-                    .unwrap_err()
-                    .downcast_ref::<rice::error::RuntimeError>()
-                    .unwrap()
-                    .basic_err_code(),
-                code,
-                "{dialect}: {assignment}; {expression}"
-            );
-        }
+    for (assignment, expression, code) in [
+        ("item.number = \"bad\"", "LEN(item)", 13),
+        ("item.text = 42", "LEN(item)", 13),
+        ("item.fixed = 42", "LEN(item)", 13),
+        ("item.child = 42", "LEN(item)", 13),
+        ("item.text = STRING$(65536, \"x\")", "LEN(item)", 5),
+        ("", "LEN(42)", 13),
+        ("", "LEN()", 5),
+        ("", "LEN(item, item)", 5),
+    ] {
+        let source = format!(
+            "TYPE Child\n value AS NUMERIC\nEND TYPE\nTYPE Item\n number AS NUMERIC\n text AS STRING\n fixed AS STRING * 2\n child AS Child\nEND TYPE\nDIM item AS Item\n{assignment}\nPRINT {expression}\n"
+        );
+        let (output, result) = run_bas_may_fail(&source);
+        assert!(output.is_empty());
         assert_eq!(
-            run_bas(&format!(
-                "OPTION DIALECT \"{dialect}\"\nTYPE TextRecord\n text AS STRING\nEND TYPE\nDIM item AS TextRecord\nitem.text = STRING$(65535, \"🙂\")\nPRINT LEN(item)\nPRINT LEN(\"é🙂\")\n"
-            )),
-            "65537\n2\n"
+            result
+                .unwrap_err()
+                .downcast_ref::<rice::error::RuntimeError>()
+                .unwrap()
+                .basic_err_code(),
+            code,
+            "{assignment}; {expression}"
         );
     }
+    assert_eq!(
+        run_bas(
+            "TYPE TextRecord\n text AS STRING\nEND TYPE\nDIM item AS TextRecord\nitem.text = STRING$(65535, \"🙂\")\nPRINT LEN(item)\nPRINT LEN(\"é🙂\")\n"
+        ),
+        "65537\n2\n"
+    );
 }
 
 #[test]
 fn test_record_len_uses_current_schema_and_declared_nested_layout() {
-    for dialect in ["QB", "ANSI"] {
-        let (mut interpreter, output) = input_session("");
-        interpreter.run_source(&format!("OPTION DIALECT \"{dialect}\"\nTYPE InnerSmall\n value AS INTEGER\nEND TYPE\nTYPE InnerLarge\n value AS DOUBLE\nEND TYPE\nTYPE Outer\n child AS InnerSmall\nEND TYPE\nDIM item AS Outer, large AS InnerLarge\nitem.child = large\nPRINT LEN(item); \"|\"; LEN(item.child)\n")).unwrap();
-        interpreter
-            .run_source("TYPE InnerSmall\n value AS SINGLE\nEND TYPE\nPRINT LEN(item)\n")
-            .unwrap();
-        interpreter.run_source("TYPE Duplicate\n value AS INTEGER\n value AS SINGLE\nEND TYPE\nDIM duplicate AS Duplicate\nPRINT LEN(duplicate)\n").unwrap();
-        assert_eq!(output.into_string(), "2|8\n4\n6\n");
-        let error = interpreter
-            .run_source("TYPE InnerSmall\n missing AS NUMERIC\nEND TYPE\nPRINT LEN(item)\n")
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("missing field in record: MISSING")
-        );
-    }
+    let (mut interpreter, output) = input_session("");
+    interpreter.run_source("TYPE InnerSmall\n value AS INTEGER\nEND TYPE\nTYPE InnerLarge\n value AS DOUBLE\nEND TYPE\nTYPE Outer\n child AS InnerSmall\nEND TYPE\nDIM item AS Outer, large AS InnerLarge\nWHEN EXCEPTION IN\nitem.child = large\nUSE\nPRINT \"rejected\"\nEND WHEN\nPRINT LEN(item); \"|\"; LEN(item.child)\n").unwrap();
+    interpreter
+        .run_source("TYPE InnerSmall\n value AS SINGLE\nEND TYPE\nPRINT LEN(item)\n")
+        .unwrap();
+    interpreter.run_source("TYPE Duplicate\n value AS INTEGER\n value AS SINGLE\nEND TYPE\nDIM duplicate AS Duplicate\nPRINT LEN(duplicate)\n").unwrap();
+    assert_eq!(output.into_string(), "rejected\n2|2\n4\n6\n");
+    let error = interpreter
+        .run_source("TYPE InnerSmall\n missing AS NUMERIC\nEND TYPE\nPRINT LEN(item)\n")
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("missing field in record: MISSING")
+    );
+
     let registry = rice::builtins::BuiltinRegistry::new();
     let record = rice::value::Value::Record {
         type_name: "Unknown".into(),
@@ -3673,64 +3444,59 @@ fn test_record_len_uses_current_schema_and_declared_nested_layout() {
 #[test]
 fn test_matrix_determinant_named_matrices_and_cache() {
     let fixture = std::fs::read_to_string("tests/programs/matrix_determinant.bas").unwrap();
-    for dialect in ["QB", "ANSI"] {
-        assert_eq!(
-            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{fixture}")),
-            "0|-6|-6|0|0\n-6|0|-6\n0 2\n3 4\n7\n0\n5\n99|-6|-6\n",
-            "{dialect}"
-        );
-        assert_eq!(
-            run_bas(&format!(
-                "OPTION DIALECT \"{dialect}\"\nDIM m(1, 1)\nm(1, 1) = 7\nm = 42\nPRINT DET(m); \"|\"; DET(m())\nFUNCTION m()\n PRINT \"unexpected\"\n m = 99\nEND FUNCTION\n"
-            )),
-            "7|7\n"
-        );
-        assert_eq!(
-            run_bas(&format!(
-                "OPTION DIALECT \"{dialect}\"\nDIM text$(1, 1)\ntext$(1, 1) = \"text\"\nPRINT DET(text$)\ntext$(1, 1) = 4\nPRINT DET(text$)\n"
-            )),
-            "0\n4\n"
-        );
-    }
+
+    assert_eq!(
+        run_bas(&fixture),
+        "0|-6|-6|0|0\n-6|0|-6\n0 2\n3 4\n7\n0\n5\n99|-6|-6\n",
+    );
+    assert_eq!(
+        run_bas(
+            "DIM m(1, 1)\nm(1, 1) = 7\nm = 42\nPRINT DET(m); \"|\"; DET(m())\nFUNCTION m()\n PRINT \"unexpected\"\n m = 99\nEND FUNCTION\n"
+        ),
+        "7|7\n"
+    );
+    assert_eq!(
+        run_bas(
+            "DIM text$(1, 1)\ntext$(1, 1) = \"text\"\nPRINT DET(text$)\nWHEN EXCEPTION IN\ntext$(1, 1) = 4\nUSE\nPRINT \"assignment rejected\"\nEND WHEN\nPRINT DET(text$)\n"
+        ),
+        "0\nassignment rejected\n0\n"
+    );
 }
 
 #[test]
 fn test_matrix_determinant_rejects_invalid_references_without_evaluation() {
-    for dialect in ["QB", "ANSI"] {
-        for expression in [
-            "DET(unknown)",
-            "DET(42)",
-            "DET(\"m\")",
-            "DET((m))",
-            "DET(m(1, 1))",
-            "DET(m(Bump()))",
-            "DET(m, Bump())",
-        ] {
-            let (mut interpreter, output) = input_session("");
-            interpreter.run_source(&format!("OPTION DIALECT \"{dialect}\"\nDIM m(1, 1)\nm(1, 1) = 1\ncalls = 0\nFUNCTION Bump()\n SHARED calls\n calls = calls + 1\n Bump = 1\nEND FUNCTION\n")).unwrap();
-            let error = interpreter
-                .run_source(&format!("PRINT {expression}\n"))
-                .unwrap_err();
-            assert_eq!(
-                error
-                    .downcast_ref::<rice::error::RuntimeError>()
-                    .unwrap()
-                    .basic_err_code(),
-                5,
-                "{dialect}: {expression}"
-            );
-            interpreter
-                .run_source("PRINT calls; \"|\"; DET()\n")
-                .unwrap();
-            assert_eq!(output.into_string(), "0|0\n");
-        }
-        for declaration in ["DIM m(2)", "DIM m(2, 3)", "DIM m(2, 2, 2)"] {
-            let (_, result) = run_bas_may_fail(&format!(
-                "OPTION DIALECT \"{dialect}\"\n{declaration}\nPRINT DET(m)\n"
-            ));
-            assert!(result.is_err(), "{dialect}: {declaration}");
-        }
+    for expression in [
+        "DET(unknown)",
+        "DET(42)",
+        "DET(\"m\")",
+        "DET((m))",
+        "DET(m(1, 1))",
+        "DET(m(Bump()))",
+        "DET(m, Bump())",
+    ] {
+        let (mut interpreter, output) = input_session("");
+        interpreter.run_source("DIM m(1, 1)\nm(1, 1) = 1\ncalls = 0\nFUNCTION Bump()\n SHARED calls\n calls = calls + 1\n Bump = 1\nEND FUNCTION\n").unwrap();
+        let error = interpreter
+            .run_source(&format!("PRINT {expression}\n"))
+            .unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<rice::error::RuntimeError>()
+                .unwrap()
+                .basic_err_code(),
+            5,
+            "{expression}"
+        );
+        interpreter
+            .run_source("PRINT calls; \"|\"; DET()\n")
+            .unwrap();
+        assert_eq!(output.into_string(), "0|0\n");
     }
+    for declaration in ["DIM m(2)", "DIM m(2, 3)", "DIM m(2, 2, 2)"] {
+        let (_, result) = run_bas_may_fail(&format!("{declaration}\nPRINT DET(m)\n"));
+        assert!(result.is_err(), "{declaration}");
+    }
+
     assert_eq!(
         run_bas("OPTION EXPLICIT\nDIM m(1, 1)\nm(1, 1) = 3\nPRINT DET(m)\n"),
         "3\n"
@@ -3740,37 +3506,28 @@ fn test_matrix_determinant_rejects_invalid_references_without_evaluation() {
 }
 
 #[test]
-fn test_data_fields_in_both_dialects() {
-    let source = std::fs::read_to_string("tests/programs/data_fields.bas").unwrap();
+fn test_data_fields() {
     let expected = "0|7|0|-25|0|RICE|0\n0\n1 0\n0 -4\n";
     assert_eq!(run_file("tests/programs/data_fields.bas"), expected);
-    assert_eq!(
-        run_bas(&format!("OPTION DIALECT \"ANSI\"\n{source}")),
-        expected
-    );
 }
 
 #[test]
 fn test_data_fields_use_destination_current_or_default_type() {
-    for dialect in ["QB", "ANSI"] {
-        let source = format!(
-            r#"
-OPTION DIALECT "{dialect}"
+    let source = r#"
 DIM named AS STRING, strings$(1), grid(1)
 named = "before"
 plain = "before"
-dollar$ = 7
-strings$(1) = 5
+dollar$ = "before"
+strings$(1) = "5"
 READ named, plain, dollar$, strings$(1), new$, grid(1)
 DATA ,,,,,
-PRINT LEN(named); "|"; LEN(plain); "|"; dollar$ + 1; "|"; strings$(1) + 1; "|"; LEN(new$); "|"; grid(1) + 1
+PRINT LEN(named); "|"; LEN(plain); "|"; LEN(dollar$); "|"; LEN(strings$(1)); "|"; LEN(new$); "|"; grid(1) + 1
 RESTORE
 READ index, numbers(index)
 PRINT index; "|"; numbers(0)
-"#
-        );
-        assert_eq!(run_bas(&source), "0|0|1|1|0|1\n0|0\n");
-    }
+"#.to_owned();
+    assert_eq!(run_bas(&source), "0|0|0|0|0|1\n0|0\n");
+
     assert_eq!(
         run_bas("DEFSTR A\nREAD apple, arr(1)\nPRINT LEN(apple); LEN(arr(1))\nDATA ,\n"),
         "00\n"
@@ -3779,12 +3536,10 @@ PRINT index; "|"; numbers(0)
 
 #[test]
 fn test_data_fields_leave_item_unconsumed_when_destination_fails() {
-    for dialect in [rice::Dialect::QuickBasic, rice::Dialect::Ansi] {
-        for target in ["entry", "entries(1)", "numbers(\"bad\")", "locked"] {
-            let (mut interpreter, output) = input_session("");
-            interpreter.dialect = dialect;
-            let source = format!(
-                r#"
+    for target in ["entry", "entries(1)", "numbers(\"bad\")", "locked"] {
+        let (mut interpreter, output) = input_session("");
+        let source = format!(
+            r#"
 TYPE Item
     value AS NUMERIC
 END TYPE
@@ -3793,13 +3548,12 @@ CONST locked = 3
 DATA ,99
 READ {target}
 "#
-            );
-            assert!(interpreter.run_source(&source).is_err(), "{target}");
-            interpreter
-                .run_source("READ first, second\nPRINT first; \"|\"; second\n")
-                .unwrap();
-            assert_eq!(output.into_string(), "0|99\n", "{target}");
-        }
+        );
+        assert!(interpreter.run_source(&source).is_err(), "{target}");
+        interpreter
+            .run_source("READ first, second\nPRINT first; \"|\"; second\n")
+            .unwrap();
+        assert_eq!(output.into_string(), "0|99\n", "{target}");
     }
 }
 
@@ -3964,25 +3718,21 @@ END IF
 }
 
 #[test]
-fn test_val_scientific_prefixes_in_both_modes() {
+fn test_val_scientific_prefixes() {
     let source = std::fs::read_to_string("tests/programs/val_scientific.bas").unwrap();
-    for dialect in ["QB", "ANSI"] {
-        assert_eq!(
-            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{source}")),
-            "100|-250|0.05\n1.2|1|2|0\n255|63|0\n125|1\n300|1\n",
-            "{dialect}"
+
+    assert_eq!(
+        run_bas(&source),
+        "100|-250|0.05\n1.2|1|2|0\n255|63|0\n125|1\n300|1\n",
+    );
+    for expression in ["VAL(42)", "VAL()", "VAL(\"1\", \"2\")"] {
+        let (_, result) = run_bas_may_fail(&format!("PRINT {expression}\n"));
+        assert!(
+            result
+                .unwrap_err()
+                .downcast_ref::<rice::error::RuntimeError>()
+                .is_some()
         );
-        for expression in ["VAL(42)", "VAL()", "VAL(\"1\", \"2\")"] {
-            let (_, result) = run_bas_may_fail(&format!(
-                "OPTION DIALECT \"{dialect}\"\nPRINT {expression}\n"
-            ));
-            assert!(
-                result
-                    .unwrap_err()
-                    .downcast_ref::<rice::error::RuntimeError>()
-                    .is_some()
-            );
-        }
     }
 }
 
@@ -4018,15 +3768,13 @@ fn run_bas_with_test_environment(source: &str) -> String {
 }
 
 #[test]
-fn test_environment_index_orders_host_entries_in_both_modes() {
+fn test_environment_index_orders_host_entries() {
     let source = std::fs::read_to_string("tests/programs/environment_index.bas").unwrap();
-    for dialect in ["QB", "ANSI"] {
-        assert_eq!(
-            run_bas_with_test_environment(&format!("OPTION DIALECT \"{dialect}\"\n{source}")),
-            "RICE_ENV_INDEX_TEST_A_FIRST=first\nRICE_ENV_INDEX_TEST_M_MIDDLE=middle=extra\nRICE_ENV_INDEX_TEST_Z_LAST=last\n3|[]\nRICE_ENV_INDEX_TEST_A_FIRST=first\nRICE_ENV_INDEX_TEST_M_MIDDLE=middle=extra|1\n[]\n",
-            "{dialect}"
-        );
-    }
+
+    assert_eq!(
+        run_bas_with_test_environment(&source),
+        "RICE_ENV_INDEX_TEST_A_FIRST=first\nRICE_ENV_INDEX_TEST_M_MIDDLE=middle=extra\nRICE_ENV_INDEX_TEST_Z_LAST=last\n3|[]\nRICE_ENV_INDEX_TEST_A_FIRST=first\nRICE_ENV_INDEX_TEST_M_MIDDLE=middle=extra|1\n[]\n",
+    );
 }
 
 #[test]
@@ -4086,62 +3834,54 @@ END FUNCTION
 }
 
 #[test]
-fn test_environment_index_validates_arguments_in_both_modes() {
-    for dialect in ["QB", "ANSI"] {
-        for (expression, code) in [
-            ("ENVIRON$(0)", 5),
-            ("ENVIRON$(-1)", 5),
-            ("ENVIRON$(.5)", 5),
-            ("ENVIRON$(VAL(\"NaN\"))", 6),
-            ("ENVIRON$(EXP(1000))", 6),
-            ("ENVIRON$(9223372036854775808)", 6),
-            ("ENVIRON$()", 5),
-            ("ENVIRON$(1, 2)", 5),
-        ] {
-            let (_, result) = run_bas_may_fail(&format!(
-                "OPTION DIALECT \"{dialect}\"\nPRINT {expression}\n"
-            ));
-            assert_eq!(
-                result
-                    .unwrap_err()
-                    .downcast_ref::<rice::error::RuntimeError>()
-                    .unwrap()
-                    .basic_err_code(),
-                code,
-                "{dialect}: {expression}"
-            );
-        }
-        let (_, result) = run_bas_may_fail(&format!(
-            "OPTION DIALECT \"{dialect}\"\nTYPE Record\n x AS NUMERIC\nEND TYPE\nDIM item AS Record\nPRINT ENVIRON$(item)\n"
-        ));
+fn test_environment_index_validates_arguments() {
+    for (expression, code) in [
+        ("ENVIRON$(0)", 5),
+        ("ENVIRON$(-1)", 5),
+        ("ENVIRON$(.5)", 5),
+        ("ENVIRON$(VAL(\"NaN\"))", 6),
+        ("ENVIRON$(EXP(1000))", 6),
+        ("ENVIRON$(9223372036854775808)", 6),
+        ("ENVIRON$()", 5),
+        ("ENVIRON$(1, 2)", 5),
+    ] {
+        let (_, result) = run_bas_may_fail(&format!("PRINT {expression}\n"));
         assert_eq!(
             result
                 .unwrap_err()
                 .downcast_ref::<rice::error::RuntimeError>()
                 .unwrap()
                 .basic_err_code(),
-            13
+            code,
+            "{expression}"
         );
     }
+    let (_, result) = run_bas_may_fail(
+        "TYPE Record\n x AS NUMERIC\nEND TYPE\nDIM item AS Record\nPRINT ENVIRON$(item)\n",
+    );
+    assert_eq!(
+        result
+            .unwrap_err()
+            .downcast_ref::<rice::error::RuntimeError>()
+            .unwrap()
+            .basic_err_code(),
+        13
+    );
 }
 
 #[test]
 fn test_function_result_types_initialize_strings_numbers_and_nested_records() {
     let fixture = std::fs::read_to_string("tests/programs/function_result_types.bas").unwrap();
-    for dialect in ["QB", "ANSI"] {
-        assert_eq!(
-            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{fixture}")),
-            "[]\n[]\n[]\n5\n12\n17\nrecord\n1\n1\npermissive\n"
-        );
-    }
+
+    assert_eq!(
+        run_bas(&fixture),
+        "[]\n[]\n[    ]\n5\n12\n17\nrecord\n1\n1\n42\n"
+    );
 }
 
 #[test]
 fn test_function_result_type_defaults_are_fresh_in_recursive_calls() {
-    for dialect in ["QB", "ANSI"] {
-        let source = format!(
-            r#"
-OPTION DIALECT "{dialect}"
+    let source = r#"
 TYPE Counter
     amount AS NUMERIC
 END TYPE
@@ -4154,9 +3894,8 @@ FUNCTION MakeCounter(BYVAL depth) AS Counter
     END IF
 END FUNCTION
 "#
-        );
-        assert_eq!(run_bas(&source), "40\n20\n");
-    }
+    .to_owned();
+    assert_eq!(run_bas(&source), "40\n20\n");
 }
 
 #[test]
@@ -4165,12 +3904,10 @@ fn test_function_result_type_errors_leave_caller_scope_available() {
         "FUNCTION Broken() AS Missing\nEND FUNCTION\n",
         "TYPE Recursive\nchild AS Recursive\nEND TYPE\nFUNCTION Broken() AS Recursive\nEND FUNCTION\n",
     ] {
-        for dialect in ["QB", "ANSI"] {
-            let output = run_bas(&format!(
-                "OPTION DIALECT \"{dialect}\"\ncaller = 7\nWHEN EXCEPTION IN\nPRINT Broken()\nUSE\nPRINT caller\nEND WHEN\nPRINT caller\n{definition}"
-            ));
-            assert_eq!(output, "7\n7\n");
-        }
+        let output = run_bas(&format!(
+            "caller = 7\nWHEN EXCEPTION IN\nPRINT Broken()\nUSE\nPRINT caller\nEND WHEN\nPRINT caller\n{definition}"
+        ));
+        assert_eq!(output, "7\n7\n");
     }
 }
 
@@ -4187,31 +3924,20 @@ fn test_function_without_return_as_preserves_suffix_defaults() {
 #[test]
 fn test_exit_while_nested_blocks_and_condition_evaluation() {
     let source = std::fs::read_to_string("tests/programs/exit_while.bas").unwrap();
-    for dialect in ["QB", "ANSI"] {
-        assert_eq!(
-            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{source}")),
-            "1:1:1\n2:1:1\n1\n"
-        );
-    }
+
+    assert_eq!(run_bas(&source), "1:1:1\n2:1:1\n1\n");
 }
 
 #[test]
 fn test_exit_select_nested_blocks_and_case_else() {
     let source = std::fs::read_to_string("tests/programs/exit_select.bas").unwrap();
-    for dialect in ["QB", "ANSI"] {
-        assert_eq!(
-            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{source}")),
-            "inner done\n1:1\n2:1\ndone\n"
-        );
-    }
+
+    assert_eq!(run_bas(&source), "inner done\n1:1\n2:1\ndone\n");
 }
 
 #[test]
 fn test_exit_while_and_select_with_local_procedures_and_exception_handlers() {
-    for dialect in ["QB", "ANSI"] {
-        let source = format!(
-            r#"
-OPTION DIALECT "{dialect}"
+    let source = r#"
 CALL Worker
 PRINT Compute()
 WHILE 1
@@ -4253,38 +3979,34 @@ FUNCTION Compute()
     Compute = 42
 END FUNCTION
 "#
-        );
-        assert_eq!(run_bas(&source), "sub\n42\ndone\n");
-    }
+    .to_owned();
+    assert_eq!(run_bas(&source), "sub\n42\ndone\n");
 }
 
 #[test]
 fn test_exit_while_and_select_do_not_escape_procedure_boundaries() {
-    for dialect in ["QB", "ANSI"] {
-        for (exit, open, close) in [
-            ("EXIT WHILE", "WHILE 1", "WEND"),
-            ("EXIT SELECT", "SELECT CASE 1\nCASE 1", "END SELECT"),
-        ] {
-            let sources = [
-                format!("{exit}\nPRINT \"unexpected\""),
-                format!("IF 1 THEN {exit} ELSE PRINT \"unexpected\""),
-                format!(
-                    "{open}\nCALL Worker\n{close}\nPRINT \"unexpected\"\nSUB Worker\n{exit}\nEND SUB"
-                ),
-                format!(
-                    "{open}\nx = Compute()\n{close}\nPRINT \"unexpected\"\nFUNCTION Compute()\n{exit}\nEND FUNCTION"
-                ),
-            ];
-            for source in sources {
-                let (output, result) =
-                    run_bas_may_fail(&format!("OPTION DIALECT \"{dialect}\"\n{source}"));
-                assert!(output.is_empty(), "{source}: {output}");
-                let error = result.unwrap_err().to_string();
-                assert!(
-                    error.contains("control-flow statement outside its enclosing construct"),
-                    "{source}: {error}"
-                );
-            }
+    for (exit, open, close) in [
+        ("EXIT WHILE", "WHILE 1", "WEND"),
+        ("EXIT SELECT", "SELECT CASE 1\nCASE 1", "END SELECT"),
+    ] {
+        let sources = [
+            format!("{exit}\nPRINT \"unexpected\""),
+            format!("IF 1 THEN {exit} ELSE PRINT \"unexpected\""),
+            format!(
+                "{open}\nCALL Worker\n{close}\nPRINT \"unexpected\"\nSUB Worker\n{exit}\nEND SUB"
+            ),
+            format!(
+                "{open}\nx = Compute()\n{close}\nPRINT \"unexpected\"\nFUNCTION Compute()\n{exit}\nEND FUNCTION"
+            ),
+        ];
+        for source in sources {
+            let (output, result) = run_bas_may_fail(&source);
+            assert!(output.is_empty(), "{source}: {output}");
+            let error = result.unwrap_err().to_string();
+            assert!(
+                error.contains("control-flow statement outside its enclosing construct"),
+                "{source}: {error}"
+            );
         }
     }
 }
@@ -4303,7 +4025,7 @@ fn test_exit_while_and_select_from_gosub_use_active_constructs() {
 }
 
 #[test]
-fn test_indexed_get_put_qbasic_layouts_and_record_arrays() {
+fn test_indexed_get_put_layouts_and_record_arrays() {
     let (output, directory) = run_bas_with_tmpdir(include_str!("programs/indexed_get_put.bas"));
     assert_eq!(output, "32\n-123;2147483000;1.25;3.5\néAB;17;xyz;hi\n");
     let bytes = std::fs::read(directory.path().join("elements.bin")).unwrap();
@@ -4312,40 +4034,6 @@ fn test_indexed_get_put_qbasic_layouts_and_record_arrays() {
     assert_eq!(&bytes[6..10], &1.25_f32.to_le_bytes());
     assert_eq!(&bytes[10..18], &3.5_f64.to_le_bytes());
     assert_eq!(&bytes[18..23], &[3, 0, 233, b'A', b'B']);
-}
-
-#[test]
-fn test_indexed_get_put_ansi_retains_raw_transfer_rules() {
-    let (output, directory) = run_bas_with_tmpdir(
-        r#"
-OPTION DIALECT "ANSI"
-TYPE Item
-    n AS INTEGER
-END TYPE
-DIM words$(2), numbers(2), entries(2) AS Item
-words$(1) = "éZ"
-numbers(1) = 42
-OPEN "{DIR}/raw.bin" FOR BINARY AS #1
-PUT #1, , words$(1)
-PUT #1, , numbers(1)
-PUT #1, , entries(1)
-PRINT LOF(1)
-words$(2) = SPACE$(3)
-numbers(2) = "xx"
-GET #1, 1, words$(2)
-GET #1, , numbers(2)
-GET #1, , entries(2)
-PRINT words$(2); ";"; numbers(2); ";"; entries(2)
-GET #1, , words$(2)
-PRINT LEN(words$(2)); ";"; EOF(1)
-CLOSE #1
-"#,
-    );
-    assert_eq!(output, "11\néZ;42;[ITEM]\n0;1\n");
-    assert_eq!(
-        std::fs::read(directory.path().join("raw.bin")).unwrap(),
-        "éZ42[ITEM]".as_bytes()
-    );
 }
 
 #[test]
@@ -4491,29 +4179,19 @@ fn test_indexed_get_put_rejects_non_element_operands() {
 }
 
 #[test]
-fn test_const_lists_in_both_dialects_and_procedure_scopes() {
+fn test_const_lists_and_procedure_scopes() {
     let fixture = std::fs::read_to_string("tests/programs/const_lists.bas").unwrap();
-    for dialect in ["QB", "ANSI"] {
-        let explicit = if dialect == "QB" {
-            "OPTION EXPLICIT\n"
-        } else {
-            ""
-        };
-        assert_eq!(
-            run_bas(&format!(
-                "OPTION DIALECT \"{dialect}\"\n{explicit}{fixture}"
-            )),
-            "3:6:6:ok!\n7:8\n16:17\n"
-        );
-    }
+
+    let explicit = "OPTION EXPLICIT\n";
+    assert_eq!(
+        run_bas(&format!("{explicit}{fixture}")),
+        "3:6:6:ok!\n7:8\n16:17\n"
+    );
 }
 
 #[test]
 fn test_const_lists_evaluate_left_to_right_once() {
-    for dialect in ["QB", "ANSI"] {
-        let source = format!(
-            r#"
-OPTION DIALECT "{dialect}"
+    let source = r#"
 calls = 0
 CONST first = Bump(), second = Bump() + first, third = Bump() + second
 PRINT first; ":"; second; ":"; third; ":"; calls
@@ -4523,64 +4201,54 @@ FUNCTION Bump()
     Bump = calls
 END FUNCTION
 "#
-        );
-        assert_eq!(run_bas(&source), "1:3:6:3\n");
-    }
+    .to_owned();
+    assert_eq!(run_bas(&source), "1:3:6:3\n");
 }
 
 #[test]
 fn test_const_lists_keep_prior_definitions_and_initializer_effects_on_failure() {
-    for dialect in ["QB", "ANSI"] {
-        let explicit = if dialect == "QB" {
-            "OPTION EXPLICIT\n"
-        } else {
-            ""
-        };
-        for (declaration, expected_calls, duplicate) in [
-            (
-                "CONST first = Bump(), first = Bump(), later = Bump()",
-                2,
-                true,
-            ),
-            (
-                "CONST first = Bump(), failed = Bump() / 0, later = Bump()",
-                2,
-                false,
-            ),
-        ] {
-            let (mut interpreter, output) = input_session("");
-            interpreter.run_source(&format!(
-                "OPTION DIALECT \"{dialect}\"\n{explicit}DIM calls\nFUNCTION Bump()\nSHARED calls\ncalls = calls + 1\nBump = calls\nEND FUNCTION\n"
+    let explicit = "OPTION EXPLICIT\n";
+    for (declaration, expected_calls, duplicate) in [
+        (
+            "CONST first = Bump(), first = Bump(), later = Bump()",
+            2,
+            true,
+        ),
+        (
+            "CONST first = Bump(), failed = Bump() / 0, later = Bump()",
+            2,
+            false,
+        ),
+    ] {
+        let (mut interpreter, output) = input_session("");
+        interpreter.run_source(&format!(
+                "{explicit}DIM calls\nFUNCTION Bump()\nSHARED calls\ncalls = calls + 1\nBump = calls\nEND FUNCTION\n"
             )).unwrap();
-            let error = interpreter.run_source(declaration).unwrap_err();
-            let runtime_error = error.downcast_ref::<rice::error::RuntimeError>().unwrap();
-            if duplicate {
-                assert!(matches!(
-                    runtime_error,
-                    rice::error::RuntimeError::DuplicateDefinition { .. }
-                ));
-            } else {
-                assert!(matches!(
-                    runtime_error,
-                    rice::error::RuntimeError::DivisionByZero
-                ));
-            }
-            interpreter
-                .run_source("CONST later = 99\nPRINT first; \":\"; calls; \":\"; later\n")
-                .unwrap();
-            assert_eq!(output.into_string(), format!("1:{expected_calls}:99\n"));
-            let error = interpreter.run_source("first = 9").unwrap_err();
-            assert!(error.to_string().contains("constant"));
+        let error = interpreter.run_source(declaration).unwrap_err();
+        let runtime_error = error.downcast_ref::<rice::error::RuntimeError>().unwrap();
+        if duplicate {
+            assert!(matches!(
+                runtime_error,
+                rice::error::RuntimeError::DuplicateDefinition { .. }
+            ));
+        } else {
+            assert!(matches!(
+                runtime_error,
+                rice::error::RuntimeError::DivisionByZero
+            ));
         }
+        interpreter
+            .run_source("CONST later = 99\nPRINT first; \":\"; calls; \":\"; later\n")
+            .unwrap();
+        assert_eq!(output.into_string(), format!("1:{expected_calls}:99\n"));
+        let error = interpreter.run_source("first = 9").unwrap_err();
+        assert!(error.to_string().contains("constant"));
     }
 }
 
 #[test]
 fn test_const_lists_are_one_statement_for_handler_continue() {
-    for dialect in ["QB", "ANSI"] {
-        let source = format!(
-            r#"
-OPTION DIALECT "{dialect}"
+    let source = r#"
 WHEN EXCEPTION IN
     CONST first = 7, failed = 1 / 0, skipped = 99
     PRINT first
@@ -4591,94 +4259,78 @@ END WHEN
 CONST skipped = 42
 PRINT skipped
 "#
-        );
-        assert_eq!(run_bas(&source), "caught\n7\n42\n");
-    }
+    .to_owned();
+    assert_eq!(run_bas(&source), "caught\n7\n42\n");
 }
 
 #[test]
 fn test_declared_array_defaults_fixture() {
     let source = std::fs::read_to_string("tests/programs/declared_array_defaults.bas").unwrap();
-    for dialect in ["QB", "ANSI"] {
-        let explicit = if dialect == "QB" {
-            "OPTION EXPLICIT\n"
-        } else {
-            ""
-        };
-        assert_eq!(
-            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{explicit}{source}")),
-            "0|0|0\n0|0|0|0\nhello|6|0\n42|0\n0|0|0\n"
-        );
-    }
+
+    let explicit = "OPTION EXPLICIT\n";
+    assert_eq!(
+        run_bas(&format!("{explicit}{source}")),
+        "0|2|0\n0|0|0|0\nhello|2|0\nrejected\n0|42\n0|2|0\n"
+    );
 }
 
 #[test]
 fn test_declared_array_defaults_redeclaration_and_lifetime() {
-    for dialect in ["QB", "ANSI"] {
-        let source = format!(
+    assert_eq!(
+        run_bas(
             r#"
-OPTION DIALECT "{dialect}"
-TYPE Item
-    value AS NUMERIC
-END TYPE
-DIM changing(3) AS Item
-changing(1).value = 7
-DIM changing(3) AS STRING
-PRINT changing(1).value; "|"; LEN(changing(2))
-REDIM PRESERVE changing(4) AS NUMERIC
-PRINT changing(1).value; "|"; changing(2)
-REDIM changing(2) AS STRING
-PRINT LEN(changing(1)); "|"; LEN(changing(2))
-changing(1) = "kept"
-DIM changing AS NUMERIC
-PRINT LEN(changing(2))
-DIM changing(2)
-PRINT changing(1); "|"; changing(2)
-REDIM changing(2) AS STRING * 1
+DIM changing(3) AS INTEGER
+changing(1) = 7
+WHEN EXCEPTION IN
+    DIM changing(3) AS STRING
+USE
+    PRINT "dim rejected"
+END WHEN
+PRINT changing(1); "|"; TYPEOF$(changing(2))
+WHEN EXCEPTION IN
+    REDIM PRESERVE changing(4) AS LONG
+USE
+    PRINT "preserve rejected"
+END WHEN
+PRINT changing(1); "|"; UBOUND(changing)
+REDIM changing(2) AS STRING * 2
 changing(1) = "long"
+PRINT changing(1); "|"; LEN(changing(2))
 ERASE changing
-PRINT LEN(changing(1)); "|"; LEN(changing(2)); "|"; changing
+PRINT "["; changing(1); "]"
 CLEAR
 PRINT LEN(changing(1)); "|"; UBOUND(changing)
-REDIM changing
-PRINT changing(1)
 "#
-        );
-        assert_eq!(
-            run_bas(&source),
-            "7|0\n7|0\n0|0\n0\nkept|0\n0|0|0\n0|2\n0\n"
-        );
-    }
+        ),
+        "dim rejected\n7|INTEGER\npreserve rejected\n7|3\nlo|2\n[  ]\n2|2\n"
+    );
 }
 
 #[test]
-fn test_declared_array_defaults_preserve_dynamic_defstr_for_untyped_arrays() {
+fn test_declared_array_types_are_independent_of_later_def_types() {
     assert_eq!(
         run_bas(
             r#"
 DIM apple(2), apricot(2) AS NUMERIC
 DEFSTR A
-PRINT LEN(apple(1)); "|"; apricot(1)
-DIM apple(2) AS NUMERIC
-PRINT apple(1)
-DIM apple(2)
-PRINT LEN(apple(1))
-DEFINT A
-PRINT apple(1)
+PRINT TYPEOF$(apple(1)); "|"; TYPEOF$(apricot(1))
+newName = 7
+another = "text"
+PRINT TYPEOF$(another)
 DIM apple(2) AS STRING
 PRINT LEN(apple(1))
+DEFINT A
+PRINT TYPEOF$(apple(1)); "|"; TYPEOF$(another)
 "#
         ),
-        "0|0\n0\n0\n0\n0\n"
+        "NUMERIC|NUMERIC\nSTRING\n0\nSTRING|STRING\n"
     );
 }
 
 #[test]
 fn test_declared_array_defaults_apply_to_file_input() {
-    for dialect in ["QB", "ANSI"] {
-        let source = format!(
-            r#"
-OPTION DIALECT "{dialect}"
+    let source = format!(
+        r#"
 OPEN "{{DIR}}/input.txt" FOR OUTPUT AS #1
 PRINT #1, "alpha,5"
 PRINT #1, "longer than one"
@@ -4690,35 +4342,35 @@ LINE INPUT #1, fixed(1)
 CLOSE #1
 PRINT labels(1); "|"; numbers$(1) + 1; "|"; fixed(1)
 "#
-        );
-        let (output, _) = run_bas_with_tmpdir(&source);
-        assert_eq!(output, "alpha|6|longer than one\n");
-    }
+    );
+    let (output, _) = run_bas_with_tmpdir(&source);
+    assert_eq!(output, "alpha|6|l\n");
 }
 
 #[test]
-fn test_declared_array_defaults_keep_qb_binary_width_selection() {
+fn test_declared_array_types_select_binary_widths_before_suffixes() {
     let source = r#"
-DIM narrow%(1) AS DOUBLE, unsuffixed(1) AS INTEGER
-DIM text$(1) AS STRING * 2, receive(1) AS STRING
-narrow%(1) = 123
+DIM overridden%(2) AS DOUBLE, unsuffixed(2) AS INTEGER
+DIM text$(2) AS STRING * 2
+overridden%(1) = 123
 unsuffixed(1) = 4
 text$(1) = "longer"
 OPEN "{DIR}/array.bin" FOR BINARY AS #1
-PUT #1, , narrow%(1)
+PUT #1, , overridden%(1)
 PUT #1, , unsuffixed(1)
 PUT #1, , text$(1)
 PRINT LOF(1)
-GET #1, 3, receive(1)
+GET #1, 1, overridden%(2)
+GET #1, 9, unsuffixed(2)
 GET #1, 11, text$(2)
-PRINT receive(1); "|"; text$(2)
+PRINT overridden%(2); "|"; unsuffixed(2); "|"; text$(2)
 CLOSE #1
 "#;
     let (output, dir) = run_bas_with_tmpdir(source);
-    assert_eq!(output, "18\n4|longer\n");
-    let mut expected = 123_i16.to_le_bytes().to_vec();
-    expected.extend_from_slice(&4_f64.to_le_bytes());
-    expected.extend_from_slice(b"\x06\0longer");
+    assert_eq!(output, "12\n123|4|lo\n");
+    let mut expected = 123_f64.to_le_bytes().to_vec();
+    expected.extend_from_slice(&4_i16.to_le_bytes());
+    expected.extend_from_slice(b"lo");
     assert_eq!(
         std::fs::read(dir.path().join("array.bin")).unwrap(),
         expected
@@ -4736,29 +4388,7 @@ fn test_declared_array_defaults_persist_across_submissions_and_existing_scope_ru
     interpreter.run_source(
         "CALL SetDefaults\nPRINT values(2)\nSUB SetDefaults\n DIM values(2) AS NUMERIC\nEND SUB\n"
     ).unwrap();
-    assert_eq!(output.into_string(), "0\n0\n0\n");
-}
-
-#[test]
-fn test_declared_array_defaults_apply_to_ansi_put_missing_elements() {
-    let source = r#"
-OPTION DIALECT "ANSI"
-DIM text(1) AS STRING, fixed(1) AS STRING * 20, numeric$(1) AS NUMERIC
-OPEN "{DIR}/defaults.bin" FOR BINARY AS #1
-PUT #1, , text(1)
-PUT #1, , fixed(1)
-PUT #1, , numeric$(1)
-PRINT LOF(1)
-GET #1, 1, text(1)
-PRINT text(1)
-CLOSE #1
-"#;
-    let (output, dir) = run_bas_with_tmpdir(source);
-    assert_eq!(output, "1\n0\n");
-    assert_eq!(
-        std::fs::read(dir.path().join("defaults.bin")).unwrap(),
-        b"0"
-    );
+    assert_eq!(output.into_string(), "0\n0\n\n");
 }
 
 #[test]
@@ -4779,39 +4409,30 @@ fn test_declared_array_defaults_survive_failed_dimension_changes() {
 }
 
 #[test]
-fn test_replace_strings_in_both_dialects() {
+fn test_replace_strings() {
     let source = std::fs::read_to_string("tests/programs/replace_strings.bas").unwrap();
-    for dialect in ["QB", "ANSI"] {
-        assert_eq!(
-            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{source}")),
-            "baXYZXYZ\nbba\nX abc\nbc\nbc\néé\n🙂X🙂\naabaa\n[]\n[]\nuntouched|unchanged\n",
-            "{dialect}"
-        );
-    }
+
+    assert_eq!(
+        run_bas(&source),
+        "baXYZXYZ\nbba\nX abc\nbc\nbc\néé\n🙂X🙂\naabaa\n[]\n[]\nuntouched|unchanged\n",
+    );
 }
 
 #[test]
-fn test_reverse_search_in_both_dialects() {
+fn test_reverse_search() {
     let source = std::fs::read_to_string("tests/programs/reverse_search.bas").unwrap();
-    for dialect in ["QB", "ANSI"] {
-        assert_eq!(
-            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{source}")),
-            "4|2\n4|2\n1\n3|2|0\n0|0\n1|3\nfile.bas\n",
-            "{dialect}"
-        );
-    }
+
+    assert_eq!(run_bas(&source), "4|2\n4|2\n1\n3|2|0\n0|0\n1|3\nfile.bas\n",);
 }
 
 #[test]
-fn test_negative_decimal_places_in_both_dialects() {
+fn test_negative_decimal_places() {
     let source = std::fs::read_to_string("tests/programs/negative_decimal_places.bas").unwrap();
-    for dialect in ["QB", "ANSI"] {
-        assert_eq!(
-            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{source}")),
-            "150|200|-200\n1400|-1400\n150|150\n1.3|1.2\n1\n1000\n",
-            "{dialect}"
-        );
-    }
+
+    assert_eq!(
+        run_bas(&source),
+        "150|200|-200\n1400|-1400\n150|150\n1.3|1.2\n1\n1000\n",
+    );
 }
 
 #[test]
@@ -4840,43 +4461,1464 @@ FUNCTION Number(BYVAL tag$, BYVAL result)
     Number = result
 END FUNCTION
 "#;
-    for dialect in ["QB", "ANSI"] {
+
+    assert_eq!(run_bas(&source), "Xba\n12345\n2\n123\n130\n12\n-120\n12\n",);
+}
+
+#[test]
+fn test_new_string_operations_and_negative_rounding_report_runtime_errors() {
+    for (expression, expected_code) in [
+        ("REPLACE$(\"\", \"\", \"x\", 0)", 5),
+        ("REPLACE$(\"\", \"\", \"x\", 1, -2)", 5),
+        ("REPLACE$(\"\", \"\", 3, 1, 0)", 13),
+        ("REPLACE$(\"\", \"\", \"x\", 1, VAL(\"NaN\"))", 6),
+        ("REPLACE$()", 5),
+        ("INSTRREV(\"\", \"\", 0)", 5),
+        ("INSTRREV(\"\", 1)", 13),
+        ("INSTRREV(\"\", \"\", VAL(\"NaN\"))", 6),
+        ("INSTRREV(\"a\", \"a\", 1, 0)", 5),
+        ("ROUND(1, -309)", 5),
+        ("TRUNCATE(1, -309)", 5),
+        ("ROUND(1, \"-1\")", 13),
+        ("ROUND(MAXNUM(), -308)", 6),
+    ] {
+        let (_, result) = run_bas_may_fail(&format!("PRINT {expression}\n"));
+        let error = result.expect_err(expression);
+        let runtime = error.downcast_ref::<rice::error::RuntimeError>().unwrap();
+        assert_eq!(runtime.basic_err_code(), expected_code, "{expression}");
+    }
+}
+
+#[test]
+fn test_native_types() {
+    let source = std::fs::read_to_string("tests/programs/native_types.bas").unwrap();
+    let expected = concat!(
+        "INT64|BOOL|BYTE|BYTES\n0|FALSE|0|0\n",
+        "9007199254740995\n9007199254740991\n9007199254740994|9007199254740992\n9000000003\n",
+        "1\nTRUE|FALSE\nTRUE\n20000000000001|9007199254740993\n",
+        "TRUE|FALSE|TRUE\nBOOL|1|0\n255|BYTE\n",
+        "007F80FF|255|4\n007F80FF|002180FF\n80FF|0\nRice 🍚\nAB00FF\n00FF|TRUE\n",
+    );
+
+    assert_eq!(run_bas(&source), expected,);
+}
+
+#[test]
+fn test_native_integer_division_and_overflow_are_exact() {
+    assert_eq!(
+        run_bas(
+            "PRINT CINT64(\"9007199254740993\") \\ CINT64(2)\nPRINT CINT64(\"-9007199254740993\") \\ CINT64(2)\n"
+        ),
+        "4503599627370496\n-4503599627370496\n"
+    );
+    for (expression, code) in [
+        ("CINT64(\"-9223372036854775808\") \\ CINT64(-1)", 6),
+        ("CINT64(1) \\ CINT64(0)", 11),
+        ("CINT64(\"9223372036854775807\") + 1", 6),
+        ("CINT64(\"-9223372036854775808\") - 1", 6),
+    ] {
+        let (_, result) = run_bas_may_fail(&format!("PRINT {expression}\n"));
+        let error = result.expect_err(expression);
+        let runtime = error.downcast_ref::<rice::error::RuntimeError>().unwrap();
+        assert_eq!(runtime.basic_err_code(), code, "{expression}");
+    }
+}
+
+#[test]
+fn test_native_integer_loops_and_control_flow_preserve_exact_values() {
+    let source = r#"
+DIM counter AS INT64
+FOR counter = CINT64("9007199254740992") TO CINT64("9007199254740994")
+    PRINT counter
+NEXT counter
+FOR counter = CINT64(0) TO CINT64("18014398509481986") STEP CINT64("9007199254740993")
+    PRINT counter
+NEXT counter
+SELECT CASE CINT64("9007199254740993")
+    CASE 9007199254740992
+        PRINT "rounded"
+    CASE CINT64("9007199254740993")
+        PRINT "exact"
+END SELECT
+IF TRUE() AND CBOOL(1) THEN PRINT "enabled"
+"#;
+
+    assert_eq!(
+        run_bas(&source),
+        "9007199254740992\n9007199254740993\n9007199254740994\n0\n9007199254740993\n18014398509481986\nexact\nenabled\n",
+    );
+}
+
+#[test]
+fn test_native_type_errors_are_catchable_and_preserve_destinations() {
+    for (setup, operation, observe, expected) in [
+        ("DIM n AS INT64\nn = CINT64(42)", "n = 1.5", "n", "42"),
+        (
+            "DIM n AS INT64\nn = CINT64(42)",
+            "n = CINT64(\"9223372036854775807\") + CINT64(1)",
+            "n",
+            "42",
+        ),
+        (
+            "DIM n AS INT64\nn = CINT64(42)",
+            "n = -CINT64(\"-9223372036854775808\")",
+            "n",
+            "42",
+        ),
+        ("DIM n AS BYTE\nn = 254", "n = 256", "n", "254"),
+        ("DIM n AS BOOL\nn = TRUE()", "n = \"yes\"", "n", "TRUE"),
+        (
+            "DIM n AS BYTES\nn = BYTES(255)",
+            "n = \"text\"",
+            "HEXENCODE$(n)",
+            "FF",
+        ),
+        ("DIM n(2) AS BYTE\nn(1) = 12", "n(1) = -1", "n(1)", "12"),
+        (
+            "TYPE Packet\n n AS BYTE\nEND TYPE\nDIM p AS Packet\np.n = 12",
+            "p.n = 256",
+            "p.n",
+            "12",
+        ),
+    ] {
+        let source = format!(
+            "{setup}\nWHEN EXCEPTION IN\n{operation}\nUSE\nPRINT \"caught\"\nEND WHEN\nPRINT {observe}\n"
+        );
         assert_eq!(
-            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{source}")),
-            "Xba\n12345\n2\n123\n130\n12\n-120\n12\n",
-            "{dialect}"
+            run_bas(&source),
+            format!("caught\n{expected}\n"),
+            "{operation}"
+        );
+    }
+    for expression in [
+        "TRUE() + 1",
+        "CINT64(\"9007199254740993\") + 0.5",
+        "CINT64(\"9223372036854775807\") * CINT64(2)",
+        "UTF8DECODE$(BYTES(255))",
+        "BYTEAT(BYTES(1), 0)",
+        "BYTEAT(BYTES(1), 1.5)",
+    ] {
+        assert!(
+            run_bas_may_fail(&format!("PRINT {expression}\n"))
+                .1
+                .is_err(),
+            "{expression}"
         );
     }
 }
 
 #[test]
-fn test_new_string_operations_and_negative_rounding_report_runtime_errors() {
-    for dialect in ["QB", "ANSI"] {
-        for (expression, expected_code) in [
-            ("REPLACE$(\"\", \"\", \"x\", 0)", 5),
-            ("REPLACE$(\"\", \"\", \"x\", 1, -2)", 5),
-            ("REPLACE$(\"\", \"\", 3, 1, 0)", 13),
-            ("REPLACE$(\"\", \"\", \"x\", 1, VAL(\"NaN\"))", 6),
-            ("REPLACE$()", 5),
-            ("INSTRREV(\"\", \"\", 0)", 5),
-            ("INSTRREV(\"\", 1)", 13),
-            ("INSTRREV(\"\", \"\", VAL(\"NaN\"))", 6),
-            ("INSTRREV(\"a\", \"a\", 1, 0)", 5),
-            ("ROUND(1, -309)", 5),
-            ("TRUNCATE(1, -309)", 5),
-            ("ROUND(1, \"-1\")", 13),
-            ("ROUND(MAXNUM(), -308)", 6),
+fn test_native_values_retain_types_in_arrays_records_and_clear() {
+    let source = r#"
+TYPE Packet
+    identifier AS INT64
+    active AS BOOL
+    kind AS BYTE
+    payload AS BYTES
+END TYPE
+DIM ids(2) AS INT64, flags(2) AS BOOL, octets(2) AS BYTE, buffers(2) AS BYTES
+DIM packet AS Packet
+ids(1) = CINT64("9223372036854775807")
+flags(1) = TRUE()
+octets(1) = 255
+buffers(1) = BYTES(0, 255)
+packet.identifier = ids(1)
+packet.active = flags(1)
+packet.kind = octets(1)
+packet.payload = buffers(1)
+PRINT packet.identifier; "|"; packet.active; "|"; packet.kind; "|"; HEXENCODE$(packet.payload)
+PRINT TYPEOF$(ids(2)); "|"; TYPEOF$(flags(2)); "|"; TYPEOF$(octets(2)); "|"; TYPEOF$(buffers(2))
+REDIM PRESERVE ids(3) AS INT64
+PRINT ids(1); "|"; TYPEOF$(ids(3)); "|"; ids(3)
+CLEAR
+PRINT TYPEOF$(ids(1)); "|"; ids(1); "|"; flags(1); "|"; octets(1); "|"; LEN(buffers(1))
+PRINT packet.identifier; "|"; packet.active; "|"; packet.kind; "|"; LEN(packet.payload)
+"#;
+
+    assert_eq!(
+        run_bas(&source),
+        concat!(
+            "9223372036854775807|TRUE|255|00FF\nINT64|BOOL|BYTE|BYTES\n",
+            "9223372036854775807|INT64|0\nINT64|0|FALSE|0|0\n0|FALSE|0|0\n"
+        ),
+    );
+}
+
+#[test]
+fn test_native_array_resize_preserves_declared_type_and_rejects_type_changes() {
+    let source = r#"
+DIM ids(2) AS INT64
+ids(1) = CINT64("9007199254740993")
+REDIM PRESERVE ids(3)
+PRINT ids(1); "|"; TYPEOF$(ids(1)); "|"; TYPEOF$(ids(3))
+WHEN EXCEPTION IN
+    REDIM PRESERVE ids(4) AS BYTE
+USE
+    PRINT "caught"
+END WHEN
+PRINT ids(1); "|"; TYPEOF$(ids(1)); "|"; UBOUND(ids)
+DIM buffers(2) AS BYTES
+buffers(1) = BYTES(0, 255)
+ERASE buffers
+PRINT TYPEOF$(buffers(1)); "|"; LEN(buffers(1))
+"#;
+
+    assert_eq!(
+        run_bas(&source),
+        "9007199254740993|INT64|INT64\ncaught\n9007199254740993|INT64|3\nBYTES|0\n",
+    );
+}
+
+#[test]
+fn test_native_procedure_arguments_results_and_copy_semantics() {
+    let source = r#"
+DIM number AS INT64, payload AS BYTES
+number = CINT64("9007199254740993")
+payload = BYTES(1, 2)
+CALL Increment(number)
+PRINT number
+CALL ExplicitIncrement(number)
+PRINT number
+CALL ChangeCopy(payload)
+PRINT HEXENCODE$(payload)
+PRINT Success(); "|"; TYPEOF$(Success()); "|"; NextNumber(number)
+SUB Increment(value AS INT64)
+    value = value + CINT64(1)
+END SUB
+SUB ExplicitIncrement(BYREF value AS INT64)
+    value = value + CINT64(1)
+END SUB
+SUB ChangeCopy(BYVAL value AS BYTES)
+    value = BYTESET(value, 1, 255)
+END SUB
+FUNCTION Success() AS BOOL
+    Success = TRUE()
+END FUNCTION
+FUNCTION NextNumber(BYVAL value AS INT64) AS INT64
+    NextNumber = value + CINT64(1)
+END FUNCTION
+"#;
+    assert_eq!(
+        run_bas(source),
+        "9007199254740994\n9007199254740995\n0102\nTRUE|BOOL|9007199254740996\n"
+    );
+    for source in [
+        "DIM b AS BYTE\nCALL Invalid(b)\nSUB Invalid(BYREF value AS BYTE)\nvalue = 256\nEND SUB\n",
+        "PRINT Invalid()\nFUNCTION Invalid() AS BYTE\nInvalid = 256\nEND FUNCTION\n",
+        "CALL Invalid(0.5)\nSUB Invalid(BYVAL value AS INT64)\nEND SUB\n",
+    ] {
+        assert!(run_bas_may_fail(source).1.is_err(), "{source}");
+    }
+}
+
+#[test]
+fn test_native_input_read_and_write_preserve_exact_integer_text() {
+    let source = r#"
+DIM number AS INT64, enabled AS BOOL, octet AS BYTE
+DATA "9223372036854775807", "TRUE", 255
+READ number, enabled, octet
+PRINT number; "|"; enabled; "|"; octet
+OPEN "{DIR}/native.csv" FOR OUTPUT AS #1
+WRITE #1, number, enabled, octet
+CLOSE #1
+number = 0
+enabled = FALSE()
+octet = 0
+OPEN "{DIR}/native.csv" FOR INPUT AS #1
+INPUT #1, number, enabled, octet
+CLOSE #1
+PRINT number; "|"; enabled; "|"; octet
+"#;
+
+    let (output, dir) = run_bas_with_tmpdir(&source);
+    assert_eq!(
+        output,
+        "9223372036854775807|TRUE|255\n9223372036854775807|TRUE|255\n",
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("native.csv")).unwrap(),
+        "9223372036854775807,TRUE,255\n"
+    );
+}
+
+#[test]
+fn test_native_binary_buffer_file_io_preserves_all_bytes_and_short_reads() {
+    let source = r#"
+DIM payload AS BYTES, readback AS BYTES
+payload = BYTEBUFFER(256)
+FOR index = 1 TO 256
+    payload = BYTESET(payload, index, index - 1)
+NEXT index
+OPEN "{DIR}/bytes.bin" FOR BINARY AS #1
+PUT #1, , payload
+PRINT LOF(1)
+readback = BYTEBUFFER(256)
+GET #1, 1, readback
+PRINT readback = payload
+readback = BYTEBUFFER(8)
+GET #1, 255, readback
+PRINT HEXENCODE$(readback); "|"; LEN(readback)
+CLOSE #1
+"#;
+
+    let (output, dir) = run_bas_with_tmpdir(&source);
+    assert_eq!(output, "256\nTRUE\nFEFF|2\n");
+    assert_eq!(
+        std::fs::read(dir.path().join("bytes.bin")).unwrap(),
+        (0..=255).collect::<Vec<u8>>()
+    );
+}
+
+#[test]
+fn test_native_record_binary_io_has_stable_exact_encoding() {
+    let source = r#"
+TYPE Packet
+    identifier AS INT64
+    enabled AS BOOL
+    kind AS BYTE
+    payload AS BYTES
+END TYPE
+DIM sent AS Packet, received AS Packet
+sent.identifier = CINT64("9223372036854775807")
+sent.enabled = TRUE()
+sent.kind = 255
+sent.payload = BYTES(0, 128, 255)
+OPEN "{DIR}/packet.bin" FOR BINARY AS #1
+PUT #1, , sent
+GET #1, 1, received
+PRINT received.identifier; "|"; received.enabled; "|"; received.kind; "|"; HEXENCODE$(received.payload)
+CLOSE #1
+"#;
+    let (output, dir) = run_bas_with_tmpdir(source);
+    assert_eq!(output, "9223372036854775807|TRUE|255|0080FF\n");
+    let mut expected = i64::MAX.to_le_bytes().to_vec();
+    expected.extend([1, 255]);
+    expected.extend(3_u32.to_le_bytes());
+    expected.extend([0, 128, 255]);
+    assert_eq!(
+        std::fs::read(dir.path().join("packet.bin")).unwrap(),
+        expected
+    );
+}
+
+#[test]
+fn test_native_scalar_binary_io_is_exact() {
+    let source = r#"
+DIM identifier AS INT64, enabled AS BOOL, octet AS BYTE
+identifier = CINT64("-9223372036854775808")
+enabled = TRUE()
+octet = 255
+OPEN "{DIR}/scalars.bin" FOR BINARY AS #1
+PUT #1, , identifier
+PUT #1, , enabled
+PUT #1, , octet
+PRINT LOF(1)
+identifier = 0
+enabled = FALSE()
+octet = 0
+GET #1, 1, identifier
+GET #1, , enabled
+GET #1, , octet
+PRINT identifier; "|"; enabled; "|"; octet
+CLOSE #1
+"#;
+
+    let (output, dir) = run_bas_with_tmpdir(&source);
+    assert_eq!(output, "10\n-9223372036854775808|TRUE|255\n");
+    let mut expected = i64::MIN.to_le_bytes().to_vec();
+    expected.extend([1, 255]);
+    assert_eq!(
+        std::fs::read(dir.path().join("scalars.bin")).unwrap(),
+        expected
+    );
+}
+
+#[test]
+fn test_native_swap_and_byref_type_errors_preserve_all_destinations() {
+    for operation in ["SWAP wider, smaller", "CALL Change(wider, smaller)"] {
+        let source = format!(
+            r#"
+DIM wider AS INT64, smaller AS BYTE
+wider = 256
+smaller = 7
+WHEN EXCEPTION IN
+    {operation}
+USE
+    PRINT "caught"
+END WHEN
+PRINT wider; "|"; smaller
+SUB Change(BYREF first, BYREF second)
+    first = 42
+    second = 256
+END SUB
+"#
+        );
+        assert_eq!(run_bas(&source), "caught\n256|7\n", "{operation}");
+    }
+}
+
+#[test]
+fn test_native_matrix_type_failure_preserves_entire_destination() {
+    let source = r#"
+DIM target(1, 2) AS BYTE, source(1, 2) AS NUMERIC
+target(1, 1) = 7
+target(1, 2) = 8
+source(1, 1) = 12
+source(1, 2) = 256
+WHEN EXCEPTION IN
+    MAT target = source
+USE
+    PRINT "caught"
+END WHEN
+PRINT target(1, 1); "|"; target(1, 2); "|"; TYPEOF$(target(1, 2))
+"#;
+    assert_eq!(run_bas(source), "caught\n7|8|BYTE\n");
+}
+
+#[test]
+fn test_native_matrix_never_replaces_unrepresentable_int64_with_zero() {
+    let source = r#"
+DIM source(1, 1) AS INT64, target(1, 1) AS NUMERIC
+source(1, 1) = CINT64("9007199254740993")
+target(1, 1) = 7
+WHEN EXCEPTION IN
+    MAT target = source
+USE
+    PRINT "caught"
+END WHEN
+PRINT target(1, 1)
+"#;
+    assert_eq!(run_bas(source), "caught\n7\n");
+}
+
+#[test]
+fn test_native_failed_dimension_change_preserves_array_type() {
+    let source = r#"
+DIM values(2) AS BYTE
+values(1) = 7
+WHEN EXCEPTION IN
+    DIM values(2 TO 1) AS BOOL
+USE
+    PRINT "caught"
+END WHEN
+values(1) = 255
+PRINT TYPEOF$(values(1)); "|"; values(1); "|"; UBOUND(values)
+"#;
+    assert_eq!(run_bas(source), "caught\nBYTE|255|2\n");
+}
+
+#[test]
+fn test_native_static_type_survives_a_skipped_declaration_on_later_calls() {
+    let source = r#"
+CALL Remember(TRUE())
+WHEN EXCEPTION IN
+    CALL Remember(FALSE())
+USE
+    PRINT "caught"
+END WHEN
+SUB Remember(BYVAL first AS BOOL)
+    IF first THEN
+        STATIC octet AS BYTE
+        octet = 7
+    ELSE
+        octet = 256
+    END IF
+    PRINT TYPEOF$(octet); "|"; octet
+END SUB
+"#;
+    assert_eq!(run_bas(source), "BYTE|7\ncaught\n");
+}
+
+#[test]
+fn test_native_typed_parameters_shadow_shared_globals() {
+    let source = r#"
+DIM SHARED value AS BYTE
+value = 7
+CALL LocalValue(CINT64(256))
+PRINT TYPEOF$(value); "|"; value
+SUB LocalValue(BYVAL value AS INT64)
+    value = value + 1
+    PRINT TYPEOF$(value); "|"; value
+END SUB
+"#;
+    assert_eq!(run_bas(source), "INT64|257\nBYTE|7\n");
+}
+
+#[test]
+fn test_native_invalid_binary_values_leave_existing_values_untouched() {
+    let source = r#"
+DIM raw AS BYTES, flag AS BOOL
+raw = BYTES(2)
+flag = TRUE()
+OPEN "{DIR}/invalid-bool.bin" FOR BINARY AS #1
+PUT #1, , raw
+WHEN EXCEPTION IN
+    GET #1, 1, flag
+USE
+    PRINT "invalid bool"
+END WHEN
+PRINT flag
+CLOSE #1
+TYPE Payload
+    content AS BYTES
+END TYPE
+DIM item AS Payload
+item.content = BYTES(42)
+raw = BYTES(255, 255, 255, 255)
+OPEN "{DIR}/invalid-length.bin" FOR BINARY AS #1
+PUT #1, , raw
+WHEN EXCEPTION IN
+    GET #1, 1, item
+USE
+    PRINT "invalid length"
+END WHEN
+PRINT HEXENCODE$(item.content)
+CLOSE #1
+"#;
+    let (output, _dir) = run_bas_with_tmpdir(source);
+    assert_eq!(output, "invalid bool\nTRUE\ninvalid length\n2A\n");
+}
+
+#[test]
+fn test_native_binary_put_after_clear_uses_declared_defaults() {
+    let source = r#"
+DIM flag AS BOOL, octet AS BYTE, payload AS BYTES
+flag = TRUE()
+octet = 255
+payload = BYTES(42)
+CLEAR
+OPEN "{DIR}/cleared.bin" FOR BINARY AS #1
+PUT #1, , flag
+PUT #1, , octet
+PUT #1, , payload
+PRINT LOF(1)
+CLOSE #1
+"#;
+
+    let (output, dir) = run_bas_with_tmpdir(&source);
+    assert_eq!(output, "2\n");
+    assert_eq!(
+        std::fs::read(dir.path().join("cleared.bin")).unwrap(),
+        vec![0, 0]
+    );
+}
+
+#[test]
+fn test_native_procedure_clear_restores_typed_results_and_byref_defaults() {
+    let source = r#"
+DIM payload AS BYTES
+payload = BYTES(42)
+CALL ClearParameter(payload)
+PRINT TYPEOF$(payload); "|"; LEN(payload)
+PRINT TYPEOF$(ClearResult())
+SUB ClearParameter(BYREF value AS BYTES)
+    CLEAR
+END SUB
+FUNCTION ClearResult() AS BYTES
+    ClearResult = BYTES(1)
+    CLEAR
+END FUNCTION
+"#;
+    assert_eq!(run_bas(source), "BYTES|0\nBYTES\n");
+}
+
+#[test]
+fn test_native_integer_logical_operations_reject_fractional_operands() {
+    for operator in ["AND", "OR", "XOR"] {
+        for expression in [
+            format!("CINT64(\"9007199254740992\") {operator} 1.5"),
+            format!("1.5 {operator} CBYTE(1)"),
         ] {
-            let (_, result) = run_bas_may_fail(&format!(
-                "OPTION DIALECT \"{dialect}\"\nPRINT {expression}\n"
-            ));
-            let error = result.expect_err(expression);
+            let (_, result) = run_bas_may_fail(&format!("PRINT {expression}\n"));
+            let error = result.expect_err(&expression);
             let runtime = error.downcast_ref::<rice::error::RuntimeError>().unwrap();
-            assert_eq!(
-                runtime.basic_err_code(),
-                expected_code,
-                "{dialect}: {expression}"
-            );
+            assert_eq!(runtime.basic_err_code(), 13, "{expression}");
         }
     }
+}
+
+#[test]
+fn test_declared_types_have_distinct_storage_and_consistent_conversion() {
+    assert_eq!(
+        run_file("tests/programs/declared_types.bas"),
+        concat!(
+            "INTEGER|LONG|SINGLE|NUMERIC\n",
+            "-32768|2147483647|16777216|1.5\n",
+            "[    ]\n[é🙂  ]4\nabcd\n",
+            "INTEGER|[x  ]\nINTEGER|INTEGER|0\nNUMERIC|1.5\n",
+            "INTEGER|LONG|SINGLE|NUMERIC|STRING\nINTEGER|[q  ]\n5|LONG\n",
+            "1|INTEGER\n2|INTEGER\n21|[bye ]\n"
+        )
+    );
+}
+
+#[test]
+fn test_declared_assignment_errors_preserve_value_and_type() {
+    for (declaration, initial, invalid, expected) in [
+        ("INTEGER", "12", "1.5", "12|INTEGER"),
+        ("INTEGER", "12", "32768", "12|INTEGER"),
+        ("INTEGER", "12", "-32769", "12|INTEGER"),
+        ("LONG", "42", "2147483648", "42|LONG"),
+        ("LONG", "42", "-2147483649", "42|LONG"),
+        ("SINGLE", "1.25", "1E100", "1.25|SINGLE"),
+        ("NUMERIC", "3.5", "\"bad\"", "3.5|NUMERIC"),
+        ("DOUBLE", "3.5", "\"bad\"", "3.5|NUMERIC"),
+        ("STRING", "\"kept\"", "42", "kept|STRING"),
+        ("STRING * 4", "\"ok\"", "42", "ok  |STRING"),
+    ] {
+        let source = format!(
+            "DIM value AS {declaration}\nvalue = {initial}\nWHEN EXCEPTION IN\nvalue = {invalid}\nUSE\nPRINT \"caught\"\nEND WHEN\nPRINT value; \"|\"; TYPEOF$(value)\n"
+        );
+        assert_eq!(
+            run_bas(&source),
+            format!("caught\n{expected}\n"),
+            "{declaration}: {invalid}"
+        );
+    }
+    for name in ["value%", "value&", "value!", "value#", "value$"] {
+        let initial = if name.ends_with('$') { "\"kept\"" } else { "7" };
+        let invalid = if name.ends_with('$') { "7" } else { "\"bad\"" };
+        let source = format!(
+            "{name} = {initial}\nWHEN EXCEPTION IN\n{name} = {invalid}\nUSE\nPRINT \"caught\"\nEND WHEN\nPRINT {name}\n"
+        );
+        assert_eq!(
+            run_bas(&source),
+            if name.ends_with('$') {
+                "caught\nkept\n"
+            } else {
+                "caught\n7\n"
+            }
+        );
+    }
+}
+
+#[test]
+fn test_declared_record_identity_and_field_types_are_enforced() {
+    let setup = "TYPE First\nnumber AS INTEGER\nEND TYPE\nTYPE Second\nnumber AS INTEGER\nEND TYPE\nDIM first AS First, second AS Second, items(2) AS First\nfirst.number = 9\nitems(1).number = 7\n";
+    for operation in [
+        "first = second",
+        "first.number = 2.5",
+        "items(1) = second",
+        "items(1).number = 32768",
+    ] {
+        assert_eq!(
+            run_bas(&format!(
+                "{setup}WHEN EXCEPTION IN\n{operation}\nUSE\nPRINT \"caught\"\nEND WHEN\nPRINT first.number; \"|\"; items(1).number\n"
+            )),
+            "caught\n9|7\n",
+            "{operation}"
+        );
+    }
+    for operation in [
+        "CALL Wrong(second)\nSUB Wrong(BYVAL value AS First)\nPRINT \"unexpected\"\nEND SUB\n",
+        "PRINT Wrong().number\nFUNCTION Wrong() AS First\nSHARED second\nWrong = second\nEND FUNCTION\n",
+    ] {
+        let (output, result) = run_bas_may_fail(&format!("{setup}{operation}"));
+        assert!(result.is_err());
+        assert!(output.is_empty());
+    }
+}
+
+#[test]
+fn test_declared_swap_and_byref_reject_narrowing_without_partial_write() {
+    assert_eq!(
+        run_bas(
+            r#"
+DIM small AS INTEGER, wide AS LONG
+small = 7: wide = 40000
+WHEN EXCEPTION IN
+    SWAP small, wide
+USE
+    PRINT "swap rejected"
+END WHEN
+PRINT small; "|"; wide
+DIM other AS INTEGER
+other = 8
+WHEN EXCEPTION IN
+    CALL Change(small, other)
+USE
+    PRINT "copyback rejected"
+END WHEN
+PRINT small; "|"; other
+SUB Change(BYREF first AS LONG, BYREF second AS LONG)
+    first = 10
+    second = 40000
+END SUB
+"#
+        ),
+        "swap rejected\n7|40000\ncopyback rejected\n7|8\n"
+    );
+}
+
+#[test]
+fn test_declared_types_survive_clear_and_input() {
+    let source = r#"
+DIM small AS INTEGER, wide AS LONG, approximate AS SINGLE, fixed AS STRING * 3
+INPUT small, wide, approximate, fixed
+PRINT TYPEOF$(small); "|"; TYPEOF$(wide); "|"; TYPEOF$(approximate); "|"; "["; fixed; "]"
+READ small, wide, fixed
+DATA 17, 2147483647, "x"
+PRINT small; "|"; wide; "|"; "["; fixed; "]"
+CLEAR
+PRINT TYPEOF$(small); "|"; small; "|"; TYPEOF$(wide); "|"; TYPEOF$(approximate); "|"; "["; fixed; "]"
+"#;
+    assert_eq!(
+        run_bas_with_input(source, "12,2147483647,1.25,abcdef\n"),
+        "? INTEGER|LONG|SINGLE|[abc]\n17|2147483647|[x  ]\nINTEGER|0|LONG|SINGLE|[   ]\n"
+    );
+}
+
+#[test]
+fn test_def_types_bind_new_names_without_retyping_existing_values() {
+    assert_eq!(
+        run_bas(
+            r#"
+existing = "kept"
+DEFINT A-Z
+created = 7
+PRINT TYPEOF$(created); "|"; existing
+DEFLNG C
+later = 8
+created = 9
+counter = 10
+PRINT TYPEOF$(created); "|"; TYPEOF$(counter); "|"; TYPEOF$(later)
+DIM declared
+PRINT TYPEOF$(declared)
+"#
+        ),
+        "INTEGER|kept\nINTEGER|LONG|INTEGER\nNUMERIC\n"
+    );
+}
+
+#[test]
+fn test_declare_signatures_match_types_modes_and_results() {
+    assert_eq!(
+        run_bas(
+            r#"
+DECLARE FUNCTION NextValue(BYVAL different AS DOUBLE) AS NUMERIC
+PRINT NextValue(4)
+FUNCTION NextValue(BYVAL value AS NUMERIC) AS DOUBLE
+    NextValue = value + 1
+END FUNCTION
+"#
+        ),
+        "5\n"
+    );
+    for (declaration, definition) in [
+        (
+            "DECLARE SUB Work(value AS INTEGER)",
+            "SUB Work(value AS LONG)\nEND SUB",
+        ),
+        (
+            "DECLARE SUB Work(BYVAL value AS INTEGER)",
+            "SUB Work(BYREF value AS INTEGER)\nEND SUB",
+        ),
+        (
+            "DECLARE SUB Work(value() AS INTEGER)",
+            "SUB Work(value AS INTEGER)\nEND SUB",
+        ),
+        ("DECLARE SUB Work(value AS INTEGER)", "SUB Work()\nEND SUB"),
+        (
+            "DECLARE FUNCTION Work() AS INTEGER",
+            "FUNCTION Work() AS LONG\nEND FUNCTION",
+        ),
+        ("DECLARE FUNCTION Work() AS INTEGER", "SUB Work()\nEND SUB"),
+    ] {
+        let (output, result) = run_bas_may_fail(&format!(
+            "{declaration}\nPRINT \"unexpected\"\n{definition}\n"
+        ));
+        assert!(result.is_err(), "{declaration}: {definition}");
+        assert!(
+            output.is_empty(),
+            "signature validation must precede execution"
+        );
+    }
+    let (mut interpreter, output) = input_session("");
+    interpreter
+        .run_source("DECLARE FUNCTION Later(BYVAL value AS INTEGER) AS LONG\n")
+        .unwrap();
+    interpreter.run_source("FUNCTION Later(BYVAL renamed AS INTEGER) AS LONG\nLater = renamed + 1\nEND FUNCTION\nPRINT Later(7)\n").unwrap();
+    assert_eq!(output.into_string(), "8\n");
+}
+
+#[test]
+fn test_typed_static_array_retains_values_and_constraints() {
+    assert_eq!(
+        run_bas(
+            r#"
+CALL Tick
+CALL Tick
+SUB Tick
+    STATIC values(2) AS INTEGER
+    values(1) = values(1) + 1
+    WHEN EXCEPTION IN
+        values(2) = 32768
+    USE
+        PRINT "rejected"
+    END WHEN
+    PRINT values(1); "|"; values(2); "|"; TYPEOF$(values(1))
+END SUB
+"#
+        ),
+        "rejected\n1|0|INTEGER\nrejected\n2|0|INTEGER\n"
+    );
+}
+
+#[test]
+fn test_typed_shared_and_common_arrays_convert_existing_values() {
+    assert_eq!(
+        run_bas(
+            r#"
+values(1) = 4: values(2) = 5
+COMMON values() AS INTEGER
+PRINT TYPEOF$(values(1)); "|"; values(2)
+other(1) = 6: other(2) = 7
+CALL ConvertShared
+PRINT TYPEOF$(other(1)); "|"; other(1); "|"; other(2)
+SUB ConvertShared
+    SHARED other() AS LONG
+    other(1) = other(1) + 3
+END SUB
+"#
+        ),
+        "INTEGER|5\nLONG|9|7\n"
+    );
+    for declaration in ["SHARED values() AS INTEGER", "COMMON values() AS INTEGER"] {
+        assert_eq!(
+            run_bas(&format!(
+                "values(1) = 4\nvalues(2) = 1.5\nWHEN EXCEPTION IN\n{declaration}\nUSE\nPRINT \"rejected\"\nEND WHEN\nPRINT TYPEOF$(values(1)); \"|\"; values(1); \"|\"; values(2)\n"
+            )),
+            "rejected\nNUMERIC|4|1.5\n",
+            "{declaration}"
+        );
+    }
+}
+
+#[test]
+fn test_redim_preserve_accepts_numeric_double_alias_and_retains_types() {
+    assert_eq!(
+        run_bas(
+            r#"
+DIM values(2) AS NUMERIC
+values(1) = 1.5
+REDIM PRESERVE values(3) AS DOUBLE
+PRINT values(1); "|"; TYPEOF$(values(3))
+DIM fixed(2) AS STRING * 3
+fixed(1) = "a"
+WHEN EXCEPTION IN
+    REDIM PRESERVE fixed(4) AS STRING * 4
+USE
+    PRINT "rejected"
+END WHEN
+PRINT "["; fixed(1); "]"; "|"; LEN(fixed(2)); "|"; UBOUND(fixed)
+"#
+        ),
+        "1.5|NUMERIC\nrejected\n[a  ]|3|2\n"
+    );
+}
+
+#[test]
+fn test_single_mixed_integer_arithmetic_checks_integral_range() {
+    for expression in [
+        "CINT(1) + CSNG(1E20)",
+        "CSNG(1E20) + CINT(1)",
+        "CINT(1) + CDBL(1E20)",
+    ] {
+        let (_, result) = run_bas_may_fail(&format!("PRINT {expression}\n"));
+        assert!(
+            matches!(
+                result
+                    .unwrap_err()
+                    .downcast_ref::<rice::error::RuntimeError>(),
+                Some(rice::error::RuntimeError::Overflow { .. })
+            ),
+            "{expression}"
+        );
+    }
+}
+
+#[test]
+fn test_single_console_input_retries_nonfinite_values() {
+    assert_eq!(
+        run_bas_with_input(
+            "DIM value AS SINGLE\nINPUT value\nPRINT value; \"|\"; TYPEOF$(value)\n",
+            "NaN\n1.25\n"
+        ),
+        "? ? Redo from start\n? 1.25|SINGLE\n"
+    );
+}
+
+#[test]
+fn test_fixed_string_clear_mid_assignment_and_procedure_conversion() {
+    assert_eq!(
+        run_bas(
+            r#"
+DIM text AS STRING * 3
+CLEAR
+MID$(text, 1, 1) = "X"
+PRINT "["; text; "]"
+DIM larger AS STRING * 5
+larger = "hello"
+CALL Change(larger)
+PRINT "["; larger; "]"
+PRINT "["; ShortText(); "]"
+SUB Change(BYREF value AS STRING * 3)
+    PRINT "["; value; "]"
+    value = "é"
+END SUB
+FUNCTION ShortText() AS STRING * 2
+    ShortText = "long"
+END FUNCTION
+"#
+        ),
+        "[X  ]\n[hel]\n[é    ]\n[lo]\n"
+    );
+}
+
+#[test]
+fn test_declared_strings_work_with_field_lset_and_rset() {
+    let (output, dir) = run_bas_with_tmpdir(
+        r#"
+DIM first AS STRING, second AS STRING
+OPEN "{DIR}/fields.bin" FOR RANDOM AS #1 LEN = 6
+FIELD #1, 3 AS first, 3 AS second
+LSET first = "A"
+RSET second = "B"
+PUT #1, 1
+LSET first = ""
+RSET second = ""
+GET #1, 1
+PRINT "["; first; "]|["; second; "]"
+CLOSE #1
+DIM fixed AS STRING * 4
+LSET fixed = "x"
+PRINT "["; fixed; "]"
+RSET fixed = "y"
+PRINT "["; fixed; "]"
+"#,
+    );
+    assert_eq!(output, "[A  ]|[  B]\n[x   ]\n[   y]\n");
+    assert_eq!(
+        std::fs::read(dir.path().join("fields.bin")).unwrap(),
+        b"A    B"
+    );
+}
+
+#[test]
+fn test_typed_constants_retain_binary_width_metadata() {
+    let (output, dir) = run_bas_with_tmpdir(
+        r#"
+CONST text AS STRING * 3 = "x", number AS INTEGER = 7
+OPEN "{DIR}/constants.bin" FOR BINARY AS #1
+PUT #1, , text
+PUT #1, , number
+PRINT LOF(1)
+CLOSE #1
+"#,
+    );
+    assert_eq!(output, "5\n");
+    assert_eq!(
+        std::fs::read(dir.path().join("constants.bin")).unwrap(),
+        b"x  \x07\0"
+    );
+}
+
+#[test]
+fn test_shared_then_dim_converts_root_array_and_rejects_partial_conversion() {
+    for (second, expected) in [
+        ("2", "INTEGER|1|INTEGER|2\n"),
+        ("1.5", "rejected\nNUMERIC|1|NUMERIC|1.5\n"),
+    ] {
+        let source = format!(
+            r#"
+values(1) = 1: values(2) = {second}
+WHEN EXCEPTION IN
+    CALL DeclareShared
+USE
+    PRINT "rejected"
+END WHEN
+PRINT TYPEOF$(values(1)); "|"; values(1); "|"; TYPEOF$(values(2)); "|"; values(2)
+SUB DeclareShared
+    SHARED values()
+    DIM values(2) AS INTEGER
+END SUB
+"#
+        );
+        assert_eq!(run_bas(&source), expected);
+    }
+}
+
+#[test]
+fn test_static_metadata_survives_clear_without_saved_values_and_skipped_declarations() {
+    for (procedure_static, declaration) in [("", "STATIC"), (" STATIC", "DIM")] {
+        let source = format!(
+            r#"
+CALL Remember(TRUE())
+CALL Remember(FALSE())
+CALL Remember(FALSE())
+SUB Remember(BYVAL first AS BOOL){procedure_static}
+    IF first THEN
+        {declaration} counter AS INTEGER
+        counter = 9
+        CLEAR
+        EXIT SUB
+    END IF
+    WHEN EXCEPTION IN
+        counter = 1.5
+    USE
+        PRINT "rejected"
+    END WHEN
+    counter = counter + 1
+    PRINT TYPEOF$(counter); "|"; counter
+END SUB
+"#
+        );
+        assert_eq!(
+            run_bas(&source),
+            "rejected\nINTEGER|1\nrejected\nINTEGER|2\n",
+            "{procedure_static}: {declaration}"
+        );
+    }
+    assert_eq!(
+        run_bas(
+            r#"
+PRINT Remember(TRUE())
+PRINT Remember(FALSE())
+PRINT Remember(FALSE())
+FUNCTION Remember(BYVAL first AS BOOL) AS INTEGER STATIC
+    IF first THEN
+        DIM counter AS INTEGER
+        counter = 9
+        CLEAR
+        EXIT FUNCTION
+    END IF
+    WHEN EXCEPTION IN
+        counter = 1.5
+    USE
+        PRINT "rejected"
+    END WHEN
+    counter = counter + 1
+    PRINT TYPEOF$(counter)
+    Remember = counter
+END FUNCTION
+"#
+        ),
+        "0\nrejected\nINTEGER\n1\nrejected\nINTEGER\n2\n"
+    );
+}
+
+#[test]
+fn test_def_type_constrains_new_local_write_despite_parent_binding() {
+    assert_eq!(
+        run_bas(
+            r#"
+DEFINT A
+a = 1
+WHEN EXCEPTION IN
+    CALL Work
+USE
+    PRINT "rejected"
+END WHEN
+PRINT a; "|"; TYPEOF$(a)
+SUB Work
+    a = 1.5
+END SUB
+"#
+        ),
+        "rejected\n1|INTEGER\n"
+    );
+}
+
+#[test]
+fn test_declared_defaults_precede_bare_builtin_fallback_after_clear() {
+    assert_eq!(
+        run_bas(
+            r#"
+DIM TRUE AS STRING, FALSE AS INTEGER
+TRUE = "old": FALSE = 7
+CLEAR
+PRINT TYPEOF$(TRUE); "|"; LEN(TRUE); "|"; TYPEOF$(FALSE); "|"; FALSE
+PRINT TRUE(); "|"; FALSE()
+"#
+        ),
+        "STRING|0|INTEGER|0\nTRUE|FALSE\n"
+    );
+}
+
+#[test]
+fn test_dim_constant_element_collision_preserves_array_metadata() {
+    for declaration in ["DIM items(3) AS LONG", "DIM items(3) AS INTEGER"] {
+        let (mut interpreter, output) = input_session("");
+        interpreter
+            .run_source("DIM items(2) AS INTEGER\nitems(1) = 3\nCONST items_1 = 7\n")
+            .unwrap();
+        let error = interpreter.run_source(declaration).unwrap_err();
+        assert!(
+            error.to_string().contains("constant"),
+            "{declaration}: {error}"
+        );
+        interpreter
+            .run_source("PRINT items_1; \"|\"; UBOUND(items); \"|\"; TYPEOF$(items(2))\n")
+            .unwrap();
+        assert_eq!(output.into_string(), "7|2|INTEGER\n", "{declaration}");
+    }
+}
+
+#[test]
+fn test_typed_array_reads_preserve_parent_values_and_local_shadowing() {
+    assert_eq!(
+        run_file("tests/programs/type_array_scope_regressions.bas"),
+        "42|INTEGER|43\n42|42\n7|LONG|0\n42|INTEGER\n9|BYTE\n10|BYTE\n"
+    );
+}
+
+#[test]
+fn test_for_uses_inherited_shared_counter_type_and_storage() {
+    assert_eq!(
+        run_file("tests/programs/type_shared_for_regressions.bas"),
+        "1|INTEGER\n2|INTEGER\n3|INTEGER\nrejected\n3|INTEGER\n"
+    );
+}
+
+#[test]
+fn test_rejected_declare_restores_prescanned_session_state() {
+    let (mut interpreter, output) = input_session("");
+    interpreter
+        .run_source(
+            r#"
+DECLARE SUB Work()
+SUB Work()
+    PRINT "original"
+END SUB
+FUNCTION Answer() AS INTEGER
+    Answer = 42
+END FUNCTION
+TYPE Kept
+    number AS INTEGER
+END TYPE
+Original: DATA 10, 20
+READ consumed
+"#,
+        )
+        .unwrap();
+    let rejected = interpreter.run_source(
+        r#"
+DECLARE SUB Work(value AS INTEGER)
+FUNCTION Answer() AS INTEGER
+    Answer = 99
+END FUNCTION
+SUB Leaked()
+    PRINT "unexpected procedure"
+END SUB
+TYPE Kept
+    number AS STRING
+END TYPE
+Original: DATA 99
+DATA 100
+PRINT "unexpected execution"
+"#,
+    );
+    assert!(rejected.is_err());
+    interpreter
+        .run_source(
+            r#"
+PRINT 42
+CALL Work
+PRINT Answer()
+DIM record AS Kept
+record.number = 7
+PRINT record.number; "|"; TYPEOF$(record.number)
+READ remaining
+PRINT remaining
+RESTORE Original
+READ first, second
+PRINT first; "|"; second
+"#,
+        )
+        .unwrap();
+    assert!(
+        interpreter
+            .run_source("READ beyond\n")
+            .unwrap_err()
+            .to_string()
+            .contains("past end of DATA")
+    );
+    assert!(interpreter.run_source("CALL Leaked\n").is_err());
+    interpreter.run_source("PRINT \"recovered\"\n").unwrap();
+    assert_eq!(
+        output.into_string(),
+        "42\noriginal\n42\n7|INTEGER\n20\n10|20\nrecovered\n"
+    );
+}
+
+#[test]
+fn test_rejected_definition_keeps_pending_declaration_usable() {
+    let (mut interpreter, output) = input_session("");
+    interpreter
+        .run_source("DECLARE FUNCTION Pending(BYVAL value AS INTEGER) AS INTEGER\n")
+        .unwrap();
+    assert!(
+        interpreter
+            .run_source(
+                "FUNCTION Pending(BYVAL value AS LONG) AS INTEGER\nPending = value + 99\nEND FUNCTION\n"
+            )
+            .is_err()
+    );
+    interpreter.run_source("PRINT 42\n").unwrap();
+    interpreter
+        .run_source(
+            "FUNCTION Pending(BYVAL value AS INTEGER) AS INTEGER\nPending = value + 1\nEND FUNCTION\nPRINT Pending(7)\n"
+        )
+        .unwrap();
+    assert_eq!(output.into_string(), "42\n8\n");
+}
+
+#[test]
+fn test_read_dynamic_bindings_ignore_previous_native_value_type() {
+    for initial in [
+        "CINT(1)",
+        "CLNG(1)",
+        "CSNG(1)",
+        "CINT64(1)",
+        "TRUE()",
+        "CBYTE(1)",
+        "BYTES(1)",
+    ] {
+        let source = format!(
+            "value = {initial}\nitems(1) = {initial}\nREAD value, items(1)\nDATA \"abc\", \"def\"\nPRINT value; \"|\"; TYPEOF$(value); \"|\"; items(1); \"|\"; TYPEOF$(items(1))\n"
+        );
+        assert_eq!(run_bas(&source), "abc|STRING|def|STRING\n", "{initial}");
+    }
+    assert_eq!(
+        run_bas(
+            "DIM value AS INTEGER, items(1) AS BOOL\nREAD value, items(1)\nDATA \"42\", \"TRUE\"\nPRINT value; \"|\"; TYPEOF$(value); \"|\"; items(1); \"|\"; TYPEOF$(items(1))\n"
+        ),
+        "42|INTEGER|TRUE|BOOL\n"
+    );
+}
+
+#[test]
+fn test_shared_and_common_preserve_existing_dynamic_bindings_after_def_type() {
+    assert_eq!(
+        run_file("tests/programs/type_shared_dynamic_regressions.bas"),
+        "shared|common|common shared\none|two|three\nupdated shared|updated common|updated common shared\nupdated one|updated two|updated three\n"
+    );
+}
+
+#[test]
+fn test_def_type_only_constrains_new_implicit_array_bindings() {
+    assert_eq!(
+        run_file("tests/programs/type_implicit_array_regressions.bas"),
+        "after|second|STRING\n7|INTEGER\nnew array rejected\nafter\nlocal array rejected\n0|NUMERIC\nuntouched local array rejected\nafter|second\n"
+    );
+}
+
+#[test]
+fn test_existing_dynamic_arrays_keep_defaults_after_defstr_without_local_read_bindings() {
+    assert_eq!(
+        run_file("tests/programs/type_array_defaults_after_defstr.bas"),
+        "0|NUMERIC\n10|NUMERIC\nexisting read preserves local DEFSTR\n0|NUMERIC\nuntouched read preserves local DEFSTR\n10|0|NUMERIC|42\n"
+    );
+}
+
+#[test]
+fn test_untouched_typed_array_elements_enforce_atomic_byref_copyback() {
+    assert_eq!(
+        run_file("tests/programs/type_array_byref_copyback_regressions.bas"),
+        "0|LONG\n12|INTEGER\ncopyback rejected\n0|INTEGER|0|BYTE\n"
+    );
+}
+
+#[test]
+fn test_byref_implicit_destinations_apply_def_type_without_partial_bindings() {
+    let caller_output = "sub rejected\n10|NUMERIC|40|NUMERIC\nfunction rejected\n20|NUMERIC|30|NUMERIC\n7|INTEGER|8|INTEGER\n";
+    assert_eq!(
+        run_file("tests/programs/type_byref_implicit_destination_regressions.bas"),
+        format!("{caller_output}{caller_output}TRUE\n10|20|30|40\n")
+    );
+}
+
+#[test]
+fn test_static_dynamic_arrays_preserve_initialization_until_clear() {
+    assert_eq!(
+        run_file("tests/programs/type_static_dynamic_array_regressions.bas"),
+        "first|STRING\nfirst|STRING\n0|NUMERIC\nNUMERIC\nsecond|STRING\nsecond|STRING\nread-only sub|STRING\nread-only function|STRING\n"
+    );
+    for (definition, call, exit, end) in [
+        (
+            "SUB ResetState(BYVAL stage AS INTEGER) STATIC",
+            "CALL ResetState",
+            "EXIT SUB",
+            "END SUB",
+        ),
+        (
+            "FUNCTION ResetState(BYVAL stage AS INTEGER) AS INTEGER STATIC",
+            "ignored = ResetState",
+            "EXIT FUNCTION",
+            "END FUNCTION",
+        ),
+    ] {
+        let source = format!(
+            r#"
+{call}(1)
+{call}(2)
+DEFINT D, E, T
+{call}(3)
+
+{definition}
+    IF stage = 1 THEN
+        dynamicValues(1) = "old"
+        PRINT TYPEOF$(emptyValues(1))
+        DIM typedValues(1) AS BYTE
+        {exit}
+    END IF
+    IF stage = 2 THEN
+        CLEAR
+        {exit}
+    END IF
+    WHEN EXCEPTION IN
+        dynamicValues(1) = 1.5
+    USE
+        PRINT "dynamic reset"
+    END WHEN
+    WHEN EXCEPTION IN
+        emptyValues(1) = 1.5
+    USE
+        PRINT "read-only reset"
+    END WHEN
+    WHEN EXCEPTION IN
+        typedValues(1) = 256
+    USE
+        PRINT "declaration retained"
+    END WHEN
+    PRINT TYPEOF$(dynamicValues(1)); "|"; TYPEOF$(emptyValues(1)); "|"; TYPEOF$(typedValues(1))
+{end}
+"#
+        );
+        assert_eq!(
+            run_bas(&source),
+            "NUMERIC\ndynamic reset\nread-only reset\ndeclaration retained\nINTEGER|INTEGER|BYTE\n",
+            "{definition}"
+        );
+    }
+}
+
+#[test]
+fn test_lset_rset_distinguish_missing_empty_and_fixed_strings() {
+    assert_eq!(
+        run_file("tests/programs/type_lset_rset_regressions.bas"),
+        "[left]|[right]|[default]\n[]|[]|[]\n[x   ]\n[   y]\n"
+    );
+}
+
+#[test]
+fn test_large_integer_exponents_only_overflow_for_unrepresentable_results() {
+    assert_eq!(
+        run_file("tests/programs/type_integer_power_regressions.bas"),
+        "0|1|1\n0|1|-1\n1|-9223372036854775808\n"
+    );
+    for expression in [
+        "CINT64(2) ^ CINT64(63)",
+        "CINT64(2) ^ CINT64(\"4294967296\")",
+        "CINT64(-2) ^ CINT64(\"4294967296\")",
+        "CINT64(2) ^ CINT64(\"9223372036854775807\")",
+    ] {
+        let (output, result) = run_bas_may_fail(&format!("PRINT {expression}\n"));
+        assert!(output.is_empty(), "{expression}");
+        assert!(
+            matches!(
+                result
+                    .unwrap_err()
+                    .downcast_ref::<rice::error::RuntimeError>(),
+                Some(rice::error::RuntimeError::Overflow { .. })
+            ),
+            "{expression}"
+        );
+    }
+}
+
+#[test]
+fn test_structured_exceptions_resolve_local_and_outward_gotos() {
+    assert_eq!(
+        run_file("tests/programs/broad_exception_jumps.bas"),
+        "body|2\nhandler|2|3001\ncleared|0\nnested body jump\noutward body jump\noutward handler jump|3001\n"
+    );
+}
+
+#[test]
+fn test_structured_exception_retry_after_continue_restarts_original_body() {
+    assert_eq!(
+        run_file("tests/programs/broad_exception_retry_continue.bas"),
+        "completed|2|2\ncleared|0\nretained label|2\n"
+    );
+}
+
+#[test]
+fn test_structured_exception_continue_does_not_accumulate_stack_frames() {
+    let mut source = String::from("handled = 0\nWHEN EXCEPTION IN\n");
+    source.push_str(&"ERROR 1\n".repeat(4096));
+    source.push_str(
+        "PRINT \"completed\"\nUSE\nhandled = handled + 1\nCONTINUE\nEND WHEN\nPRINT handled; \"|\"; EXTYPE\n",
+    );
+    assert_eq!(run_bas(&source), "completed\n4096|0\n");
+}
+
+#[test]
+fn test_structured_exception_preserves_outer_control_and_error_propagation() {
+    assert_eq!(
+        run_file("tests/programs/broad_exception_propagation.bas"),
+        "body exit\nhandler exit\nloop exit|1\nouter caught handler error\nouter slot|3001\nshared slot|0\nclassic caught|7\nclassic resumed\n"
+    );
+    for (body, handler) in [
+        ("PRINT \"body end\"\nEND", "PRINT \"wrong\""),
+        ("ERROR 1", "PRINT \"handler end\"\nEND"),
+    ] {
+        assert_eq!(
+            run_bas(&format!(
+                "WHEN EXCEPTION IN\n{body}\nUSE\n{handler}\nEND WHEN\nPRINT \"wrong fallthrough\"\n"
+            )),
+            if body.starts_with("PRINT") {
+                "body end\n"
+            } else {
+                "handler end\n"
+            }
+        );
+    }
+}
+
+#[test]
+fn test_seeking_flushes_pending_bytes_before_moving_shared_cursor() {
+    let source = include_str!("programs/review_seek_buffered_output.bas");
+    let (output, dir) = run_bas_with_tmpdir(source);
+    assert_eq!(output, "1\n");
+    for file in [
+        "seek-binary.bin",
+        "pointer-binary.bin",
+        "seek-random.bin",
+        "pointer-random.bin",
+    ] {
+        assert_eq!(
+            std::fs::read(dir.path().join(file)).unwrap(),
+            b"ABC",
+            "{file}"
+        );
+    }
+}
+
+#[test]
+fn test_field_records_cross_reader_buffers_and_pad_only_at_eof() {
+    let source = include_str!("programs/review_field_buffer_boundaries.bas");
+    let (output, _dir) = run_bas_with_tmpdir(source);
+    assert_eq!(output, "85|0|8403\n");
+}
+
+#[test]
+fn test_print_using_finite_extremes_match_console_and_file_output() {
+    let (output, dir) = run_bas_with_tmpdir(include_str!("programs/broad_format_extremes.bas"));
+    let expected = format!("1.00E-309\n4.94E-324\n1.80E+308\n%{:.2}\n", 1e308);
+    assert_eq!(output, expected);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("formatted.txt")).unwrap(),
+        expected
+    );
 }

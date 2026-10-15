@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
 
 use crate::error::RuntimeError;
-use crate::value::{Value, basic_string_to_bytes, bytes_to_basic_string};
+use crate::value::{BasicType, Value, basic_string_to_bytes, bytes_to_basic_string};
 
 pub type BuiltinFn = fn(&[Value]) -> Result<Value, RuntimeError>;
 
@@ -41,7 +41,7 @@ impl BuiltinRegistry {
         reg.register("EXP", builtin_exp, 1);
         reg.register("LOG", builtin_log, 1);
         reg.register_variadic("ROUND", builtin_round);
-        // ANSI math additions
+        // Additional mathematical functions
         reg.register("ASIN", builtin_asin, 1);
         reg.register("ACOS", builtin_acos, 1);
         reg.register("COT", builtin_cot, 1);
@@ -53,6 +53,12 @@ impl BuiltinRegistry {
         reg.register("CLNG", builtin_clng, 1);
         reg.register("CSNG", builtin_csng, 1);
         reg.register("CDBL", builtin_cdbl, 1);
+        reg.register("CINT64", builtin_cint64, 1);
+        reg.register("CBOOL", builtin_cbool, 1);
+        reg.register("CBYTE", builtin_cbyte, 1);
+        reg.register("TRUE", builtin_true, 0);
+        reg.register("FALSE", builtin_false, 0);
+        reg.register("TYPEOF$", builtin_typeof, 1);
         reg.register_variadic("TRUNCATE", builtin_truncate);
         reg.register("REMAINDER", builtin_remainder, 2);
         reg.register_variadic("MIN", builtin_min);
@@ -90,6 +96,18 @@ impl BuiltinRegistry {
         reg.register("CVL", builtin_cvl, 1);
         reg.register("CVS", builtin_cvs, 1);
         reg.register("CVD", builtin_cvd, 1);
+
+        // Binary buffers are distinct from Unicode strings.
+        reg.register_variadic("BYTES", builtin_bytes);
+        reg.register_variadic("BYTEBUFFER", builtin_bytebuffer);
+        reg.register("BYTELEN", builtin_bytelen, 1);
+        reg.register("BYTEAT", builtin_byteat, 2);
+        reg.register("BYTESET", builtin_byteset, 3);
+        reg.register_variadic("BYTESLICE", builtin_byteslice);
+        reg.register("UTF8ENCODE", builtin_utf8encode, 1);
+        reg.register("UTF8DECODE$", builtin_utf8decode, 1);
+        reg.register("HEXENCODE$", builtin_hexencode, 1);
+        reg.register("HEXDECODE", builtin_hexdecode, 1);
 
         // Misc
         reg.register("TIMER", builtin_timer, 0);
@@ -138,24 +156,329 @@ impl BuiltinRegistry {
     }
 }
 
+// Explicit conversions and native binary buffers.
+
+fn builtin_cint64(args: &[Value]) -> Result<Value, RuntimeError> {
+    let number = match &args[0] {
+        Value::Str(text) => text.trim().parse::<i64>().map_err(|error| {
+            if matches!(
+                error.kind(),
+                std::num::IntErrorKind::PosOverflow | std::num::IntErrorKind::NegOverflow
+            ) {
+                RuntimeError::Overflow {
+                    msg: "CINT64: decimal integer is outside the signed 64-bit range".into(),
+                }
+            } else {
+                RuntimeError::IllegalFunctionCall {
+                    msg: "CINT64 expects a decimal integer".into(),
+                }
+            }
+        })?,
+        Value::Bool(value) => i64::from(*value),
+        value => value.to_exact_i64()?,
+    };
+    Ok(Value::Int64(number))
+}
+
+fn builtin_cbool(args: &[Value]) -> Result<Value, RuntimeError> {
+    let value = match &args[0] {
+        Value::Bool(value) => *value,
+        Value::Integer(value) => *value != 0,
+        Value::Long(value) => *value != 0,
+        Value::Int64(value) => *value != 0,
+        Value::Byte(value) => *value != 0,
+        Value::Single(value) if value.is_finite() => *value != 0.0,
+        Value::Numeric(value) if value.is_finite() => *value != 0.0,
+        Value::Numeric(_) | Value::Single(_) => {
+            return Err(RuntimeError::IllegalFunctionCall {
+                msg: "CBOOL expects a finite number".into(),
+            });
+        }
+        _ => {
+            return Err(RuntimeError::TypeMismatch {
+                msg: "CBOOL expects a boolean or number".into(),
+            });
+        }
+    };
+    Ok(Value::Bool(value))
+}
+
+fn exact_byte(value: &Value) -> Result<u8, RuntimeError> {
+    let number = match value {
+        Value::Bool(value) => i64::from(*value),
+        value => value.to_exact_i64()?,
+    };
+    u8::try_from(number).map_err(|_| RuntimeError::Overflow {
+        msg: "byte value must be in the range 0..255".into(),
+    })
+}
+
+fn builtin_cbyte(args: &[Value]) -> Result<Value, RuntimeError> {
+    Ok(Value::Byte(exact_byte(&args[0])?))
+}
+
+fn builtin_true(_args: &[Value]) -> Result<Value, RuntimeError> {
+    Ok(Value::Bool(true))
+}
+
+fn builtin_false(_args: &[Value]) -> Result<Value, RuntimeError> {
+    Ok(Value::Bool(false))
+}
+
+fn builtin_typeof(args: &[Value]) -> Result<Value, RuntimeError> {
+    let name = match &args[0] {
+        Value::Numeric(_) => "NUMERIC",
+        Value::Integer(_) => "INTEGER",
+        Value::Long(_) => "LONG",
+        Value::Single(_) => "SINGLE",
+        Value::Int64(_) => "INT64",
+        Value::Bool(_) => "BOOL",
+        Value::Byte(_) => "BYTE",
+        Value::Bytes(_) => "BYTES",
+        Value::Str(_) => "STRING",
+        Value::Record { type_name, .. } => type_name,
+    };
+    Ok(Value::Str(name.into()))
+}
+
+fn byte_buffer(value: &Value) -> Result<&[u8], RuntimeError> {
+    match value {
+        Value::Bytes(bytes) => Ok(bytes),
+        _ => Err(RuntimeError::TypeMismatch {
+            msg: "expected a byte buffer".into(),
+        }),
+    }
+}
+
+fn buffer_allocation_error() -> RuntimeError {
+    RuntimeError::Overflow {
+        msg: "byte buffer exceeds available memory".into(),
+    }
+}
+
+fn allocate_buffer(length: usize) -> Result<Vec<u8>, RuntimeError> {
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(length)
+        .map_err(|_| buffer_allocation_error())?;
+    Ok(bytes)
+}
+
+fn copy_buffer(source: &[u8]) -> Result<Vec<u8>, RuntimeError> {
+    let mut bytes = allocate_buffer(source.len())?;
+    bytes.extend_from_slice(source);
+    Ok(bytes)
+}
+
+fn builtin_bytes(args: &[Value]) -> Result<Value, RuntimeError> {
+    let mut bytes = allocate_buffer(args.len())?;
+    for value in args {
+        bytes.push(exact_byte(value)?);
+    }
+    Ok(Value::Bytes(bytes))
+}
+
+fn builtin_bytebuffer(args: &[Value]) -> Result<Value, RuntimeError> {
+    if !(1..=2).contains(&args.len()) {
+        return Err(RuntimeError::ArityMismatch {
+            expected: 1,
+            got: args.len(),
+        });
+    }
+    let number = args[0].to_exact_i64()?;
+    let length = usize::try_from(number).map_err(|_| RuntimeError::IllegalFunctionCall {
+        msg: "BYTEBUFFER length must be non-negative and fit in memory".into(),
+    })?;
+    let fill = if args.len() == 2 {
+        exact_byte(&args[1])?
+    } else {
+        0
+    };
+    let mut bytes = allocate_buffer(length)?;
+    bytes.resize(length, fill);
+    Ok(Value::Bytes(bytes))
+}
+
+fn builtin_bytelen(args: &[Value]) -> Result<Value, RuntimeError> {
+    Ok(Value::Numeric(byte_buffer(&args[0])?.len() as f64))
+}
+
+fn buffer_index(value: &Value, length: usize, allow_end: bool) -> Result<usize, RuntimeError> {
+    let number = value.to_exact_i64()?;
+    let index = number.checked_sub(1).and_then(|n| usize::try_from(n).ok());
+    match index {
+        Some(index) if index < length || (allow_end && index == length) => Ok(index),
+        _ => Err(RuntimeError::IllegalFunctionCall {
+            msg: "byte buffer index is outside its 1-based bounds".into(),
+        }),
+    }
+}
+
+fn builtin_byteat(args: &[Value]) -> Result<Value, RuntimeError> {
+    let bytes = byte_buffer(&args[0])?;
+    let index = buffer_index(&args[1], bytes.len(), false)?;
+    Ok(Value::Byte(bytes[index]))
+}
+
+fn builtin_byteset(args: &[Value]) -> Result<Value, RuntimeError> {
+    let bytes = byte_buffer(&args[0])?;
+    let index = buffer_index(&args[1], bytes.len(), false)?;
+    let value = exact_byte(&args[2])?;
+    let mut result = copy_buffer(bytes)?;
+    result[index] = value;
+    Ok(Value::Bytes(result))
+}
+
+fn builtin_byteslice(args: &[Value]) -> Result<Value, RuntimeError> {
+    if !(2..=3).contains(&args.len()) {
+        return Err(RuntimeError::ArityMismatch {
+            expected: 2,
+            got: args.len(),
+        });
+    }
+    let bytes = byte_buffer(&args[0])?;
+    let start = buffer_index(&args[1], bytes.len(), true)?;
+    let remaining = bytes.len() - start;
+    let count = if args.len() == 3 {
+        let number = args[2].to_exact_i64()?;
+        if number < 0 {
+            return Err(RuntimeError::IllegalFunctionCall {
+                msg: "BYTESLICE count must be non-negative".into(),
+            });
+        }
+        usize::try_from(number).unwrap_or(usize::MAX).min(remaining)
+    } else {
+        remaining
+    };
+    Ok(Value::Bytes(copy_buffer(&bytes[start..start + count])?))
+}
+
+fn builtin_utf8encode(args: &[Value]) -> Result<Value, RuntimeError> {
+    match &args[0] {
+        Value::Str(text) => Ok(Value::Bytes(copy_buffer(text.as_bytes())?)),
+        _ => Err(RuntimeError::TypeMismatch {
+            msg: "UTF8ENCODE expects a string".into(),
+        }),
+    }
+}
+
+fn builtin_utf8decode(args: &[Value]) -> Result<Value, RuntimeError> {
+    let bytes = byte_buffer(&args[0])?;
+    // Validate before allocating; malformed text must never silently replace bytes.
+    std::str::from_utf8(bytes).map_err(|_| RuntimeError::IllegalFunctionCall {
+        msg: "UTF8DECODE$: byte buffer is not valid UTF-8".into(),
+    })?;
+    Ok(Value::Str(
+        String::from_utf8(copy_buffer(bytes)?).expect("validated UTF-8"),
+    ))
+}
+
+fn builtin_hexencode(args: &[Value]) -> Result<Value, RuntimeError> {
+    let bytes = byte_buffer(&args[0])?;
+    let length = bytes
+        .len()
+        .checked_mul(2)
+        .ok_or_else(buffer_allocation_error)?;
+    let mut output = String::new();
+    output
+        .try_reserve_exact(length)
+        .map_err(|_| buffer_allocation_error())?;
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 15) as usize] as char);
+    }
+    Ok(Value::Str(output))
+}
+
+fn builtin_hexdecode(args: &[Value]) -> Result<Value, RuntimeError> {
+    let text = match &args[0] {
+        Value::Str(text) => text,
+        _ => {
+            return Err(RuntimeError::TypeMismatch {
+                msg: "HEXDECODE expects a string".into(),
+            });
+        }
+    };
+    if text.len() % 2 != 0 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(RuntimeError::IllegalFunctionCall {
+            msg: "HEXDECODE expects an even number of hexadecimal digits".into(),
+        });
+    }
+    let mut output = allocate_buffer(text.len() / 2)?;
+    let digit = |byte: u8| {
+        if byte <= b'9' {
+            byte - b'0'
+        } else {
+            byte.to_ascii_uppercase() - b'A' + 10
+        }
+    };
+    for pair in text.as_bytes().chunks_exact(2) {
+        output.push((digit(pair[0]) << 4) | digit(pair[1]));
+    }
+    Ok(Value::Bytes(output))
+}
+
 // Math builtins
 
 fn builtin_abs(args: &[Value]) -> Result<Value, RuntimeError> {
+    if let Value::Integer(n) = args[0] {
+        return n
+            .checked_abs()
+            .map(Value::Integer)
+            .ok_or_else(|| RuntimeError::Overflow {
+                msg: "ABS: result exceeds the INTEGER range".into(),
+            });
+    }
+    if let Value::Long(n) = args[0] {
+        return n
+            .checked_abs()
+            .map(Value::Long)
+            .ok_or_else(|| RuntimeError::Overflow {
+                msg: "ABS: result exceeds the LONG range".into(),
+            });
+    }
+    if let Value::Single(n) = args[0] {
+        return Ok(Value::Single(n.abs()));
+    }
+    if let Value::Int64(n) = args[0] {
+        return n
+            .checked_abs()
+            .map(Value::Int64)
+            .ok_or_else(|| RuntimeError::Overflow {
+                msg: "ABS: result exceeds the INT64 range".into(),
+            });
+    }
+    if let Value::Byte(n) = args[0] {
+        return Ok(Value::Byte(n));
+    }
     let n = args[0].to_f64()?;
     Ok(Value::Numeric(n.abs()))
 }
 
 fn builtin_int(args: &[Value]) -> Result<Value, RuntimeError> {
+    if args[0].integer_value().is_some() {
+        return Ok(args[0].clone());
+    }
+    if let Value::Single(n) = args[0] {
+        return Ok(Value::Single(n.floor()));
+    }
     let n = args[0].to_f64()?;
     Ok(Value::Numeric(n.floor()))
 }
 
 fn builtin_fix(args: &[Value]) -> Result<Value, RuntimeError> {
+    if args[0].integer_value().is_some() {
+        return Ok(args[0].clone());
+    }
+    if let Value::Single(n) = args[0] {
+        return Ok(Value::Single(n.trunc()));
+    }
     let n = args[0].to_f64()?;
     Ok(Value::Numeric(n.trunc()))
 }
 
-/// Round half-to-even (banker's rounding), matching QuickBasic's CINT/CLNG.
+/// Round half-to-even (banker's rounding) for CINT and CLNG.
 fn round_half_even(n: f64) -> f64 {
     let rounded = n.round();
     if (n - n.trunc()).abs() == 0.5 {
@@ -171,36 +494,48 @@ fn round_half_even(n: f64) -> f64 {
 }
 
 fn builtin_cint(args: &[Value]) -> Result<Value, RuntimeError> {
-    let n = args[0].to_f64()?;
-    if !(-32768.0..=32767.0).contains(&n) {
-        return Err(RuntimeError::IllegalFunctionCall {
-            msg: "CINT: value out of integer range (-32768..32767)".into(),
-        });
-    }
-    Ok(Value::Numeric(round_half_even(n)))
+    rounded_integer(&args[0])?.coerce_to(BasicType::Integer)
 }
 
 fn builtin_clng(args: &[Value]) -> Result<Value, RuntimeError> {
-    let n = args[0].to_f64()?;
-    if !(-2_147_483_648.0..=2_147_483_647.0).contains(&n) {
-        return Err(RuntimeError::IllegalFunctionCall {
-            msg: "CLNG: value out of long range".into(),
-        });
+    rounded_integer(&args[0])?.coerce_to(BasicType::Long)
+}
+
+fn rounded_integer(value: &Value) -> Result<Value, RuntimeError> {
+    if let Value::Bool(boolean) = value {
+        return Ok(Value::Int64(i64::from(*boolean)));
     }
-    Ok(Value::Numeric(round_half_even(n)))
+    if value.integer_value().is_some() {
+        return Ok(value.clone());
+    }
+    Ok(Value::Numeric(round_half_even(value.to_f64()?)))
 }
 
 fn builtin_csng(args: &[Value]) -> Result<Value, RuntimeError> {
-    let n = args[0].to_f64()?;
-    Ok(Value::Numeric(n as f32 as f64))
+    if let Value::Bool(boolean) = args[0] {
+        return Ok(Value::Single(u8::from(boolean) as f32));
+    }
+    Ok(Value::Single(args[0].to_f32()?))
 }
 
 fn builtin_cdbl(args: &[Value]) -> Result<Value, RuntimeError> {
-    let n = args[0].to_f64()?;
+    let n = match args[0] {
+        Value::Bool(value) => {
+            if value {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        _ => args[0].to_f64_lossy()?,
+    };
     Ok(Value::Numeric(n))
 }
 
 fn builtin_sgn(args: &[Value]) -> Result<Value, RuntimeError> {
+    if let Some(n) = args[0].integer_value() {
+        return Ok(Value::Int64(n.signum()));
+    }
     let n = args[0].to_f64()?;
     let s = if n > 0.0 {
         1
@@ -416,31 +751,46 @@ fn round_negative_places(
 }
 
 fn builtin_min(args: &[Value]) -> Result<Value, RuntimeError> {
-    numeric_extremum(args, f64::min)
+    numeric_extremum(args, false)
 }
 
 fn builtin_max(args: &[Value]) -> Result<Value, RuntimeError> {
-    numeric_extremum(args, f64::max)
+    numeric_extremum(args, true)
 }
 
-fn numeric_extremum(args: &[Value], select: fn(f64, f64) -> f64) -> Result<Value, RuntimeError> {
+fn numeric_extremum(args: &[Value], maximum: bool) -> Result<Value, RuntimeError> {
     let mut result = args
         .first()
         .ok_or(RuntimeError::ArityMismatch {
             expected: 1,
             got: 0,
         })?
-        .to_f64()?;
-    for arg in &args[1..] {
-        let value = arg.to_f64()?;
-        // Propagate NaN, but continue validating the remaining arguments.
-        result = if result.is_nan() || value.is_nan() {
-            f64::NAN
-        } else {
-            select(result, value)
-        };
+        .clone();
+    if !result.is_numeric() {
+        return Err(RuntimeError::TypeMismatch {
+            msg: "MIN/MAX expects numeric values".into(),
+        });
     }
-    Ok(Value::Numeric(result))
+    for arg in &args[1..] {
+        if !arg.is_numeric() {
+            return Err(RuntimeError::TypeMismatch {
+                msg: "MIN/MAX expects numeric values".into(),
+            });
+        }
+        // Propagate NaN, but continue validating the remaining arguments.
+        if result.floating_value().is_some_and(f64::is_nan)
+            || arg.floating_value().is_some_and(f64::is_nan)
+        {
+            result = Value::Numeric(f64::NAN);
+        } else if let (Value::Numeric(a), Value::Numeric(b)) = (&result, arg) {
+            result = Value::Numeric(if maximum { a.max(*b) } else { a.min(*b) });
+        } else if matches!(arg.partial_cmp(&result), Some(order) if
+            (maximum && order.is_gt()) || (!maximum && order.is_lt()))
+        {
+            result = arg.clone();
+        }
+    }
+    Ok(result)
 }
 
 fn builtin_maxnum(_args: &[Value]) -> Result<Value, RuntimeError> {
@@ -456,8 +806,9 @@ fn builtin_pi(_args: &[Value]) -> Result<Value, RuntimeError> {
 fn builtin_len(args: &[Value]) -> Result<Value, RuntimeError> {
     match &args[0] {
         Value::Str(s) => Ok(Value::Numeric(s.chars().count() as f64)),
+        Value::Bytes(bytes) => Ok(Value::Numeric(bytes.len() as f64)),
         _ => Err(RuntimeError::TypeMismatch {
-            msg: "LEN expects a string".into(),
+            msg: "LEN expects a string or byte buffer".into(),
         }),
     }
 }
@@ -669,6 +1020,15 @@ fn builtin_asc(args: &[Value]) -> Result<Value, RuntimeError> {
 }
 
 fn builtin_str(args: &[Value]) -> Result<Value, RuntimeError> {
+    if let Value::Single(number) = args[0] {
+        return Ok(Value::Str(number.to_string()));
+    }
+    if let Some(n) = args[0].integer_value() {
+        return Ok(Value::Str(n.to_string()));
+    }
+    if let Value::Bool(value) = args[0] {
+        return Ok(Value::Str(if value { "TRUE" } else { "FALSE" }.into()));
+    }
     let n = args[0].to_f64()?;
     let formatted = if n == n.trunc() && n.abs() < 1e15 {
         format!("{}", n as i64)
@@ -684,7 +1044,7 @@ fn builtin_val(args: &[Value]) -> Result<Value, RuntimeError> {
     if s.is_empty() {
         return Ok(Value::Numeric(0.0));
     }
-    // QuickBasic hex (&H) and octal (&O) literals
+    // Hexadecimal (&H) and octal (&O) literals
     if let Some(rest) = s.strip_prefix("&H").or_else(|| s.strip_prefix("&h")) {
         let hex: String = rest.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
         let n = i64::from_str_radix(&hex, 16).unwrap_or(0);
@@ -820,8 +1180,10 @@ fn builtin_lcase(args: &[Value]) -> Result<Value, RuntimeError> {
 }
 
 fn builtin_hex(args: &[Value]) -> Result<Value, RuntimeError> {
-    let n = args[0].to_f64()?;
-    let i = n as i64;
+    let i = match args[0].integer_value() {
+        Some(n) => n,
+        None => args[0].to_f64()? as i64,
+    };
     if i < 0 {
         Ok(Value::Str(format!("{:X}", i as u64)))
     } else {
@@ -830,8 +1192,10 @@ fn builtin_hex(args: &[Value]) -> Result<Value, RuntimeError> {
 }
 
 fn builtin_oct(args: &[Value]) -> Result<Value, RuntimeError> {
-    let n = args[0].to_f64()?;
-    let i = n as i64;
+    let i = match args[0].integer_value() {
+        Some(n) => n,
+        None => args[0].to_f64()? as i64,
+    };
     if i < 0 {
         Ok(Value::Str(format!("{:o}", i as u64)))
     } else {
@@ -840,17 +1204,21 @@ fn builtin_oct(args: &[Value]) -> Result<Value, RuntimeError> {
 }
 
 fn builtin_mki(args: &[Value]) -> Result<Value, RuntimeError> {
-    let n = args[0].to_f64()? as i16;
+    let Value::Integer(n) = args[0].coerce_to(BasicType::Integer)? else {
+        unreachable!()
+    };
     Ok(Value::Str(bytes_to_basic_string(&n.to_le_bytes())))
 }
 
 fn builtin_mkl(args: &[Value]) -> Result<Value, RuntimeError> {
-    let n = args[0].to_f64()? as i32;
+    let Value::Long(n) = args[0].coerce_to(BasicType::Long)? else {
+        unreachable!()
+    };
     Ok(Value::Str(bytes_to_basic_string(&n.to_le_bytes())))
 }
 
 fn builtin_mks(args: &[Value]) -> Result<Value, RuntimeError> {
-    let n = args[0].to_f64()? as f32;
+    let n = args[0].to_f32()?;
     Ok(Value::Str(bytes_to_basic_string(&n.to_le_bytes())))
 }
 
@@ -872,23 +1240,21 @@ fn require_packed_bytes(args: &[Value], name: &str, len: usize) -> Result<Vec<u8
 
 fn builtin_cvi(args: &[Value]) -> Result<Value, RuntimeError> {
     let bytes = require_packed_bytes(args, "CVI", 2)?;
-    Ok(Value::Numeric(
-        i16::from_le_bytes([bytes[0], bytes[1]]) as f64
-    ))
+    Ok(Value::Integer(i16::from_le_bytes([bytes[0], bytes[1]])))
 }
 
 fn builtin_cvl(args: &[Value]) -> Result<Value, RuntimeError> {
     let bytes = require_packed_bytes(args, "CVL", 4)?;
-    Ok(Value::Numeric(
-        i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64,
-    ))
+    Ok(Value::Long(i32::from_le_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3],
+    ])))
 }
 
 fn builtin_cvs(args: &[Value]) -> Result<Value, RuntimeError> {
     let bytes = require_packed_bytes(args, "CVS", 4)?;
-    Ok(Value::Numeric(
-        f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64,
-    ))
+    Ok(Value::Single(f32::from_le_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3],
+    ])))
 }
 
 fn builtin_cvd(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -1146,6 +1512,467 @@ fn builtin_command(_args: &[Value]) -> Result<Value, RuntimeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn call_native(name: &str, args: &[Value]) -> Value {
+        BuiltinRegistry::new().call(name, args).unwrap().unwrap()
+    }
+
+    #[test]
+    fn exact_integer_conversions_preserve_boundaries() {
+        for number in [i64::MIN, i64::MAX, 9_007_199_254_740_993, 0, -1] {
+            let exact = Value::Int64(number);
+            assert_eq!(
+                call_native("CINT64", &[Value::Str(number.to_string())]),
+                exact
+            );
+            assert_eq!(call_native("CINT64", &[exact.clone()]), exact);
+            assert_eq!(
+                call_native("STR$", &[exact.clone()]),
+                Value::Str(number.to_string())
+            );
+            assert_eq!(call_native("INT", &[exact.clone()]), exact);
+            assert_eq!(call_native("FIX", &[exact.clone()]), exact);
+            assert_eq!(call_native("CDBL", &[exact]), Value::Numeric(number as f64));
+        }
+        assert_eq!(
+            call_native("CINT64", &[Value::Str(" +42 ".into())]),
+            Value::Int64(42)
+        );
+        assert_eq!(
+            call_native("CINT64", &[Value::Numeric(42.0)]),
+            Value::Int64(42)
+        );
+        let registry = BuiltinRegistry::new();
+        for invalid in [
+            Value::Str("9223372036854775808".into()),
+            Value::Str("-9223372036854775809".into()),
+            Value::Str("3.0".into()),
+            Value::Str("1e2".into()),
+            Value::Str("".into()),
+            Value::Numeric(1.5),
+            Value::Numeric(f64::NAN),
+            Value::Numeric(f64::INFINITY),
+            Value::Numeric(9_223_372_036_854_775_808.0),
+        ] {
+            assert!(registry.call("CINT64", &[invalid]).is_err());
+        }
+    }
+
+    #[test]
+    fn boolean_and_byte_conversions_are_explicit_and_checked() {
+        assert_eq!(call_native("TRUE", &[]), Value::Bool(true));
+        assert_eq!(call_native("FALSE", &[]), Value::Bool(false));
+        for (value, expected) in [
+            (Value::Numeric(-0.0), false),
+            (Value::Numeric(-0.25), true),
+            (Value::Int64(i64::MAX), true),
+            (Value::Byte(0), false),
+            (Value::Bool(true), true),
+        ] {
+            assert_eq!(call_native("CBOOL", &[value]), Value::Bool(expected));
+        }
+        for (flag, number) in [(false, 0), (true, 1)] {
+            assert_eq!(
+                call_native("CINT64", &[Value::Bool(flag)]),
+                Value::Int64(number)
+            );
+            assert_eq!(
+                call_native("CBYTE", &[Value::Bool(flag)]),
+                Value::Byte(number as u8)
+            );
+            assert_eq!(
+                call_native("CDBL", &[Value::Bool(flag)]),
+                Value::Numeric(number as f64)
+            );
+        }
+        for number in 0..=255 {
+            assert_eq!(
+                call_native("CBYTE", &[Value::Numeric(number as f64)]),
+                Value::Byte(number)
+            );
+        }
+        let registry = BuiltinRegistry::new();
+        for invalid in [
+            Value::Numeric(-1.0),
+            Value::Numeric(256.0),
+            Value::Numeric(1.5),
+            Value::Int64(i64::MAX),
+            Value::Str("1".into()),
+        ] {
+            assert!(registry.call("CBYTE", &[invalid]).is_err());
+        }
+        for invalid in [
+            Value::Numeric(f64::NAN),
+            Value::Numeric(f64::INFINITY),
+            Value::Str("TRUE".into()),
+            Value::Bytes(vec![]),
+        ] {
+            assert!(registry.call("CBOOL", &[invalid]).is_err());
+        }
+    }
+
+    #[test]
+    fn type_names_reflect_native_runtime_values() {
+        for (value, name) in [
+            (Value::Numeric(1.0), "NUMERIC"),
+            (Value::Integer(1), "INTEGER"),
+            (Value::Long(1), "LONG"),
+            (Value::Single(1.0), "SINGLE"),
+            (Value::Int64(1), "INT64"),
+            (Value::Bool(true), "BOOL"),
+            (Value::Byte(1), "BYTE"),
+            (Value::Bytes(vec![]), "BYTES"),
+            (Value::Str(String::new()), "STRING"),
+            (
+                Value::Record {
+                    type_name: "POINT".into(),
+                    fields: HashMap::new(),
+                },
+                "POINT",
+            ),
+        ] {
+            assert_eq!(call_native("TYPEOF$", &[value]), Value::Str(name.into()));
+        }
+    }
+
+    #[test]
+    fn fixed_width_converters_return_typed_values_and_check_rounded_ranges() {
+        for (number, expected) in [
+            (2.5, 2),
+            (3.5, 4),
+            (-2.5, -2),
+            (-3.5, -4),
+            (32767.49, 32767),
+            (-32768.5, -32768),
+        ] {
+            assert!(
+                matches!(call_native("CINT", &[Value::Numeric(number)]), Value::Integer(n) if n == expected)
+            );
+        }
+        for (number, expected) in [
+            (2.5, 2),
+            (3.5, 4),
+            (-2.5, -2),
+            (2_147_483_647.49, i32::MAX),
+            (-2_147_483_648.5, i32::MIN),
+        ] {
+            assert!(
+                matches!(call_native("CLNG", &[Value::Numeric(number)]), Value::Long(n) if n == expected)
+            );
+        }
+        let registry = BuiltinRegistry::new();
+        for (name, number) in [
+            ("CINT", 32767.5),
+            ("CINT", -32768.51),
+            ("CLNG", 2_147_483_647.5),
+            ("CLNG", -2_147_483_648.51),
+        ] {
+            assert!(matches!(
+                registry.call(name, &[Value::Numeric(number)]),
+                Err(RuntimeError::Overflow { .. })
+            ));
+        }
+        for name in ["CINT", "CLNG"] {
+            for number in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                assert!(matches!(
+                    registry.call(name, &[Value::Numeric(number)]),
+                    Err(RuntimeError::Overflow { .. })
+                ));
+            }
+            assert!(registry.call(name, &[Value::Int64(i64::MAX)]).is_err());
+            assert!(registry.call(name, &[Value::Str("1".into())]).is_err());
+        }
+        assert!(matches!(
+            call_native("CINT", &[Value::Bool(true)]),
+            Value::Integer(1)
+        ));
+        assert!(matches!(
+            call_native("CLNG", &[Value::Bool(false)]),
+            Value::Long(0)
+        ));
+        assert!(
+            matches!(call_native("CSNG", &[Value::Numeric(0.1)]), Value::Single(n) if n == 0.1_f32)
+        );
+        assert!(
+            matches!(call_native("CSNG", &[Value::Int64(i64::MAX)]), Value::Single(n) if n == i64::MAX as f32)
+        );
+        assert!(matches!(
+            call_native("CSNG", &[Value::Bool(true)]),
+            Value::Single(1.0)
+        ));
+        assert!(matches!(
+            registry.call("CSNG", &[Value::Numeric(f64::MAX)]),
+            Err(RuntimeError::Overflow { .. })
+        ));
+        assert!(
+            matches!(call_native("CDBL", &[Value::Single(0.1)]), Value::Numeric(n) if n == f64::from(0.1_f32))
+        );
+    }
+
+    #[test]
+    fn fixed_width_math_and_packed_functions_preserve_value_types() {
+        for (value, expected) in [
+            (Value::Integer(-123), Value::Integer(123)),
+            (Value::Long(-123456), Value::Long(123456)),
+            (Value::Single(-0.1), Value::Single(0.1)),
+        ] {
+            let result = call_native("ABS", &[value]);
+            assert_eq!(result.get_type(), expected.get_type());
+            assert_eq!(result, expected);
+        }
+        let registry = BuiltinRegistry::new();
+        for value in [Value::Integer(i16::MIN), Value::Long(i32::MIN)] {
+            assert!(matches!(
+                registry.call("ABS", &[value]),
+                Err(RuntimeError::Overflow { .. })
+            ));
+        }
+        assert!(matches!(
+            call_native("INT", &[Value::Single(-1.5)]),
+            Value::Single(-2.0)
+        ));
+        assert!(matches!(
+            call_native("FIX", &[Value::Single(-1.5)]),
+            Value::Single(-1.0)
+        ));
+        assert_eq!(
+            call_native("STR$", &[Value::Single(0.1)]),
+            Value::Str("0.1".into())
+        );
+        for (pack, unpack, value) in [
+            ("MKI$", "CVI", Value::Integer(i16::MIN)),
+            ("MKL$", "CVL", Value::Long(i32::MAX)),
+            ("MKS$", "CVS", Value::Single(0.1)),
+        ] {
+            let decoded = call_native(unpack, &[call_native(pack, &[value.clone()])]);
+            assert_eq!(decoded.get_type(), value.get_type());
+            assert_eq!(decoded, value);
+        }
+        for pack in ["MKI$", "MKL$"] {
+            assert!(matches!(
+                registry.call(pack, &[Value::Numeric(1.5)]),
+                Err(RuntimeError::TypeMismatch { .. })
+            ));
+            assert!(matches!(
+                registry.call(pack, &[Value::Int64(i64::MAX)]),
+                Err(RuntimeError::Overflow { .. })
+            ));
+        }
+        assert!(matches!(
+            registry.call("MKS$", &[Value::Numeric(f64::MAX)]),
+            Err(RuntimeError::Overflow { .. })
+        ));
+        for name in ["MIN", "MAX"] {
+            assert!(
+                matches!(call_native(name, &[Value::Integer(1), Value::Single(f32::NAN)]), Value::Numeric(n) if n.is_nan())
+            );
+        }
+        assert!(matches!(
+            call_native(
+                "MAX",
+                &[Value::Single(16_777_216.0), Value::Long(16_777_217)]
+            ),
+            Value::Long(16_777_217)
+        ));
+    }
+
+    #[test]
+    fn integer_math_and_formatting_do_not_round_through_floating_point() {
+        let large = 9_007_199_254_740_993_i64;
+        assert_eq!(
+            call_native("ABS", &[Value::Int64(-large)]),
+            Value::Int64(large)
+        );
+        assert!(
+            BuiltinRegistry::new()
+                .call("ABS", &[Value::Int64(i64::MIN)])
+                .is_err()
+        );
+        assert_eq!(call_native("ABS", &[Value::Byte(255)]), Value::Byte(255));
+        assert_eq!(
+            call_native("SGN", &[Value::Int64(-large)]),
+            Value::Int64(-1)
+        );
+        assert_eq!(
+            call_native("HEX$", &[Value::Int64(large)]),
+            Value::Str("20000000000001".into())
+        );
+        assert_eq!(
+            call_native("OCT$", &[Value::Int64(large)]),
+            Value::Str(format!("{large:o}"))
+        );
+        assert_eq!(
+            call_native("HEX$", &[Value::Int64(-1)]),
+            Value::Str("FFFFFFFFFFFFFFFF".into())
+        );
+        let values = [Value::Numeric(9_007_199_254_740_992.0), Value::Int64(large)];
+        assert_eq!(call_native("MIN", &values), values[0]);
+        assert_eq!(call_native("MAX", &values), values[1]);
+        assert_eq!(
+            call_native(
+                "MAX",
+                &[
+                    Value::Int64(i64::MAX),
+                    Value::Numeric(9_223_372_036_854_775_808.0)
+                ]
+            ),
+            Value::Numeric(9_223_372_036_854_775_808.0)
+        );
+    }
+
+    #[test]
+    fn binary_buffers_round_trip_all_byte_values() {
+        let args: Vec<_> = (0..=255).map(Value::Byte).collect();
+        let bytes = call_native("BYTES", &args);
+        assert_eq!(bytes, Value::Bytes((0..=255).collect()));
+        assert_eq!(call_native("BYTES", &[]), Value::Bytes(vec![]));
+        assert_eq!(
+            call_native("BYTELEN", &[bytes.clone()]),
+            Value::Numeric(256.0)
+        );
+        assert_eq!(call_native("LEN", &[bytes.clone()]), Value::Numeric(256.0));
+        let hex = call_native("HEXENCODE$", &[bytes.clone()]);
+        assert_eq!(call_native("HEXDECODE", &[hex]), bytes);
+        assert_eq!(
+            call_native("HEXDECODE", &[Value::Str("00aBfF".into())]),
+            Value::Bytes(vec![0, 171, 255])
+        );
+        assert_eq!(
+            call_native("HEXDECODE", &[Value::Str(String::new())]),
+            Value::Bytes(vec![])
+        );
+        for (index, expected) in [(1, 0), (128, 127), (256, 255)] {
+            assert_eq!(
+                call_native("BYTEAT", &[bytes.clone(), Value::Int64(index)]),
+                Value::Byte(expected)
+            );
+        }
+        let changed = call_native(
+            "BYTESET",
+            &[bytes.clone(), Value::Numeric(1.0), Value::Byte(255)],
+        );
+        assert_eq!(
+            call_native("BYTEAT", &[changed, Value::Numeric(1.0)]),
+            Value::Byte(255)
+        );
+        assert_eq!(
+            call_native("BYTEAT", &[bytes.clone(), Value::Numeric(1.0)]),
+            Value::Byte(0)
+        );
+        assert_eq!(
+            call_native("BYTESLICE", &[bytes.clone(), Value::Numeric(255.0)]),
+            Value::Bytes(vec![254, 255])
+        );
+        assert_eq!(
+            call_native(
+                "BYTESLICE",
+                &[bytes.clone(), Value::Numeric(255.0), Value::Int64(i64::MAX)]
+            ),
+            Value::Bytes(vec![254, 255])
+        );
+        assert_eq!(
+            call_native("BYTESLICE", &[bytes.clone(), Value::Numeric(257.0)]),
+            Value::Bytes(vec![])
+        );
+        assert_eq!(
+            call_native(
+                "BYTESLICE",
+                &[bytes, Value::Numeric(1.0), Value::Numeric(0.0)]
+            ),
+            Value::Bytes(vec![])
+        );
+    }
+
+    #[test]
+    fn binary_buffers_validate_types_indexes_counts_and_encoding() {
+        let registry = BuiltinRegistry::new();
+        for index in [
+            Value::Numeric(0.0),
+            Value::Numeric(-1.0),
+            Value::Numeric(2.0),
+            Value::Numeric(1.5),
+            Value::Int64(i64::MIN),
+        ] {
+            assert!(
+                registry
+                    .call("BYTEAT", &[Value::Bytes(vec![0]), index])
+                    .is_err()
+            );
+        }
+        for invalid in ["0", "GG", " 00", "00 ", "é", "0x00"] {
+            assert!(
+                registry
+                    .call("HEXDECODE", &[Value::Str(invalid.into())])
+                    .is_err()
+            );
+        }
+        for bytes in [
+            vec![255],
+            vec![0xc0, 0x80],
+            vec![0xed, 0xa0, 0x80],
+            vec![0xe2, 0x82],
+        ] {
+            assert!(
+                registry
+                    .call("UTF8DECODE$", &[Value::Bytes(bytes)])
+                    .is_err()
+            );
+        }
+        for text in ["", "\0", "Rice 🍚\0é", "a\u{301}"] {
+            let value = Value::Str(text.into());
+            let encoded = call_native("UTF8ENCODE", &[value.clone()]);
+            assert_eq!(encoded, Value::Bytes(text.as_bytes().to_vec()));
+            assert_eq!(call_native("UTF8DECODE$", &[encoded]), value);
+        }
+        for count in [
+            Value::Numeric(-1.0),
+            Value::Numeric(1.5),
+            Value::Numeric(f64::INFINITY),
+        ] {
+            assert!(registry.call("BYTEBUFFER", &[count.clone()]).is_err());
+            assert!(
+                registry
+                    .call(
+                        "BYTESLICE",
+                        &[Value::Bytes(vec![]), Value::Numeric(1.0), count]
+                    )
+                    .is_err()
+            );
+        }
+        for name in ["BYTELEN", "HEXENCODE$", "UTF8DECODE$"] {
+            assert!(registry.call(name, &[Value::Str(String::new())]).is_err());
+        }
+        assert!(registry.call("BYTES", &[Value::Numeric(256.0)]).is_err());
+        assert!(
+            registry
+                .call(
+                    "BYTESET",
+                    &[
+                        Value::Bytes(vec![0]),
+                        Value::Numeric(1.0),
+                        Value::Numeric(0.5)
+                    ]
+                )
+                .is_err()
+        );
+        assert_eq!(
+            call_native("BYTEBUFFER", &[Value::Numeric(3.0)]),
+            Value::Bytes(vec![0, 0, 0])
+        );
+        assert_eq!(
+            call_native("BYTEBUFFER", &[Value::Numeric(2.0), Value::Byte(255)]),
+            Value::Bytes(vec![255, 255])
+        );
+        assert_eq!(
+            call_native("BYTEBUFFER", &[Value::Numeric(0.0)]),
+            Value::Bytes(vec![])
+        );
+        assert!(
+            registry
+                .call("BYTEBUFFER", &[Value::Int64(i64::MAX)])
+                .is_err()
+        );
+    }
 
     #[test]
     fn strcomp_orders_strings_and_supports_unicode_lowercase_mode() {

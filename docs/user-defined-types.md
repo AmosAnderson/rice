@@ -1,10 +1,6 @@
 # User-Defined Types
 
-Rice BASIC supports records declared with `TYPE` in both the default QBasic mode
-and ANSI mode. These are Rice's implemented semantics, not a claim that every
-record feature belongs to or matches both historical standards. Numeric fields
-are stored as `f64`; strings and nested records are separate runtime values.
-See [Dialects](dialects.md) and [Procedures and Scope](procedures.md).
+Rice BASIC supports records declared with TYPE. Every field retains its declared storage type and enforces conversion on assignment. Nested records must match the declared TYPE name. See [Data types and declarations](data-types.md).
 
 ## Declaration syntax
 
@@ -26,12 +22,18 @@ not implemented. Empty records are accepted.
 | Field declaration | Initial value | In-memory behavior |
 | --- | --- | --- |
 | `AS NUMERIC` | `0` | Numeric `f64` |
-| `AS INTEGER`, `LONG`, `SINGLE`, `DOUBLE` | `0` | Numeric `f64`; no integer rounding or narrow-range enforcement |
+| `AS INTEGER`, `LONG` | `0` | Exact signed 16-bit/32-bit integer with range checks |
+| `AS SINGLE` | `0` | IEEE binary32 with rounding and finite-overflow checks |
+| `AS DOUBLE` | `0` | Alias of NUMERIC f64 |
+| `AS INT64` | `0` | Exact signed 64-bit integer; checked conversion |
+| `AS BOOL`, `BOOLEAN` | `FALSE` | Native boolean; finite numeric assignment uses zero/nonzero |
+| `AS BYTE` | `0` | Exact unsigned byte, 0 through 255 |
+| `AS BYTES` | Empty buffer | Arbitrary bytes; text requires explicit encoding |
 | `AS STRING` | `""` | Variable-length string |
-| `AS STRING * n` | `""` | Variable-length in memory; fixed width during binary record I/O |
+| `AS STRING * n` | n spaces | Exactly n Unicode characters; assignments pad/truncate |
 | `AS OtherType` | A recursively initialized record | Nested fields |
 
-All these declarations are accepted in both modes. `STRING * n` requires a
+All these declarations are accepted. `STRING * n` requires a
 non-negative integer numeric literal within the host size range; `0` is legal.
 Expressions, named constants, negative values, and fractional lengths are rejected.
 
@@ -58,7 +60,7 @@ person.Age = 30
 person.Position.x = 3
 person.Position.y = 4
 
-PRINT person.Name                  ' Alice (not padded in memory)
+PRINT RTRIM$(person.Name)          ' Alice
 PRINT person.Position.x            ' 3
 PRINT person.Position.y            ' 4
 ```
@@ -91,17 +93,12 @@ second.x = 9
 PRINT first.x; ","; second.x        ' 3,9
 ```
 
-Under QBasic's `OPTION EXPLICIT`, declare `second` as well. `PRINT record` displays
+With `OPTION EXPLICIT`, declare `second` as well. `PRINT record` displays
 `[TYPENAME]`; it does not enumerate fields. Compare individual fields when testing
 record equality: expression operators such as `record1 = record2` do not support
 record operands.
 
-Field types establish defaults and binary layouts, but **field assignments are
-not type-checked or coerced**. For example, assigning `2.5` to an `INTEGER` field
-keeps `2.5`, assigning a string to that field also succeeds, and assigning a longer
-string to `STRING * 4` does not truncate it in memory. Whole-record assignment does
-not enforce the destination's declared record type either. Later arithmetic,
-member access, or binary I/O may fail if a stored value no longer fits its use.
+All field assignments enforce their declared type. Assigning a fraction to INTEGER or LONG fails; assigning nontext to STRING fails. STRING * n pads with spaces or truncates to n Unicode characters. Whole-record and nested-record assignments require the destination TYPE name. A failed conversion leaves the previous record value unchanged.
 
 Duplicate field names are not rejected; the last field default wins in the
 in-memory map, while binary layout still follows the declaration list. Duplicate
@@ -111,8 +108,8 @@ are not a supported layout-versioning mechanism, especially for existing records
 ## Arrays of records
 
 Use explicit bounds to make the intended range clear. Rice currently defaults to
-lower bound `1` in both dialects unless `OPTION BASE` changes it. This differs from
-QBasic's usual zero base; select `OPTION BASE 0` explicitly when needed.
+lower bound `1` unless `OPTION BASE` changes it. Select
+`OPTION BASE 0` explicitly when a zero lower bound is needed.
 
 ```basic
 TYPE StudentType
@@ -151,8 +148,8 @@ the shared array implementation, detailed in [Procedures and Scope](procedures.m
 ## Procedure arguments and results
 
 A scalar record variable can be passed to a `SUB` or `FUNCTION`, or to a `DEF`
-function in QBasic mode.
-Use explicit `BYREF` for a modifying procedure that behaves the same in both modes:
+function.
+Use explicit `BYREF` to show that a procedure modifies its argument:
 
 ```basic
 TYPE PointType
@@ -171,17 +168,16 @@ PRINT point.x; ","; point.y         ' 3,4
 ```
 
 The runtime copies a record into the parameter and, for a variable or array-element
-`BYREF` argument, copies it back on exit. Unqualified parameters default to `BYREF`
-in QBasic and `BYVAL` in ANSI. `CALL MovePoint(points(1), 3, 4)` writes the changed
+`BYREF` argument, copies it back on exit. Unqualified parameters default to `BYREF`. `CALL MovePoint(points(1), 3, 4)` writes the changed
 record back to that element, evaluating its indices once before the call.
 Parenthesizing the argument as `CALL MovePoint((point), 3, 4)` or
 `CALL MovePoint((points(1)), 3, 4)` prevents write-back. Nested record fields such
 as `person.Position` can be read as arguments but do not receive write-back.
 
-`AS PointType` on a parameter does not perform runtime validation. Functions can
-return a record assigned to their function-name variable, but `AS PointType` on the
-function does not initialize an empty record result: an unassigned result defaults
-to `0` (or `""` for a `$` name).
+`AS PointType` on a parameter does not perform whole-record runtime validation.
+Functions with `AS PointType` initialize a fresh record result with recursively
+initialized fields; assigning to the function-name variable provides the result.
+Every field assignment inside that result enforces its declared conversion rules.
 
 `STATIC state AS PointType` retains a record between calls, and a shared scalar
 record's field writes update its shared value. See the scope and static-storage
@@ -189,9 +185,8 @@ limitations in [Procedures and Scope](procedures.md).
 
 ## Record byte length
 
-`LEN(record_expression)` reports the number of bytes that QBasic-mode `PUT` would
-write for the current record value. This Rice extension is available in both
-dialects; ANSI `GET`/`PUT` still use their separate raw-string behavior. It counts
+`LEN(record_expression)` reports the number of bytes that `PUT`
+would write for the current record value. It counts
 the payload only, without record-position gaps, a RANDOM record stride, or host
 structure alignment.
 
@@ -204,6 +199,9 @@ to count Unicode scalar values; `LEN(number)` remains a type mismatch.
 | `INTEGER` | 2 |
 | `LONG`, `SINGLE` | 4 |
 | `DOUBLE`, `NUMERIC` | 8 |
+| `INT64` | 8 |
+| `BOOL` / `BOOLEAN`, `BYTE` | 1 |
+| `BYTES` | 4-byte length header plus the buffer's byte length |
 | `STRING * n` | Exactly `n`, regardless of the string's current length |
 | `STRING` | 2-byte length header plus the current Unicode scalar count |
 | Another record type | Recursively count that declared type's fields in declaration order |
@@ -226,32 +224,19 @@ item.description = "é🙂"
 PRINT LEN(item)              ' 10: 2 + 4 + (2 + 2)
 ```
 
-Length calculation checks the same stored value kinds and required fields as
-binary serialization. A string assigned to a numeric field, a number assigned to
-a string field, or a primitive assigned to a nested record field causes a type
-mismatch. These checks do not add assignment-time type enforcement. The current
-schema defines the layout: duplicate declared fields are counted repeatedly, and
-redefining a type affects existing records' reported size or can cause a missing
-field error. A nested record uses its parent's declared nested schema, as `PUT`
-does, even if loose assignment stored a record with a different type name.
+Length calculation validates stored values against the current schema, in addition to ordinary assignment-time checks. Duplicate fields are counted repeatedly; redefining a TYPE can change existing records' reported sizes or expose missing fields. Nested records must have the declared TYPE name and use that schema. Avoid duplicate fields and schema redefinition for existing records.
 
 Record lengths require the interpreter's type definitions; a standalone
-`BuiltinRegistry` only supports the string form of `LEN`.
+`BuiltinRegistry` supports only the string and byte-buffer forms of `LEN`.
 
-## Binary records and compatibility limits
+## Binary records and implementation limits
 
-In QBasic mode, `GET` and `PUT` serialize record fields recursively in declaration
-order. ANSI mode uses the separate raw-string path and does not serialize records.
+`GET` and `PUT` serialize record fields recursively in declaration
+order.
 An indexed record element is accepted directly, for example `PUT #1, , entries(i)`
 and `GET #1, , entries(i)`. The indices run once before the file transfer. Untouched
 elements use the declared record-array layout; a successfully decoded GET replaces
 only the selected element. Individual record members are not GET/PUT operands.
-Declared numeric kinds and fixed string lengths control the binary representation,
-even though they do not restrict assignment in memory. See [File I/O](file-io.md)
-for byte widths, string encoding, record positioning, and mode restrictions.
+Declared field types control both in-memory conversion and binary representation. See [File I/O](file-io.md) for byte widths, string encoding, positioning, and transfer restrictions.
 
-Rice does not promise native host struct alignment, pointers, an external ABI,
-or interoperability with every historical QBasic record file. Recursive records,
-field arrays, methods, and type-safe assignments are not implemented. Binary
-compatibility beyond the explicitly documented formats and integration fixtures
-remains unverified.
+Records use the documented field serialization order without host struct alignment or pointers. Recursive records, field arrays, inheritance, and methods are unsupported. All scalar and nested-record assignments enforce their declared types.

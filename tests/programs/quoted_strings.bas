@@ -10,4 +10,4 @@ PRINT "quote "" ' REM : remain text" ' "" ignored
 DATA "one ""quoted"" value", """", ""
 READ first$, second$, third$
 PRINT first$; "|"; second$; "|"; third$
-PRINT "OPTION DIALECT ""ANSI"""
+PRINT "PRINT ""quoted"""

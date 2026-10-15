@@ -77,8 +77,7 @@ impl RiceLspBackend {
 
 fn analyze_source(source: String, version: i32) -> DocumentState {
     let mut diagnostics = Vec::new();
-    let dialect = rice::detect_dialect(&source).unwrap_or(rice::DEFAULT_DIALECT);
-    let mut lexer = Lexer::with_dialect(&source, dialect);
+    let mut lexer = Lexer::new(&source);
 
     let tokens = match lexer.tokenize() {
         Ok(t) => t,
@@ -104,7 +103,7 @@ fn analyze_source(source: String, version: i32) -> DocumentState {
         }
     };
 
-    let mut parser = Parser::with_dialect(tokens.clone(), dialect);
+    let mut parser = Parser::new(tokens.clone());
     let program = match parser.parse_program() {
         Ok(p) => Some(p),
         Err(e) => {
@@ -201,6 +200,7 @@ fn collect_symbols(
         match &ls.stmt {
             Stmt::SubDef(sub) => {
                 let params: Vec<String> = sub.params.iter().map(param_signature).collect();
+                syms.subs.retain(|symbol| symbol.name != sub.name);
                 syms.subs.push(SymbolInfo {
                     name: sub.name.clone(),
                     line: ls.line,
@@ -212,9 +212,12 @@ fn collect_symbols(
                 let params: Vec<String> = func.params.iter().map(param_signature).collect();
                 let result_type = func
                     .as_type
+                    .clone()
+                    .or_else(|| BasicType::from_suffix(&func.name))
                     .as_ref()
                     .map(|ty| format!(" AS {}", type_signature(ty)))
                     .unwrap_or_default();
+                syms.functions.retain(|symbol| symbol.name != func.name);
                 syms.functions.push(SymbolInfo {
                     name: func.name.clone(),
                     line: ls.line,
@@ -227,6 +230,40 @@ fn collect_symbols(
                 });
                 collect_symbols(&func.body, syms, seen_vars);
             }
+            Stmt::Declare(decl) => {
+                let kind = if decl.is_function { "FUNCTION" } else { "SUB" };
+                let params = decl
+                    .params
+                    .iter()
+                    .map(param_signature)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let result_type = decl
+                    .as_type
+                    .clone()
+                    .or_else(|| {
+                        decl.is_function
+                            .then(|| BasicType::from_suffix(&decl.name))
+                            .flatten()
+                    })
+                    .map(|ty| format!(" AS {}", type_signature(&ty)))
+                    .unwrap_or_default();
+                let symbols = if decl.is_function {
+                    &mut syms.functions
+                } else {
+                    &mut syms.subs
+                };
+                if !symbols.iter().any(|symbol| symbol.name == decl.name) {
+                    symbols.push(SymbolInfo {
+                        name: decl.name.clone(),
+                        line: ls.line,
+                        detail: Some(format!(
+                            "DECLARE {kind} {}({params}){result_type}",
+                            decl.name
+                        )),
+                    });
+                }
+            }
             Stmt::Let { var, .. } => {
                 add_variable(syms, &var.name, ls.line, seen_vars);
             }
@@ -237,21 +274,37 @@ fn collect_symbols(
                 add_variable(syms, &a.name, ls.line, seen_vars);
                 add_variable(syms, &b.name, ls.line, seen_vars);
             }
-            Stmt::Dim { decls, .. } | Stmt::Redim { decls, .. } => {
-                let tag = if matches!(&ls.stmt, Stmt::Redim { .. }) {
-                    "REDIM"
-                } else {
-                    "DIM"
+            Stmt::Dim { decls, .. } | Stmt::Redim { decls, .. } | Stmt::Static(decls) => {
+                let tag = match &ls.stmt {
+                    Stmt::Redim { .. } => "REDIM",
+                    Stmt::Static(_) => "STATIC",
+                    Stmt::Dim { shared: true, .. } => "DIM SHARED",
+                    _ => "DIM",
                 };
                 for d in decls {
-                    let full = d.name.clone();
-                    if seen_vars.insert(full.clone()) {
-                        syms.variables.push(SymbolInfo {
-                            name: full,
-                            line: ls.line,
-                            detail: Some(tag.into()),
-                        });
-                    }
+                    let detail = declaration_signature(
+                        tag,
+                        &d.name,
+                        d.dimensions.is_some(),
+                        d.as_type.as_ref(),
+                    );
+                    add_declared_variable(syms, &d.name, ls.line, detail, seen_vars);
+                }
+            }
+            Stmt::Shared(decls) | Stmt::Common { decls, .. } => {
+                let tag = match &ls.stmt {
+                    Stmt::Common { shared: true, .. } => "COMMON SHARED",
+                    Stmt::Common { .. } => "COMMON",
+                    _ => "SHARED",
+                };
+                for decl in decls {
+                    let detail = declaration_signature(
+                        tag,
+                        &decl.name,
+                        decl.is_array,
+                        decl.as_type.as_ref(),
+                    );
+                    add_declared_variable(syms, &decl.name, ls.line, detail, seen_vars);
                 }
             }
             Stmt::Const { decls } => {
@@ -259,7 +312,12 @@ fn collect_symbols(
                     syms.constants.push(SymbolInfo {
                         name: decl.name.clone(),
                         line: ls.line,
-                        detail: Some("CONST".into()),
+                        detail: Some(declaration_signature(
+                            "CONST",
+                            &decl.name,
+                            false,
+                            decl.as_type.as_ref(),
+                        )),
                     });
                 }
             }
@@ -319,17 +377,57 @@ fn add_variable(syms: &mut DocumentSymbols, name: &str, line: usize, seen: &mut 
         syms.variables.push(SymbolInfo {
             name: full,
             line,
-            detail: None,
+            detail: BasicType::from_suffix(name)
+                .map(|ty| format!("{name} AS {}", type_signature(&ty))),
         });
     }
 }
 
+fn add_declared_variable(
+    syms: &mut DocumentSymbols,
+    name: &str,
+    line: usize,
+    detail: String,
+    seen: &mut HashSet<String>,
+) {
+    if let Some(existing) = syms.variables.iter_mut().find(|symbol| symbol.name == name) {
+        existing.line = line;
+        existing.detail = Some(detail);
+    } else {
+        seen.insert(name.to_owned());
+        syms.variables.push(SymbolInfo {
+            name: name.to_owned(),
+            line,
+            detail: Some(detail),
+        });
+    }
+}
+
+fn declaration_signature(tag: &str, name: &str, is_array: bool, ty: Option<&BasicType>) -> String {
+    let mut signature = format!("{tag} {name}{}", if is_array { "()" } else { "" });
+    if let Some(ty) = ty.cloned().or_else(|| BasicType::from_suffix(name)) {
+        signature.push_str(&format!(" AS {}", type_signature(&ty)));
+    }
+    signature
+}
+
 fn param_signature(p: &Param) -> String {
-    if p.is_array {
+    let mut signature = if p.is_array {
         format!("{}()", p.name)
     } else {
         p.name.clone()
+    };
+    if p.by_val {
+        signature.insert_str(0, "BYVAL ");
     }
+    if let Some(ty) = p
+        .as_type
+        .clone()
+        .or_else(|| BasicType::from_suffix(&p.name))
+    {
+        signature.push_str(&format!(" AS {}", type_signature(&ty)));
+    }
+    signature
 }
 
 fn type_signature(ty: &BasicType) -> String {
@@ -339,6 +437,10 @@ fn type_signature(ty: &BasicType) -> String {
         BasicType::Long => "LONG".into(),
         BasicType::Single => "SINGLE".into(),
         BasicType::Double => "DOUBLE".into(),
+        BasicType::Int64 => "INT64".into(),
+        BasicType::Bool => "BOOL".into(),
+        BasicType::Byte => "BYTE".into(),
+        BasicType::Bytes => "BYTES".into(),
         BasicType::String => "STRING".into(),
         BasicType::FixedLengthString(length) => format!("STRING * {length}"),
         BasicType::UserDefined(name) => name.clone(),
@@ -366,27 +468,21 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         // Variables
         ("LET", "Assign a value to a variable"),
         ("DIM", "Declare a variable or array"),
-        (
-            "CONST",
-            "Declare constants left to right: CONST a = 1, b = a + 1",
-        ),
+        ("CONST", "Declare typed constants: CONST n AS INTEGER = 1"),
         ("SWAP", "Swap scalar variables or indexed array elements"),
         ("OPTION BASE", "Set default array lower bound"),
         ("OPTION EXPLICIT", "Require variable declarations"),
-        ("OPTION DIALECT", "Select ANSI or QBasic compatibility mode"),
         ("REDIM", "Redimension an array"),
         ("ERASE", "Erase an array"),
-        ("SHARED", "Share variable with main module"),
+        ("SHARED", "Share a typed variable with the main module"),
+        ("COMMON", "Declare shared variables with optional types"),
         ("STATIC", "Preserve local variables between calls"),
         (
             "CLEAR",
             "Clear current variable values and reset DATA cursor",
         ),
         // Control flow
-        (
-            "IF",
-            "Conditional statement; numeric branch targets in QBasic",
-        ),
+        ("IF", "Conditional statement; numeric branch targets"),
         ("THEN", "Part of IF statement"),
         ("ELSE", "Alternative branch of IF"),
         ("ELSEIF", "Additional conditional branch"),
@@ -396,7 +492,7 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("STEP", "Specify FOR loop increment"),
         ("NEXT", "End FOR loops: NEXT [inner [, outer ...]]"),
         ("WHILE", "Begin a WHILE loop"),
-        ("WEND", "End a classic WHILE loop"),
+        ("WEND", "End a WHILE loop"),
         ("END WHILE", "End of WHILE loop"),
         ("DO", "Begin a DO loop"),
         ("LOOP", "End of DO loop"),
@@ -405,16 +501,13 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("CASE", "Branch of SELECT CASE"),
         ("END SELECT", "End of SELECT CASE"),
         ("GOTO", "Jump to a label"),
-        ("GOSUB", "Jump to a subroutine label in QuickBasic mode"),
-        (
-            "RETURN",
-            "Return from GOSUB, optionally to a label, in QuickBasic mode",
-        ),
-        ("ON GOTO", "Computed GOTO in QuickBasic mode"),
-        ("ON GOSUB", "Computed GOSUB in QuickBasic mode"),
-        ("ON ERROR", "Classic error handler in QuickBasic mode"),
-        ("RESUME", "Resume after classic error handler"),
-        ("ERROR", "Raise a classic BASIC error code"),
+        ("GOSUB", "Jump to a subroutine label"),
+        ("RETURN", "Return from GOSUB, optionally to a label"),
+        ("ON GOTO", "Computed GOTO"),
+        ("ON GOSUB", "Computed GOSUB"),
+        ("ON ERROR", "ON ERROR handler"),
+        ("RESUME", "Resume after ON ERROR handler"),
+        ("ERROR", "Raise a Rice error code"),
         ("EXIT FOR", "Exit a FOR loop early"),
         ("EXIT DO", "Exit a DO loop early"),
         (
@@ -436,16 +529,16 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("FUNCTION", "Define a function"),
         ("END FUNCTION", "End of FUNCTION definition"),
         ("CALL", "Call a SUB"),
-        ("DECLARE", "Forward-declare a SUB or FUNCTION"),
+        (
+            "DECLARE",
+            "Declare and validate a SUB or FUNCTION signature",
+        ),
         ("BYVAL", "Pass argument by value"),
         (
             "BYREF",
             "Copy parameter back to a scalar or array element argument",
         ),
-        (
-            "DEF FN",
-            "Define a single-expression or multiline QBasic function",
-        ),
+        ("DEF FN", "Define a single-expression or multiline function"),
         ("DEFINT", "Set default numeric type for variable letters"),
         ("DEFLNG", "Set default numeric type for variable letters"),
         ("DEFSNG", "Set default numeric type for variable letters"),
@@ -485,11 +578,11 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ),
         (
             "LSET",
-            "Left-align assignment into a fixed-width string field",
+            "Left-align assignment into a string field or STRING variable",
         ),
         (
             "RSET",
-            "Right-align assignment into a fixed-width string field",
+            "Right-align assignment into a string field or STRING variable",
         ),
         // File system
         ("NAME", "Rename a file (NAME old$ AS new$)"),
@@ -499,10 +592,7 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("CHDIR", "Change current directory"),
         ("CHDRIVE", "Change current drive"),
         ("FILES", "List directory entries"),
-        (
-            "ENVIRON",
-            "Set a QBasic interpreter-local environment override",
-        ),
+        ("ENVIRON", "Set an interpreter-local environment override"),
         // Console
         ("CLS", "Clear the screen"),
         ("LOCATE", "Move cursor to row, column"),
@@ -520,16 +610,16 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("SLEEP", "Pause execution"),
         ("RANDOMIZE", "Seed the random number generator"),
         // Operators
-        ("AND", "Bitwise AND in QBasic; logical AND in ANSI"),
-        ("OR", "Bitwise OR in QBasic; logical OR in ANSI"),
-        ("NOT", "Bitwise NOT in QBasic; logical NOT in ANSI"),
-        ("XOR", "Bitwise XOR in QBasic; logical XOR in ANSI"),
-        ("EQV", "Bitwise equivalence in QBasic"),
-        ("IMP", "Bitwise implication in QBasic"),
+        ("AND", "Bitwise numeric AND or boolean AND"),
+        ("OR", "Bitwise numeric OR or boolean OR"),
+        ("NOT", "Bitwise numeric NOT or boolean NOT"),
+        ("XOR", "Bitwise numeric XOR or boolean XOR"),
+        ("EQV", "Bitwise equivalence"),
+        ("IMP", "Bitwise implication"),
         ("LIKE", "Match a string against a wildcard pattern"),
         (
             "\\",
-            "Integer division in QBasic; rounds operands, truncates quotient",
+            "Integer division; rounds operands, truncates quotient",
         ),
         ("MOD", "Modulo operator"),
         // Other
@@ -591,13 +681,13 @@ static BUILTIN_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         // String
         (
             "LEN",
-            "LEN(value) — String character count or record binary byte size",
+            "LEN(value) — String character count, buffer length, or record byte size",
         ),
         ("LEFT$", "LEFT$(s$, n) — Left n characters"),
         ("RIGHT$", "RIGHT$(s$, n) — Right n characters"),
         (
             "MID$",
-            "MID$(s$, start[, len]) — Substring; QB scalar/array overwrite statement",
+            "MID$(s$, start[, len]) — Substring; scalar/array overwrite statement",
         ),
         ("INSTR", "INSTR([start,] s$, search$) — Find substring"),
         (
@@ -637,8 +727,8 @@ static BUILTIN_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("LOF", "LOF(n) — Length of file"),
         ("LOC", "LOC(n) — Current position in file"),
         ("SEEK", "SEEK(n) — Next file position (1-based)"),
-        ("ERR", "ERR — Last classic BASIC error code"),
-        ("ERL", "ERL — Line number of last classic BASIC error"),
+        ("ERR", "ERR — Last Rice error code"),
+        ("ERL", "ERL — Line number of last ON ERROR error"),
         // System
         (
             "ENVIRON$",
@@ -656,14 +746,61 @@ static BUILTIN_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("DATE$", "DATE$ — Current date"),
         ("TIME$", "TIME$ — Current time"),
         // Conversion
-        ("CINT", "CINT(n) — Round to nearest integer"),
-        ("CLNG", "CLNG(n) — Round to nearest long"),
+        ("CINT", "CINT(n) — Checked 16-bit INTEGER, ties to even"),
+        ("CLNG", "CLNG(n) — Checked 32-bit LONG, ties to even"),
         ("CSNG", "CSNG(n) — Single-precision value"),
         ("CDBL", "CDBL(n) — Double-precision value"),
+        (
+            "CINT64",
+            "CINT64(value) — Exact signed 64-bit integer conversion",
+        ),
+        ("CBOOL", "CBOOL(value) — Explicit boolean conversion"),
+        (
+            "CBYTE",
+            "CBYTE(value) — Exact unsigned byte conversion (0..255)",
+        ),
+        ("TRUE", "TRUE() — Boolean true"),
+        ("FALSE", "FALSE() — Boolean false"),
+        ("TYPEOF$", "TYPEOF$(value) — Runtime type name"),
         ("CVI", "CVI(s$) — Convert packed integer string"),
         ("CVL", "CVL(s$) — Convert packed long string"),
         ("CVS", "CVS(s$) — Convert packed single string"),
         ("CVD", "CVD(s$) — Convert packed double string"),
+        // Native byte buffers
+        ("BYTES", "BYTES([byte, ...]) — Construct a byte buffer"),
+        (
+            "BYTEBUFFER",
+            "BYTEBUFFER(length[, fill]) — Allocate a byte buffer",
+        ),
+        ("BYTELEN", "BYTELEN(buffer) — Number of bytes"),
+        (
+            "BYTEAT",
+            "BYTEAT(buffer, index) — Read a byte at a 1-based index",
+        ),
+        (
+            "BYTESET",
+            "BYTESET(buffer, index, byte) — Return an updated buffer copy",
+        ),
+        (
+            "BYTESLICE",
+            "BYTESLICE(buffer, start[, count]) — Copy a byte range",
+        ),
+        (
+            "UTF8ENCODE",
+            "UTF8ENCODE(text$) — Encode text as UTF-8 bytes",
+        ),
+        (
+            "UTF8DECODE$",
+            "UTF8DECODE$(buffer) — Decode valid UTF-8 bytes",
+        ),
+        (
+            "HEXENCODE$",
+            "HEXENCODE$(buffer) — Encode bytes as hexadecimal text",
+        ),
+        (
+            "HEXDECODE",
+            "HEXDECODE(text$) — Decode hexadecimal text into bytes",
+        ),
         // Array
         ("LBOUND", "LBOUND(array[, dim]) — Lower bound of array"),
         ("UBOUND", "UBOUND(array[, dim]) — Upper bound of array"),
@@ -683,15 +820,18 @@ static BUILTIN_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
 });
 
 static TYPE_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
-    ["NUMERIC", "STRING"]
-        .iter()
-        .map(|t| CompletionItem {
-            label: t.to_string(),
-            kind: Some(CompletionItemKind::TYPE_PARAMETER),
-            detail: Some("Data type".into()),
-            ..Default::default()
-        })
-        .collect()
+    [
+        "NUMERIC", "INTEGER", "LONG", "SINGLE", "DOUBLE", "STRING", "INT64", "BOOL", "BOOLEAN",
+        "BYTE", "BYTES",
+    ]
+    .iter()
+    .map(|t| CompletionItem {
+        label: t.to_string(),
+        kind: Some(CompletionItemKind::TYPE_PARAMETER),
+        detail: Some("Data type".into()),
+        ..Default::default()
+    })
+    .collect()
 });
 
 // ---------------------------------------------------------------------------
@@ -752,7 +892,7 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "RND",
-            "```basic\nRND([n])\n```\nNo argument or positive n advances the generator; zero returns its previous value; negative n reseeds it. Results are in [0, 1). Bare RND is a variable. Rice does not reproduce QBasic's sequence.",
+            "```basic\nRND([n])\n```\nNo argument or positive n advances the generator; zero returns its previous value; negative n reseeds it. Results are in [0, 1). Bare RND is a variable.",
         ),
         (
             "ROUND",
@@ -788,7 +928,7 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "TRUNCATE",
-            "```basic\nTRUNCATE(n[, places])\n```\nTruncates toward zero. Places defaults to zero; an explicit value truncates and must be -308..308. Negative places truncate to powers of ten: TRUNCATE(-129, -1) is -120. Available in both Rice dialects.",
+            "```basic\nTRUNCATE(n[, places])\n```\nTruncates toward zero. Places defaults to zero; an explicit value truncates and must be -308..308. Negative places truncate to powers of ten: TRUNCATE(-129, -1) is -120.",
         ),
         (
             "REMAINDER",
@@ -796,11 +936,11 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "MIN",
-            "```basic\nMIN(n[, n...])\n```\nReturns the smallest of one or more numeric arguments in either dialect. Strings and records are rejected. NaN propagates; infinities are supported. Parentheses are required.",
+            "```basic\nMIN(n[, n...])\n```\nReturns the smallest of one or more numeric arguments. Strings and records are rejected. NaN propagates; infinities are supported. Parentheses are required.",
         ),
         (
             "MAX",
-            "```basic\nMAX(n[, n...])\n```\nReturns the largest of one or more numeric arguments in either dialect. Strings and records are rejected. NaN propagates; infinities are supported. Parentheses are required.",
+            "```basic\nMAX(n[, n...])\n```\nReturns the largest of one or more numeric arguments. Strings and records are rejected. NaN propagates; infinities are supported. Parentheses are required.",
         ),
         (
             "MAXNUM",
@@ -813,7 +953,7 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         // String
         (
             "LEN",
-            "```basic\nLEN(string_expression)\nLEN(record_expression)\n```\nFor a string, counts Unicode scalar values, not UTF-8 bytes or grapheme clusters. For a record, returns its current QB binary PUT payload size in bytes, including nested fields, fixed string widths, and dynamic string length prefixes; this is a Rice extension in both dialects. Numeric arguments are rejected. Exactly one argument is required.",
+            "```basic\nLEN(string_expression)\nLEN(buffer_expression)\nLEN(record_expression)\n```\nFor a string, counts Unicode scalar values, not UTF-8 bytes or grapheme clusters. For BYTES, counts bytes. For a record, returns its current binary PUT payload size in bytes, including nested fields, fixed string widths, and dynamic length prefixes. Numeric arguments are rejected. Exactly one argument is required.",
         ),
         (
             "LEFT$",
@@ -825,7 +965,7 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "MID$",
-            "```basic\nMID$(s$, start[, length])\nMID$(lines$(i), start[, length]) = replacement$\n```\nThe function returns a substring in both dialects. The QB-only assignment overwrites a scalar or array element without changing its length. Indices resolve once before start, replacement, target snapshot, then optional length. Uses 1-based Unicode character positions; start must be positive, length nonnegative. Record-member and slice targets are unsupported.",
+            "```basic\nMID$(s$, start[, length])\nMID$(lines$(i), start[, length]) = replacement$\n```\nThe function returns a substring. The assignment overwrites a scalar or array element without changing its length. Indices resolve once before start, replacement, target snapshot, then optional length. Uses 1-based Unicode character positions; start must be positive, length nonnegative. Record-member and slice targets are unsupported.",
         ),
         (
             "INSTR",
@@ -833,15 +973,15 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "INSTRREV",
-            "```basic\nINSTRREV(s$, search$[, start])\n```\nReturns the last case-sensitive match's 1-based Unicode character position, or 0. Omitted start or -1 searches the whole string; a positive start limits the final character of a match. Start truncates; 0 or values below -1 are errors. Empty text or start past the end returns 0; an empty search returns the effective start. Rice extension in both dialects.",
+            "```basic\nINSTRREV(s$, search$[, start])\n```\nReturns the last case-sensitive match's 1-based Unicode character position, or 0. Omitted start or -1 searches the whole string; a positive start limits the final character of a match. Start truncates; 0 or values below -1 are errors. Empty text or start past the end returns 0; an empty search returns the effective start.",
         ),
         (
             "STRCOMP",
-            "```basic\nSTRCOMP(a$, b$[, compare])\n```\nReturns -1, 0, or 1 when a$ sorts before, equal to, or after b$, independent of dialect truth values. Mode 0 (default) compares case-sensitive Unicode scalar order; mode 1 lowercases both complete strings before comparing. Mode must be exactly numeric 0 or 1. No locale collation, full case folding, or Unicode normalization. Both inputs must be strings. Rice extension in both dialects.",
+            "```basic\nSTRCOMP(a$, b$[, compare])\n```\nReturns -1, 0, or 1 when a$ sorts before, equal to, or after b$, independent of numeric truth values. Mode 0 (default) compares case-sensitive Unicode scalar order; mode 1 lowercases both complete strings before comparing. Mode must be exactly numeric 0 or 1. No locale collation, full case folding, or Unicode normalization. Both inputs must be strings.",
         ),
         (
             "REPLACE$",
-            "```basic\nREPLACE$(s$, find$, replacement$[, start[, count]])\n```\nReplaces nonoverlapping, case-sensitive matches. Returns only the suffix beginning at the 1-based Unicode character start (default 1); start past the end returns empty. Count defaults to -1 (all), or is nonnegative. Empty find or count 0 keeps the selected suffix; an empty replacement deletes matches. Numeric options truncate and are checked. Rice extension in both dialects.",
+            "```basic\nREPLACE$(s$, find$, replacement$[, start[, count]])\n```\nReplaces nonoverlapping, case-sensitive matches. Returns only the suffix beginning at the 1-based Unicode character start (default 1); start past the end returns empty. Count defaults to -1 (all), or is nonnegative. Empty find or count 0 keeps the selected suffix; an empty replacement deletes matches. Numeric options truncate and are checked.",
         ),
         (
             "UCASE$",
@@ -893,15 +1033,15 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "MKI$",
-            "```basic\nMKI$(n)\n```\nReturns a 2-byte little-endian packed integer string.",
+            "```basic\nMKI$(n)\n```\nPacks an exact signed 16-bit integer as a two-character binary string in little-endian order. Fractions and values outside the INTEGER range raise errors.",
         ),
         (
             "MKL$",
-            "```basic\nMKL$(n)\n```\nReturns a 4-byte little-endian packed long string.",
+            "```basic\nMKL$(n)\n```\nPacks an exact signed 32-bit integer as a four-character binary string in little-endian order. Fractions and values outside the LONG range raise errors.",
         ),
         (
             "MKS$",
-            "```basic\nMKS$(n)\n```\nReturns a 4-byte little-endian packed single-precision string.",
+            "```basic\nMKS$(n)\n```\nPacks a SINGLE value as a four-character binary string in little-endian order. Values round to f32; finite overflow raises an error.",
         ),
         (
             "MKD$",
@@ -914,7 +1054,7 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "EOF",
-            "```basic\nEOF(n)\n```\nReturns the dialect true value if at end of file `n`, 0 otherwise.",
+            "```basic\nEOF(n)\n```\nReturns -1 if at end of file `n`, 0 otherwise.",
         ),
         (
             "LOF",
@@ -922,16 +1062,16 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "LOC",
-            "```basic\nLOC(n)\n```\nReturns the current zero-based byte offset, including for RANDOM files. This is not a QBasic record-count position.",
+            "```basic\nLOC(n)\n```\nReturns the current zero-based byte offset, including for RANDOM files.",
         ),
         // System
         (
             "ENVIRON$",
-            "```basic\nENVIRON$(name$)\nENVIRON$(index)\n```\nA string name returns its environment value, or empty string if absent. A numeric index is truncated and must be positive; it selects a 1-based NAME=value entry from the Unicode host environment merged with interpreter-local overrides, sorted by name (uppercased on Windows). Past the end returns empty string. The list is refreshed on each call. Both dialects support reads; only QB supports the ENVIRON setter.",
+            "```basic\nENVIRON$(name$)\nENVIRON$(index)\n```\nA string name returns its environment value, or empty string if absent. A numeric index is truncated and must be positive; it selects a 1-based NAME=value entry from the Unicode host environment merged with interpreter-local overrides, sorted by name (uppercased on Windows). Past the end returns empty string. The list is refreshed on each call. The ENVIRON statement sets interpreter-local overrides.",
         ),
         (
             "ENVIRON",
-            "```basic\nENVIRON \"name=value\"\n```\nQBasic mode only. Sets an interpreter-local override read by ENVIRON$ and passed to SHELL children; it does not modify the host process environment.",
+            "```basic\nENVIRON \"name=value\"\n```\nSets an interpreter-local override read by ENVIRON$ and passed to SHELL children; it does not modify the host process environment.",
         ),
         (
             "CURDIR$",
@@ -964,35 +1104,99 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "DET",
-            "```basic\nDET(array)\nDET(array())\nDET()\n```\nWith a named array, computes the determinant of its current square, two-dimensional MAT shape using partial-pivot floating-point elimination. Returns zero for an exactly singular matrix. This Rice extension works in both dialects; indexed elements and other expressions are not matrix references. With no arguments, or as bare DET, returns the cached determinant from the latest successful MAT inverse. DET(array) does not change that cache.",
+            "```basic\nDET(array)\nDET(array())\nDET()\n```\nWith a named array, computes the determinant of its current square, two-dimensional MAT shape using partial-pivot floating-point elimination. Returns zero for an exactly singular matrix. Indexed elements and other expressions are not matrix references. With no arguments, or as bare DET, returns the cached determinant from the latest successful MAT inverse. DET(array) does not change that cache. A rejected inverse destination also leaves the cache unchanged.",
         ),
         (
             "CINT",
-            "```basic\nCINT(n)\n```\nRounds `n` to the nearest integer (round half to even).",
+            "```basic\nCINT(n)\n```\nReturns a signed 16-bit INTEGER. Rounds numeric input to the nearest integer, ties to even, then checks -32768..32767. Nonfinite values and overflow raise errors; booleans convert to 1 or 0.",
         ),
         (
             "CLNG",
-            "```basic\nCLNG(n)\n```\nRounds `n` to the nearest long integer (round half to even).",
+            "```basic\nCLNG(n)\n```\nReturns a signed 32-bit LONG. Rounds numeric input to the nearest integer, ties to even, then checks -2147483648..2147483647. Nonfinite values and overflow raise errors; booleans convert to 1 or 0.",
         ),
         (
             "CSNG",
-            "```basic\nCSNG(n)\n```\nReturns `n` reduced to single precision.",
+            "```basic\nCSNG(n)\n```\nReturns a 32-bit SINGLE, rounding to single precision. Finite values that overflow to infinity raise overflow; existing NaN and infinity are preserved. Booleans convert to 1 or 0.",
         ),
         (
             "CDBL",
-            "```basic\nCDBL(n)\n```\nReturns `n` as a double-precision value.",
+            "```basic\nCDBL(n)\n```\nReturns a double-precision NUMERIC value. This explicit conversion may round a large INT64; booleans become 1 or 0.",
+        ),
+        (
+            "CINT64",
+            "```basic\nCINT64(value)\nCINT64(\"9223372036854775807\")\n```\nReturns a native Rice signed 64-bit INT64. Accepts an exact integral number, boolean (0 or 1), or a complete decimal integer string with optional surrounding whitespace. Use a string for large exact values; ordinary numeric literals use floating point. Fractions, nonfinite numbers, and out-of-range values raise an error.",
+        ),
+        (
+            "CBOOL",
+            "```basic\nCBOOL(value)\n```\nReturns a native Rice BOOL from a boolean or finite number: zero is false and nonzero is true. Strings and byte buffers are rejected. Comparisons of NUMERIC values return -1 or 0; BOOL remains a distinct native type.",
+        ),
+        (
+            "CBYTE",
+            "```basic\nCBYTE(value)\n```\nReturns a native Rice BYTE. Accepts an exact integral number in 0..255 or a boolean (0 or 1). Fractions, strings, nonfinite numbers, and out-of-range values raise an error.",
+        ),
+        (
+            "TRUE",
+            "```basic\nTRUE()\n```\nReturns the native Rice BOOL value true. Parentheses force builtin lookup; an existing variable named TRUE remains a variable.",
+        ),
+        (
+            "FALSE",
+            "```basic\nFALSE()\n```\nReturns the native Rice BOOL value false. Parentheses force builtin lookup; an existing variable named FALSE remains a variable.",
+        ),
+        (
+            "TYPEOF$",
+            "```basic\nTYPEOF$(value)\n```\nReturns the runtime type name: NUMERIC, INTEGER, LONG, SINGLE, INT64, BOOL, BYTE, BYTES, STRING, or the declared record type's name. DOUBLE shares the NUMERIC representation. Reports the stored value's type.",
+        ),
+        (
+            "BYTES",
+            "```basic\nDIM data AS BYTES\ndata = BYTES(0, 127, 255)\n```\nNative Rice binary buffer, distinct from Unicode STRING. AS BYTES defaults to an empty buffer and requires a buffer on assignment. BYTES([byte, ...]) constructs a buffer; BYTES() is empty. Each argument must convert exactly to a byte in 0..255. Use UTF8ENCODE/UTF8DECODE$ or HEXENCODE$/HEXDECODE for explicit text conversion.",
+        ),
+        (
+            "BYTEBUFFER",
+            "```basic\nBYTEBUFFER(length[, fill])\n```\nReturns a new BYTES buffer of the requested nonnegative integral length, filled with zero or an explicit byte in 0..255. Allocation failures raise a BASIC error.",
+        ),
+        (
+            "BYTELEN",
+            "```basic\nBYTELEN(buffer)\n```\nReturns the number of bytes in a BYTES buffer. LEN(buffer) returns the same length. Strings are rejected.",
+        ),
+        (
+            "BYTEAT",
+            "```basic\nBYTEAT(buffer, index)\n```\nReturns a BYTE from a BYTES buffer. Indices are exact integers, 1-based, independent of OPTION BASE, and must refer to an existing byte.",
+        ),
+        (
+            "BYTESET",
+            "```basic\ndata = BYTESET(data, index, byte)\n```\nReturns a copy of a BYTES buffer with one byte replaced. The original buffer is unchanged until assigned. Index is an exact 1-based integer within the buffer; byte must convert exactly to 0..255.",
+        ),
+        (
+            "BYTESLICE",
+            "```basic\nBYTESLICE(buffer, start[, count])\n```\nReturns a copy of a byte range. Start is an exact 1-based integer in 1..length+1. Omitted count means the remaining bytes; a nonnegative integral count is clipped to the remaining length. Starting at length+1 returns an empty buffer.",
+        ),
+        (
+            "UTF8ENCODE",
+            "```basic\nUTF8ENCODE(text$)\n```\nEncodes a Unicode STRING as a native BYTES buffer containing UTF-8 bytes, including embedded zero bytes.",
+        ),
+        (
+            "UTF8DECODE$",
+            "```basic\nUTF8DECODE$(buffer)\n```\nDecodes a BYTES buffer as UTF-8 text. Invalid UTF-8 raises an error; bytes are never silently replaced.",
+        ),
+        (
+            "HEXENCODE$",
+            "```basic\nHEXENCODE$(buffer)\n```\nReturns two uppercase hexadecimal digits for each byte in a BYTES buffer. An empty buffer produces an empty string.",
+        ),
+        (
+            "HEXDECODE",
+            "```basic\nHEXDECODE(text$)\n```\nConverts an even number of hexadecimal digits to a BYTES buffer. Accepts uppercase or lowercase digits and empty text; prefixes, whitespace, odd lengths, and nonhexadecimal characters raise an error.",
         ),
         (
             "CVI",
-            "```basic\nCVI(s$)\n```\nConverts a 2-byte packed integer string produced by `MKI$` back to a number.",
+            "```basic\nCVI(s$)\n```\nDecodes the first two characters of a packed binary string as a signed 16-bit INTEGER in little-endian order. Requires at least two characters.",
         ),
         (
             "CVL",
-            "```basic\nCVL(s$)\n```\nConverts a 4-byte packed long string produced by `MKL$` back to a number.",
+            "```basic\nCVL(s$)\n```\nDecodes the first four characters of a packed binary string as a signed 32-bit LONG in little-endian order. Requires at least four characters.",
         ),
         (
             "CVS",
-            "```basic\nCVS(s$)\n```\nConverts a 4-byte packed single string produced by `MKS$` back to a number.",
+            "```basic\nCVS(s$)\n```\nDecodes the first four characters of a packed binary string as a 32-bit SINGLE in little-endian order. Requires at least four characters.",
         ),
         (
             "CVD",
@@ -1000,37 +1204,85 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "ERR",
-            "```basic\nERR\n```\nReturns the most recent classic BASIC error code from an `ON ERROR GOTO` handler.",
+            "```basic\nERR\n```\nReturns the most recent Rice error code from an `ON ERROR GOTO` handler.",
         ),
         (
             "ERL",
-            "```basic\nERL\n```\nReturns the numbered BASIC line where the most recent classic error occurred, or 0 for unnumbered statements.",
+            "```basic\nERL\n```\nReturns the numbered BASIC line where the most recent ON ERROR error occurred, or 0 for unnumbered statements.",
         ),
         (
             "SEEK",
-            "```basic\nSEEK(n)\nSEEK #n, position\n```\nFunction returns the 1-based byte position of the next read/write; statement moves the file pointer.",
+            "```basic\nSEEK(n)\nSEEK #n, position\n```\nFunction returns the 1-based byte position of the next read/write; statement flushes pending output before repositioning both reader and writer. Flush failure prevents the requested seek.",
         ),
     ])
 });
 
 static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
     HashMap::from([
+        (
+            "NUMERIC",
+            "```basic\nDIM value AS NUMERIC\n```\nRice 64-bit floating-point type, also spelled DOUBLE. Defaults to zero and accepts numeric values. An INT64 must be exactly representable; use CDBL for explicit rounding. The # suffix selects this type.",
+        ),
+        (
+            "INTEGER",
+            "```basic\nDIM value AS INTEGER\n```\nRice signed 16-bit integer, -32768..32767, default zero. Assignments require exact integral values and reject fractions or overflow. The % suffix selects this type; CINT performs explicit nearest-even rounding.",
+        ),
+        (
+            "LONG",
+            "```basic\nDIM value AS LONG\n```\nRice signed 32-bit integer, -2147483648..2147483647, default zero. Assignments require exact integral values and reject fractions or overflow. The & suffix selects this type; CLNG performs explicit nearest-even rounding.",
+        ),
+        (
+            "SINGLE",
+            "```basic\nDIM value AS SINGLE\n```\nRice 32-bit floating-point type, default zero. Assignment rounds to single precision and rejects finite values that overflow to infinity. Existing NaN/infinity are retained. The ! suffix selects this type.",
+        ),
+        (
+            "DOUBLE",
+            "```basic\nDIM value AS DOUBLE\n```\nRice alias for NUMERIC, the 64-bit floating-point type. Defaults to zero; TYPEOF$ reports NUMERIC. The # suffix selects the same representation.",
+        ),
+        (
+            "STRING",
+            "```basic\nDIM text AS STRING\nDIM code AS STRING * 8\n```\nRice Unicode text. STRING accepts only strings and defaults to empty. STRING * n always contains n Unicode scalar characters, truncating or space-padding assignment and initializing to spaces. The $ suffix selects variable-length STRING.",
+        ),
+        (
+            "COMMON",
+            "```basic\nCOMMON [SHARED] var[()] [AS type][, var[()] [AS type] ...]\n```\nDeclares names shared with the root environment, with optional enforced types. Existing values are checked against AS declarations. Array element reads and writes use the shared root binding; empty array markers do not allocate dimensions. COMMON does not load modules or transfer state to another program.",
+        ),
+        (
+            "INT64",
+            "```basic\nDIM count AS INT64\ncount = CINT64(\"9223372036854775807\")\n```\nRice signed 64-bit integer, -9223372036854775808..9223372036854775807, default zero. Declarations enforce exact integral assignment and range checks. Use CINT64 with decimal text to enter values beyond floating-point precision. INTEGER and LONG provide signed 16-bit and 32-bit storage.",
+        ),
+        (
+            "BOOL",
+            "```basic\nDIM enabled AS BOOL\nenabled = TRUE()\n```\nNative Rice boolean; BOOLEAN is an alias. Defaults to false. Explicit declarations accept booleans or finite numbers (zero is false, nonzero is true), and reject strings and byte buffers. Comparisons of NUMERIC values return -1 for true or 0 for false.",
+        ),
+        (
+            "BOOLEAN",
+            "```basic\nDIM enabled AS BOOLEAN\n```\nAlias for the native Rice BOOL type. Defaults to false and enforces boolean or finite numeric assignment. TRUE(), FALSE(), and CBOOL(value) construct boolean values.",
+        ),
+        (
+            "BYTE",
+            "```basic\nDIM octet AS BYTE\noctet = CBYTE(255)\n```\nNative Rice unsigned 8-bit integer in 0..255, default zero. Explicit declarations enforce exact integral assignment and range checks. Use BYTES for a buffer of bytes.",
+        ),
+        (
+            "BYTES",
+            "```basic\nDIM payload AS BYTES\npayload = BYTES(0, 255)\n```\nRice binary buffer, distinct from Unicode STRING. Defaults to empty and accepts only byte buffers on assignment. Use explicit UTF-8 or hexadecimal functions to convert text.",
+        ),
         // I/O
         (
             "PRINT",
-            "```basic\nPRINT [expression][;|,] ...\n```\nDisplays output on the screen. Use `;` to suppress spacing, `,` for tab zones. Use `TAB(n)` and `SPC(n)` for positioning. In either dialect, two adjacent quotes inside a string literal represent one quote: `PRINT \"a\"\"b\"` prints `a\"b`.",
+            "```basic\nPRINT [expression][;|,] ...\n```\nDisplays output on the screen. Use `;` to suppress spacing, `,` for tab zones. Use `TAB(n)` and `SPC(n)` for positioning. Two adjacent quotes inside a string literal represent one quote: `PRINT \"a\"\"b\"` prints `a\"b`.",
         ),
         (
             "PRINT USING",
-            "```basic\nPRINT USING format$; expr[, expr...]\n```\nFormatted output. `#` for digits, `.` for decimal, `$$` for currency, `^^^^` for scientific notation.",
+            "```basic\nPRINT USING format$; expr[, expr...]\n```\nFormatted output. `#` for digits, `.` for decimal, `$$` for currency, `^^^^` for scientific notation. Fixed-point fields preserve every INTEGER, LONG, INT64, and BYTE digit, including the signed 64-bit limits. Finite floating-point values retain their magnitude across the full range, including subnormal scientific notation and values larger than INT64. Scientific fields require exact conversion to floating point; use explicit CDBL if rounding a large integer is intended.",
         ),
         (
             "INPUT",
-            "```basic\nINPUT [\"prompt\";] target[, target...]\nINPUT #channel, target[, target...]\nINPUT values(i, j), names$(i)\n```\nReads into scalar names or array elements in either dialect; record fields and slices are unsupported. Indices are evaluated left to right once before input, retaining destinations across retries; INPUT i, values(i) uses the old i. Values are assigned only after all fields validate. Interactive INPUT retries invalid fields; file INPUT reads comma-delimited fields. Use doubled quotes inside a literal prompt to include a quote.",
+            "```basic\nINPUT [\"prompt\";] target[, target...]\nINPUT #channel, target[, target...]\nINPUT values(i, j), names$(i)\n```\nReads into scalar names or array elements; record fields and slices are unsupported. Indices are evaluated left to right once before input, retaining destinations across retries; INPUT i, values(i) uses the old i. Values are assigned only after all fields validate. Interactive INPUT retries invalid fields; file INPUT reads comma-delimited fields. Use doubled quotes inside a literal prompt to include a quote.",
         ),
         (
             "LINE INPUT",
-            "```basic\nLINE INPUT [\"prompt\";] target\nLINE INPUT #channel, target\nLINE INPUT lines$(i)\n```\nReads a complete line without comma parsing into a scalar name or array element in either dialect; record fields and slices are unsupported. Removes the line ending. The file form requires a string target; the console form assigns text even to a numeric target. Literal prompts accept doubled quotes.",
+            "```basic\nLINE INPUT [\"prompt\";] target\nLINE INPUT #channel, target\nLINE INPUT lines$(i)\n```\nReads a complete line into a scalar or array element, removing the line ending. Declared targets must accept a STRING; fixed strings pad or truncate. Record fields and slices are unsupported. The file form requires a string target. Literal prompts accept doubled quotes.",
         ),
         (
             "WRITE",
@@ -1043,31 +1295,27 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "DIM",
-            "```basic\nDIM [SHARED] var[(dims)] [AS type]\n```\nDeclares and initializes values or records array bounds. Explicit array AS selects defaults for untouched elements: numeric zero, empty string, or a fresh record, overriding suffix/DEFSTR. Existing elements survive DIM and assignments remain permissive. All numeric kinds use f64; recorded bounds are not enforced. Array metadata is interpreter-wide, not scoped to procedures.",
+            "```basic\nDIM [SHARED] var[(dims)] [AS type]\n```\nDeclares typed variables or arrays. All declarations enforce their type on assignment. Explicit AS overrides a name suffix; % is INTEGER, & LONG, ! SINGLE, # NUMERIC, and $ STRING. Without AS or a suffix, DIM declares NUMERIC regardless of DEFtype directives. Fixed STRING * n values pad or truncate to n Unicode characters. Existing array elements must convert to the declared type before a declaration succeeds. Recorded bounds are not enforced; array metadata is interpreter-wide.",
         ),
         (
             "CONST",
-            "```basic\nCONST name = expression[, name = expression ...]\n```\nDefines constants left to right at runtime; later expressions may use earlier names. Duplicate names in the current scope raise an error. Earlier definitions and expression side effects survive a later failure. No AS clauses or trailing commas are accepted. Available in both dialects.",
+            "```basic\nCONST name [AS type] = expression[, name [AS type] = expression ...]\n```\nDefines constants left to right at runtime; later expressions may use earlier names. Explicit AS or a suffix selects a checked type; otherwise the value retains its expression type. Duplicate names raise an error. Earlier definitions and expression side effects survive a later failure.",
         ),
         (
             "SWAP",
-            "```basic\nSWAP target1, target2\nSWAP values(i, j), replacement\n```\nExchanges scalar variables or array elements in either dialect. Both destinations resolve from left to right with each index evaluated once, before reading or writing either value. Missing elements honor explicit array AS defaults, otherwise the ordinary suffix/DEFSTR defaults. A target error leaves both destinations unwritten, apart from index-expression side effects. Record fields and slices are unsupported; no bounds or rank checks are added.",
+            "```basic\nSWAP target1, target2\nSWAP values(i, j), replacement\n```\nExchanges scalar variables or array elements. Both destinations resolve from left to right with each index evaluated once, before reading or writing either value. Missing elements honor explicit array AS defaults, otherwise the ordinary suffix/DEFSTR defaults. A target error leaves both destinations unwritten, apart from index-expression side effects. Record fields and slices are unsupported; no bounds or rank checks are added.",
         ),
         (
             "OPTION BASE",
-            "```basic\nOPTION BASE {0|1}\n```\nSets the default lower bound for subsequent array declarations. Rice currently defaults to 1 in both dialects; select 0 explicitly for QBasic code that assumes a zero base.",
+            "```basic\nOPTION BASE {0|1}\n```\nSets the default lower bound for subsequent array declarations. Rice defaults to 1; select 0 explicitly for zero-based arrays.",
         ),
         (
             "OPTION EXPLICIT",
-            "```basic\nOPTION EXPLICIT\n```\nQBasic mode only. Checks declarations at runtime; DIM, SHARED, STATIC, CONST, parameters, suffixes, and DEFtype can declare names. Existing ancestor values and some statement paths bypass checks.",
-        ),
-        (
-            "OPTION DIALECT",
-            "```basic\nOPTION DIALECT \"ANSI\"\nOPTION DIALECT \"QB\"\n```\nSelects ANSI mode or the default QBasic-compatible mode for source code and subsequent immediate REPL input.",
+            "```basic\nOPTION EXPLICIT\n```\nChecks declarations at runtime; DIM, SHARED, STATIC, CONST, parameters, suffixes, and DEFtype can declare names. Existing ancestor values and some statement paths bypass checks.",
         ),
         (
             "REDIM",
-            "```basic\nREDIM [PRESERVE] var(dims) [AS type]\n```\nUpdates array bounds and explicit AS defaults. Omitting AS clears the previous declared element type and restores suffix/DEFSTR defaults. Without PRESERVE, clears local element values. PRESERVE retains all existing values without conversion, even out-of-range elements; ordinary bounds remain unchecked.",
+            "```basic\nREDIM [PRESERVE] var(dims) [AS type]\n```\nUpdates array bounds and element types. Without PRESERVE, clears stored elements and uses the explicit AS or suffix/DEFtype default. PRESERVE retains the declared element type when AS is omitted, validates retained values, and rejects a type change. Bounds remain unchecked for ordinary indexing; stored out-of-range elements may survive PRESERVE.",
         ),
         (
             "ERASE",
@@ -1075,11 +1323,11 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "SHARED",
-            "```basic\nSHARED var[, var...]\n```\nRoutes named scalar/record variables to the root environment. Sharing an array base name does not share its flattened element keys.",
+            "```basic\nSHARED var[()] [AS type][, var[()] [AS type] ...]\n```\nRoutes named variables and array element reads and writes to the root environment. Explicit AS enforces the shared value's type and validates existing values. Empty array markers do not allocate dimensions. A local declaration can shadow an inherited shared binding.",
         ),
         (
             "STATIC",
-            "```basic\nSTATIC var[, var...]\n```\nPreserves named scalar/record values between procedure calls. STATIC array syntax does not preserve elements or establish bounds; static state survives CLEAR.",
+            "```basic\nSTATIC var[(dims)] [AS type][, var[(dims)] [AS type] ...]\n```\nPreserves scalar/record values and array elements, bounds, defaults, and declared types between procedure calls. All type annotations enforce assignment. Saved metadata remains available when a later call skips STATIC, including after CLEAR inside the procedure. Changes made during calls that skip STATIC are saved for subsequent calls.",
         ),
         (
             "CLEAR",
@@ -1088,47 +1336,47 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         // Control flow
         (
             "IF",
-            "```basic\nIF condition THEN\n  ...\n[ELSEIF condition THEN\n  ...]\n[ELSE\n  ...]\nEND IF\n```\nConditional execution. Also supports single-line form: `IF cond THEN stmt [ELSE stmt]`. In QBasic mode, `IF cond THEN 100 ELSE 200` jumps to the selected numeric line label. Either branch may use a statement instead of a line number; ANSI requires explicit GOTO.",
+            "```basic\nIF condition THEN\n  ...\n[ELSEIF condition THEN\n  ...]\n[ELSE\n  ...]\nEND IF\n```\nConditional execution. Also supports single-line form: `IF cond THEN stmt [ELSE stmt]`. `IF cond THEN 100 ELSE 200` jumps to the selected numeric line label. Either branch may use a statement instead of a line number.",
         ),
         (
             "THEN",
-            "```basic\nIF condition THEN statement [ELSE statement]\nIF condition THEN 100 [ELSE 200]\n```\nBegins the true branch of IF. A numeric branch target is shorthand for GOTO in QBasic mode only. A newline immediately after THEN begins a block IF.",
+            "```basic\nIF condition THEN statement [ELSE statement]\nIF condition THEN 100 [ELSE 200]\n```\nBegins the true branch of IF. A numeric branch target is shorthand for GOTO. A newline immediately after THEN begins a block IF.",
         ),
         (
             "ELSE",
-            "```basic\nIF condition THEN statement ELSE statement\nIF condition THEN 100 ELSE 200\n```\nBegins the false branch of IF. Single-line numeric targets are shorthand for GOTO in QBasic mode only.",
+            "```basic\nIF condition THEN statement ELSE statement\nIF condition THEN 100 ELSE 200\n```\nBegins the false branch of IF. Single-line numeric targets are shorthand for GOTO.",
         ),
         (
             "\\",
-            "```basic\nPRINT 7 \\ 2\n```\nQBasic mode only. Rounds each numeric operand to the nearest integer, ties to even, then divides signed 64-bit integers and truncates the quotient toward zero. Returns an f64. A divisor that rounds to zero raises division by zero; nonfinite or out-of-range operands and quotient overflow raise overflow. Multiplication and / bind more tightly; MOD binds less tightly.",
+            "```basic\nPRINT 7 \\ 2\n```\nDivides signed 64-bit integers and truncates the quotient toward zero. When INTEGER, LONG, INT64, or BYTE participates, both operands must be exact integers and the result is INT64. NUMERIC operands round to the nearest integer, ties to even, and return NUMERIC. A zero divisor raises division by zero; out-of-range operands and quotient overflow raise overflow. Multiplication and / bind more tightly; MOD binds less tightly.",
         ),
         (
             "EQV",
-            "```basic\nresult = a EQV b\n```\nQBasic mode only. Complements the bitwise XOR of the operands after signed 64-bit casts that truncate fractions, saturate out-of-range values, and map NaN to zero. Returns an f64; both operands are always evaluated. Binds less tightly than XOR and more tightly than IMP; repeated EQV associates left to right.",
+            "```basic\nresult = a EQV b\n```\nComplements the bitwise XOR of numeric operands. When INTEGER, LONG, INT64, or BYTE participates, both operands must be exact integers and the result is INT64. NUMERIC operands use signed 64-bit casts that truncate fractions, saturate out-of-range values, and map NaN to zero, then return NUMERIC. With BOOL, evaluates logical equivalence; both operands are always evaluated. Binds less tightly than XOR and more tightly than IMP; repeated EQV associates left to right.",
         ),
         (
             "IMP",
-            "```basic\nresult = a IMP b\n```\nQBasic mode only. Combines the bitwise complement of the left operand with the right using OR, after signed 64-bit casts that truncate fractions, saturate out-of-range values, and map NaN to zero. Returns an f64; both operands are always evaluated. Has the lowest operator precedence, below EQV; repeated IMP associates left to right.",
+            "```basic\nresult = a IMP b\n```\nCombines the bitwise complement of the left numeric operand with the right using OR. When INTEGER, LONG, INT64, or BYTE participates, both operands must be exact integers and the result is INT64. NUMERIC operands use signed 64-bit casts that truncate fractions, saturate out-of-range values, and map NaN to zero, then return NUMERIC. With BOOL, evaluates logical implication; both operands are always evaluated. Has the lowest operator precedence, below EQV; repeated IMP associates left to right.",
         ),
         (
             "LIKE",
-            "```basic\nmatched = text$ LIKE pattern$\n```\nCase-sensitive whole-string wildcard matching in both Rice dialects. Supports * (any sequence), ? (one Unicode scalar), # (one ASCII digit), [abc], [a-z], and [!abc]. Use [*], [?], [#], or [[] for literal wildcard characters; ] is literal outside a class. Empty, unclosed, or reversed-range classes raise illegal function call. Both operands must be strings and are evaluated once, left to right. Comparison precedence; true is -1 in QB and 1 in ANSI, false is 0. Rice extension, without locale collation or Unicode normalization.",
+            "```basic\nmatched = text$ LIKE pattern$\n```\nCase-sensitive whole-string wildcard matching. Supports * (any sequence), ? (one Unicode scalar), # (one ASCII digit), [abc], [a-z], and [!abc]. Use [*], [?], [#], or [[] for literal wildcard characters; ] is literal outside a class. Empty, unclosed, or reversed-range classes raise illegal function call. Both operands must be strings and are evaluated once, left to right. Comparison precedence; true is -1 and false is 0. No locale collation or Unicode normalization is applied.",
         ),
         (
             "FOR",
-            "```basic\nFOR var = start TO end [STEP inc]\n  ...\nNEXT [var [, outer ...]]\n```\nCounted loop. Default STEP is 1. NEXT may close several nested FOR loops, listing their variables from innermost to outermost, in either Rice dialect.",
+            "```basic\nFOR var = start TO end [STEP inc]\n  ...\nNEXT [var [, outer ...]]\n```\nCounted loop. Default STEP is 1. NEXT may close several nested FOR loops, listing their variables from innermost to outermost.",
         ),
         (
             "NEXT",
-            "```basic\nNEXT\nNEXT i\nNEXT k, j, i\n```\nCloses one FOR loop when bare, or the named nested FOR loops from innermost to outermost. Each name must match the corresponding loop variable. A list cannot cross an unfinished IF, DO, WHILE, or procedure block. Supported in both Rice dialects.",
+            "```basic\nNEXT\nNEXT i\nNEXT k, j, i\n```\nCloses one FOR loop when bare, or the named nested FOR loops from innermost to outermost. Each name must match the corresponding loop variable. A list cannot cross an unfinished IF, DO, WHILE, or procedure block.",
         ),
         (
             "WHILE",
-            "```basic\nWHILE condition\n  ...\nWEND\n```\nLoop while condition is true. END WHILE is also accepted. EXIT WHILE leaves the nearest active WHILE loop in this procedure, without another condition check; supported as a Rice extension in both modes.",
+            "```basic\nWHILE condition\n  ...\nWEND\n```\nLoop while condition is true. END WHILE is also accepted. EXIT WHILE leaves the nearest active WHILE loop in this procedure, without another condition check.",
         ),
         (
             "WEND",
-            "```basic\nWHILE condition\n  ...\nWEND\n```\nEnds a classic QuickBasic-style WHILE loop.",
+            "```basic\nWHILE condition\n  ...\nWEND\n```\nEnds a WHILE loop.",
         ),
         (
             "DO",
@@ -1136,11 +1384,11 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "SELECT",
-            "```basic\nSELECT CASE expression\n  CASE value[, value...]\n    ...\n  CASE ELSE\n    ...\nEND SELECT\n```\nMulti-way branch based on expression value. EXIT SELECT leaves the nearest active SELECT CASE in this procedure, including from CASE ELSE; supported as a Rice extension in both modes.",
+            "```basic\nSELECT CASE expression\n  CASE value[, value...]\n    ...\n  CASE ELSE\n    ...\nEND SELECT\n```\nMulti-way branch based on expression value. EXIT SELECT leaves the nearest active SELECT CASE in this procedure, including from CASE ELSE.",
         ),
         (
             "EXIT",
-            "```basic\nEXIT {FOR|DO|WHILE|SELECT|SUB|FUNCTION}\n```\nLeaves the matching construct. EXIT WHILE and EXIT SELECT are Rice extensions in both dialects: they propagate through intervening blocks, are consumed by the nearest matching active loop/selection, and cannot escape a SUB or FUNCTION. Unmatched uses raise a runtime error.",
+            "```basic\nEXIT {FOR|DO|WHILE|SELECT|SUB|FUNCTION}\n```\nLeaves the matching construct. EXIT WHILE and EXIT SELECT propagate through intervening blocks, are consumed by the nearest matching active loop/selection, and cannot escape a SUB or FUNCTION. Unmatched uses raise a runtime error.",
         ),
         (
             "GOTO",
@@ -1148,31 +1396,31 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "GOSUB",
-            "```basic\nGOSUB label\n...\nRETURN\n```\nQuickBasic compatibility mode only. Calls a label using the GOSUB return stack.",
+            "```basic\nGOSUB label\n...\nRETURN\n```\nCalls a label using the GOSUB return stack.",
         ),
         (
             "RETURN",
-            "```basic\nRETURN [label_or_line]\n```\nQuickBasic compatibility mode only. Ends the most recent GOSUB, then continues after its call or jumps to the optional label in the caller's active scope. RETURN with a label still requires an active GOSUB and unwinds exactly one call. Procedure-local use is a Rice extension; it cannot cross a SUB or FUNCTION boundary.",
+            "```basic\nRETURN [label_or_line]\n```\nEnds the most recent GOSUB, then continues after its call or jumps to the optional label in the caller's active scope. RETURN with a label still requires an active GOSUB and unwinds exactly one call. Procedure-local use cannot cross a SUB or FUNCTION boundary.",
         ),
         (
             "ON",
-            "```basic\nON expr GOTO label1, label2\nON expr GOSUB label1, label2\nON ERROR GOTO handler\n```\nQuickBasic compatibility mode only. Performs computed jumps/calls or installs a classic error handler.",
+            "```basic\nON expr GOTO label1, label2\nON expr GOSUB label1, label2\nON ERROR GOTO handler\n```\nPerforms computed jumps/calls or installs an ON ERROR handler.",
         ),
         (
             "ON GOTO",
-            "```basic\nON expr GOTO label1, label2[, label3...]\n```\nQuickBasic compatibility mode only. Jumps to the label selected by the 1-based numeric expression.",
+            "```basic\nON expr GOTO label1, label2[, label3...]\n```\nJumps to the label selected by the 1-based numeric expression.",
         ),
         (
             "ON GOSUB",
-            "```basic\nON expr GOSUB label1, label2[, label3...]\n```\nQuickBasic compatibility mode only. Calls the label selected by the 1-based numeric expression.",
+            "```basic\nON expr GOSUB label1, label2[, label3...]\n```\nCalls the label selected by the 1-based numeric expression.",
         ),
         (
             "ERROR",
-            "```basic\nERROR code\n```\nQuickBasic compatibility mode only. Raises a classic BASIC error code that can be trapped with `ON ERROR GOTO`.",
+            "```basic\nERROR code\n```\nRaises a Rice error code that can be trapped with `ON ERROR GOTO`.",
         ),
         (
             "RESUME",
-            "```basic\nRESUME\nRESUME NEXT\nRESUME label\n```\nQuickBasic compatibility mode only. Resumes execution after a classic `ON ERROR GOTO` handler. Resume is exact at top-level scope.",
+            "```basic\nRESUME\nRESUME NEXT\nRESUME label\n```\nResumes execution after an `ON ERROR GOTO` handler. Resume is exact at top-level scope.",
         ),
         (
             "END",
@@ -1193,7 +1441,7 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "FUNCTION",
-            "```basic\nFUNCTION name(params) [AS type] [STATIC]\n  name = return_value\nEND FUNCTION\n```\nReturns the value assigned to its exact name. AS initializes a fresh result on every call: empty string, numeric zero, or a recursively initialized record. Explicit AS overrides the suffix; without AS, a $ name starts empty and other names start at zero. Assignments remain permissive; AS does not enforce the final value. Record fields may be set directly through the function name.",
+            "```basic\nFUNCTION name(params) [AS type] [STATIC]\n  name = return_value\nEND FUNCTION\n```\nReturns the value assigned to its exact name. Each call creates a fresh result with its declared type, and all result declarations enforce conversion. Explicit AS overrides the suffix. Without either, an unsuffixed result starts at NUMERIC zero and remains dynamic; DEFtype does not select function results. Fixed STRING * n results start padded to n characters. Record fields may be set directly through the function name.",
         ),
         (
             "CALL",
@@ -1201,48 +1449,48 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "DECLARE",
-            "```basic\nDECLARE SUB name (params)\nDECLARE FUNCTION name (params)\n```\nOptional declaration with no runtime validation or external linking. DECLARE FUNCTION does not accept a return AS clause.",
+            "```basic\nDECLARE SUB name (params)\nDECLARE FUNCTION name (params) [AS type]\n```\nDeclares a procedure signature. Before execution, Rice validates matching definitions for procedure kind, parameter count, BYVAL/BYREF modes, array markers, parameter types, and function result type. A missing definition may be supplied in a later REPL submission. Parameter names may differ; NUMERIC and DOUBLE are aliases. DECLARE does not link external code.",
         ),
         (
             "BYVAL",
-            "```basic\nSUB name (BYVAL x AS NUMERIC)\n```\nPasses a parameter by value. This is the default in ANSI mode.",
+            "```basic\nSUB name (BYVAL x AS NUMERIC)\n```\nPasses a parameter by value. Use BYREF for copy-in/copy-out parameters.",
         ),
         (
             "BYREF",
-            "```basic\nSUB name (BYREF x AS NUMERIC)\nCALL name(values(i))\n```\nCopies a value in and writes it back on exit for a scalar variable or array element argument, including record-valued elements. Array indices are evaluated once when the argument is read. Constants, function results, fields, parentheses, and other expressions are not written back. This is copy-in/copy-out, not a live reference; later aliased parameters write back last, including when the procedure errors. Default in QBasic mode; explicit BYREF is supported in ANSI mode. Array parameters declared with () still do not bind whole arrays.",
+            "```basic\nSUB name (BYREF x AS NUMERIC)\nCALL name(values(i))\n```\nCopies a value in and writes it back on exit for a scalar variable or array element argument, including record-valued elements. Array indices are evaluated once when the argument is read. Constants, function results, fields, parentheses, and other expressions are not written back. This is copy-in/copy-out, not a live reference; later aliased parameters write back last, including when the procedure errors. BYREF is the default. Array parameters declared with () still do not bind whole arrays.",
         ),
         (
             "DEF",
-            "```basic\nDEF FNname[(params)] = expression\n```\nQBasic mode only. Also accepts a multiline body ending in END DEF. FN is a convention, not a required prefix.",
+            "```basic\nDEF FNname[(params)] = expression\n```\nAlso accepts a multiline body ending in END DEF. FN is a convention, not a required prefix.",
         ),
         (
             "DEFSTR",
-            "```basic\nDEFSTR A-Z\n```\nQuickBasic compatibility mode only. Subsequently auto-initialized unsuffixed variables beginning with the listed letters default to string. DIM has its own defaults and does not inherit DEFSTR. DEFINT, DEFLNG, DEFSNG, and DEFDBL are accepted for numeric compatibility.",
+            "```basic\nDEFSTR A-Z\n```\nSets STRING as the default type for subsequently declared or auto-created unsuffixed names with the listed initials. Explicit AS or a suffix takes precedence; existing declarations retain their type.",
         ),
         (
             "DEFINT",
-            "```basic\nDEFINT A-Z\n```\nQuickBasic compatibility mode only. Accepted for default numeric type compatibility; numeric values are still stored as doubles internally.",
+            "```basic\nDEFINT A-Z\n```\nSets signed 16-bit INTEGER as the default type for subsequently declared or auto-created unsuffixed names with the listed initials. Explicit AS or a suffix takes precedence; existing declarations retain their type.",
         ),
         (
             "DEFLNG",
-            "```basic\nDEFLNG A-Z\n```\nQuickBasic compatibility mode only. Accepted for default numeric type compatibility; numeric values are still stored as doubles internally.",
+            "```basic\nDEFLNG A-Z\n```\nSets signed 32-bit LONG as the default type for subsequently declared or auto-created unsuffixed names with the listed initials. Explicit AS or a suffix takes precedence; existing declarations retain their type.",
         ),
         (
             "DEFSNG",
-            "```basic\nDEFSNG A-Z\n```\nQuickBasic compatibility mode only. Accepted for default numeric type compatibility; numeric values are still stored as doubles internally.",
+            "```basic\nDEFSNG A-Z\n```\nSets 32-bit SINGLE as the default type for subsequently declared or auto-created unsuffixed names with the listed initials. Explicit AS or a suffix takes precedence; existing declarations retain their type.",
         ),
         (
             "DEFDBL",
-            "```basic\nDEFDBL A-Z\n```\nQuickBasic compatibility mode only. Accepted for default numeric type compatibility; numeric values are still stored as doubles internally.",
+            "```basic\nDEFDBL A-Z\n```\nSets NUMERIC/DOUBLE (64-bit floating point) as the default type for subsequently declared or auto-created unsuffixed names with the listed initials. Explicit AS or a suffix takes precedence; existing declarations retain their type.",
         ),
         // Data
         (
             "DATA",
-            "```basic\nDATA value[, value...]\nDATA +42, -3, , \"She said \"\"hi\"\"\",\n```\nDefines literal data in either dialect. Numeric literals accept one leading + or -; expressions are not allowed. Omitted fields between commas or at either end are empty items; DATA , supplies two, while bare DATA supplies none. READ converts an empty item to zero or an empty string according to the target's current/default type; MAT READ uses zero. Doubled quotes inside a string literal represent one quote.",
+            "```basic\nDATA value[, value...]\nDATA +42, -3, , \"She said \"\"hi\"\"\",\n```\nDefines literal data. Numeric literals accept one leading + or -; expressions are not allowed. Omitted fields between commas or at either end are empty items; DATA , supplies two, while bare DATA supplies none. READ converts an empty item to zero or an empty string according to the target's current/default type; MAT READ uses zero. Doubled quotes inside a string literal represent one quote.",
         ),
         (
             "READ",
-            "```basic\nREAD target[, target...]\nREAD values(i, j), names$(i)\n```\nReads DATA into scalar names or array elements in either dialect; record fields and slices are unsupported. Targets are resolved and assigned left to right; READ i, values(i) uses the newly read i. Explicit DATA values are not coerced. Empty DATA fields become zero or an empty string according to the current/default target type; a record target rejects an empty item without consuming it. Earlier assignments and consumed DATA are retained if a later target fails.",
+            "```basic\nREAD target[, target...]\nREAD values(i, j), names$(i)\n```\nReads DATA into scalar or array element destinations, applying declared type conversion. Integer targets require exact in-range values; fixed strings pad or truncate. Targets resolve left to right, so READ i, values(i) uses the new i. Empty fields supply the typed default; record targets reject an empty item without consuming it. Earlier assignments persist after a later failure; fields and slices are unsupported.",
         ),
         (
             "RESTORE",
@@ -1251,16 +1499,16 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         // User-defined types
         (
             "TYPE",
-            "```basic\nTYPE name\n  field AS type\n  ...\nEND TYPE\n```\nDefines a record in either dialect. Supports nested nonrecursive records and STRING * literal fields. Types supply defaults/QBasic binary layouts; field assignments are not type-checked or fixed-width in memory.",
+            "```basic\nTYPE name\n  field AS type\n  ...\nEND TYPE\n```\nDefines a Rice record with nested nonrecursive records. All fields enforce their declared type. STRING * n fields pad or truncate to n Unicode characters in memory. Record assignments require the same declared type. Field declarations also define binary serialization widths.",
         ),
         // Error handling
         (
             "WHEN EXCEPTION IN",
-            "```basic\nWHEN EXCEPTION IN\n  ...\nUSE\n  PRINT EXTYPE; EXTEXT$\nEND WHEN\n```\nStructured exception handling. Code in the guarded block is protected; the USE block handles errors.",
+            "```basic\nWHEN EXCEPTION IN\n  ...\nUSE\n  PRINT EXTYPE; EXTEXT$\nEND WHEN\n```\nStructured exception handling. Code in the guarded block is protected; the USE block handles errors. Local GOTO targets resolve within the protected body or USE handler before propagating outward.",
         ),
         (
             "RETRY",
-            "```basic\nRETRY\n```\nRe-executes the guarded block from the beginning after an error in a WHEN EXCEPTION handler.",
+            "```basic\nRETRY\n```\nRestarts the original guarded block from the beginning after an error, including statements before any earlier CONTINUE.",
         ),
         (
             "CONTINUE",
@@ -1269,20 +1517,20 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         // File I/O
         (
             "OPEN",
-            "```basic\nOPEN #n: NAME file$, ACCESS {INPUT|OUTPUT|OUTIN}, ORGANIZATION {SEQUENTIAL|STREAM}\nOPEN file$ FOR {INPUT|OUTPUT|APPEND|BINARY|RANDOM} AS #n\n```\nBoth forms are accepted in both dialects. GET/PUT use typed binary records in QBasic mode and a raw-string path in ANSI mode.",
+            "```basic\nOPEN #n: NAME file$, ACCESS {INPUT|OUTPUT|OUTIN}, ORGANIZATION {SEQUENTIAL|STREAM}\nOPEN file$ FOR {INPUT|OUTPUT|APPEND|BINARY|RANDOM} AS #n\n```\nBoth forms are accepted. GET/PUT use typed binary serialization, with raw transfers for BYTES buffers.",
         ),
         ("CLOSE", "```basic\nCLOSE #n\n```\nCloses an open file."),
         (
             "GET",
-            "```basic\nGET #channel [, position [, target]]\nGET #1, , records(i)\n```\nReads into a scalar or array element; members, slices, and whole-array operands are not supported. Channel, position, and indices are evaluated once before file I/O. QB uses typed binary serialization, including record arrays; ANSI retains raw string transfers. GET checks writable destinations before reading. Omitting the operand retains FIELD-buffer behavior.",
+            "```basic\nGET #channel [, position [, target]]\nGET #1, , records(i)\n```\nReads a scalar or array element using its declared binary layout: INTEGER 2 bytes, LONG/SINGLE 4, NUMERIC/DOUBLE/INT64 8, BOOL/BYTE 1, all little-endian. Explicit AS overrides suffixes. Records serialize fields recursively; BYTES buffers read their current length as raw bytes. Channel, position, and indices evaluate once; target validation occurs before reading. Members, slices, and whole arrays are unsupported. An omitted operand fills a FIELD record, padding only bytes beyond actual end-of-file with spaces.",
         ),
         (
             "PUT",
-            "```basic\nPUT #channel [, position [, source]]\nPUT #1, , values%(i, j)\n```\nWrites a scalar or array element; members, slices, and whole-array operands are not supported. Channel, position, and indices are evaluated once before file I/O. QB binary types use the original array name's suffix and record metadata, not the flattened element key. PUT permits constant sources. ANSI retains raw string transfers; omitted operands retain FIELD-buffer behavior.",
+            "```basic\nPUT #channel [, position [, source]]\nPUT #1, , values%(i, j)\n```\nWrites a scalar or array element using its declared binary layout; explicit AS overrides a name suffix. INTEGER uses 2 bytes, LONG/SINGLE 4, NUMERIC/DOUBLE/INT64 8, BOOL/BYTE 1, all little-endian. Records serialize fields recursively; top-level BYTES writes raw bytes. Channel, position, and indices evaluate once. Constant sources are permitted; members, slices, and whole arrays are unsupported. An omitted operand uses FIELD buffers.",
         ),
         (
             "SET POINTER",
-            "```basic\nSET #n: POINTER position\n```\nSets the file position for the next read or write.",
+            "```basic\nSET #n: POINTER position\n```\nFlushes pending output before setting the file position for the next read or write. Flush failure prevents the requested seek.",
         ),
         (
             "ASK POINTER",
@@ -1290,15 +1538,15 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "FIELD",
-            "```basic\nFIELD #n, width AS var$[, width AS var$...]\n```\nQuickBasic compatibility mode only. Maps string variables to byte slices of a channel record buffer. RANDOM mode is not enforced; ordinary assignment does not update the buffer.",
+            "```basic\nFIELD #n, width AS stringVar[, width AS stringVar ...]\n```\nMaps string variables to byte slices of a channel record buffer. Names may use $ or a STRING declaration. GET fills a complete record across buffered reads; only actual end-of-file leaves space padding. RANDOM mode is not enforced; ordinary assignment does not update the buffer.",
         ),
         (
             "LSET",
-            "```basic\nLSET var$ = expr$\n```\nQuickBasic compatibility mode only. Left-aligns into a FIELD slot or the existing string value's current byte width, padding/truncating as needed. AS STRING * length is not retained for this operation.",
+            "```basic\nLSET var$ = expr$\n```\nLeft-aligns into a FIELD slot or the existing string value's current byte width, padding/truncating as needed. A missing variable-length string uses the replacement width; an existing empty string stays empty. Fixed strings retain their declared character width.",
         ),
         (
             "RSET",
-            "```basic\nRSET var$ = expr$\n```\nQuickBasic compatibility mode only. Right-aligns into a FIELD slot or the existing string value's current byte width, padding/truncating as needed. AS STRING * length is not retained for this operation.",
+            "```basic\nRSET var$ = expr$\n```\nRight-aligns into a FIELD slot or the existing string value's current byte width, padding/truncating as needed. A missing variable-length string uses the replacement width; an existing empty string stays empty. Fixed strings retain their declared character width.",
         ),
         // File system
         ("NAME", "```basic\nNAME old$ AS new$\n```\nRenames a file."),
@@ -1307,7 +1555,7 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ("RMDIR", "```basic\nRMDIR dir$\n```\nRemoves a directory."),
         (
             "RESET",
-            "```basic\nRESET\n```\nFlushes and closes all open files.",
+            "```basic\nRESET\n```\nFlushes and closes all open files. Flush errors propagate and leave handles available for retry.",
         ),
         (
             "CHDIR",
@@ -1343,7 +1591,7 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         // Matrix
         (
             "MAT",
-            "```basic\nMAT C = A + B\nMAT C = A * B\nMAT B = INV(A)\nMAT B = TRN(A)\nMAT A = ZER\nMAT A = CON\nMAT A = IDN\nMAT READ A\nMAT PRINT A\nMAT PRINT #1, A\nMAT INPUT #2, A\nPRINT DET(A)\n```\nTwo-dimensional numeric matrix operations in both dialects. Declare destination bounds to match the result; MAT does not resize metadata. DET(A) computes a square matrix determinant without inversion. MAT READ converts empty DATA fields to zero. File MAT PRINT writes comma-separated rows; file MAT INPUT reads numeric fields in row-major order without console prompts. Each channel expression is evaluated once. Input replaces the matrix only after all fields succeed; errors leave consumed fields consumed. Console MAT PRINT uses spaces.",
+            "```basic\nMAT C = A + B\nMAT C = A * B\nMAT B = INV(A)\nMAT B = TRN(A)\nMAT A = ZER\nMAT A = CON\nMAT A = IDN\nMAT READ A\nMAT PRINT A\nMAT PRINT #1, A\nMAT INPUT #2, A\nPRINT DET(A)\n```\nTwo-dimensional numeric matrix operations. Declare destination bounds to match the result; MAT does not resize metadata. DET(A) computes a square matrix determinant without inversion. MAT READ converts empty DATA fields to zero. File MAT PRINT writes comma-separated rows; file MAT INPUT reads numeric fields in row-major order without console prompts. Each channel expression is evaluated once. Input replaces the matrix only after all fields succeed; errors leave consumed fields consumed. Console MAT PRINT uses spaces. Small matrices support bounds across the signed 64-bit index range; unrepresentable dimensions or destination indices raise overflow.",
         ),
         // System
         (
@@ -1366,6 +1614,10 @@ fn builtin_hover(name: &str) -> Option<&'static str> {
     BUILTIN_HOVER_DOCS
         .get(name)
         .or_else(|| {
+            // A type keyword such as STRING takes precedence over an omitted-$ alias.
+            if KEYWORD_HOVER_DOCS.contains_key(name) {
+                return None;
+            }
             let with_dollar = format!("{}$", name);
             BUILTIN_HOVER_DOCS.get(with_dollar.as_str())
         })
@@ -1499,6 +1751,12 @@ fn token_name(tok: &rice::token::Token) -> Option<String> {
         rice::token::Token::KwEndWhile => Some("END WHILE".into()),
         rice::token::Token::KwEndWhen => Some("END WHEN".into()),
         rice::token::Token::KwShared => Some("SHARED".into()),
+        rice::token::Token::KwCommon => Some("COMMON".into()),
+        rice::token::Token::KwInteger => Some("INTEGER".into()),
+        rice::token::Token::KwLong => Some("LONG".into()),
+        rice::token::Token::KwSingle => Some("SINGLE".into()),
+        rice::token::Token::KwDouble => Some("DOUBLE".into()),
+        rice::token::Token::KwString => Some("STRING".into()),
         rice::token::Token::KwStatic => Some("STATIC".into()),
         rice::token::Token::KwByVal => Some("BYVAL".into()),
         rice::token::Token::KwByRef => Some("BYREF".into()),
@@ -1773,58 +2031,244 @@ mod tests {
     use super::*;
 
     #[test]
-    fn const_lists_register_every_symbol_in_both_dialects() {
-        for dialect in ["QB", "ANSI"] {
-            let source = format!(
-                "OPTION DIALECT \"{dialect}\"\nCONST First = 1, Second = First + 1, Title$ = \"ok\"\nSUB Worker\nCONST LocalOne = 2, LocalTwo = LocalOne + 1\nEND SUB\nPRINT Second; Title$\n"
+    fn native_types_have_completion_hover_and_typed_signatures() {
+        for (name, canonical) in [
+            ("NUMERIC", "NUMERIC"),
+            ("INTEGER", "INTEGER"),
+            ("LONG", "LONG"),
+            ("SINGLE", "SINGLE"),
+            ("DOUBLE", "DOUBLE"),
+            ("STRING", "STRING"),
+            ("INT64", "INT64"),
+            ("BOOL", "BOOL"),
+            ("BOOLEAN", "BOOL"),
+            ("BYTE", "BYTE"),
+            ("BYTES", "BYTES"),
+        ] {
+            let state = analyze_source(
+                format!(
+                    "DIM item AS {name}\nFUNCTION Typed(value AS {name}) AS {name}\nEND FUNCTION\n"
+                ),
+                1,
             );
-            let state = analyze_source(source, 1);
             assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
-            assert_eq!(state.symbols.constants.len(), 5);
-            for (name, line) in [
-                ("FIRST", 2),
-                ("SECOND", 2),
-                ("TITLE$", 2),
-                ("LOCALONE", 4),
-                ("LOCALTWO", 4),
-            ] {
-                let symbol = find_symbol(&state.symbols, name).unwrap();
-                assert_eq!(symbol.line, line);
-                assert_eq!(symbol.detail.as_deref(), Some("CONST"));
-            }
+            assert_eq!(
+                resolve_token_name(&state, Position::new(0, 12)).as_deref(),
+                Some(name)
+            );
+            assert_eq!(
+                TYPE_COMPLETIONS
+                    .iter()
+                    .find(|item| item.label == name)
+                    .unwrap()
+                    .kind,
+                Some(CompletionItemKind::TYPE_PARAMETER)
+            );
+            let hover = builtin_hover(name).or_else(|| keyword_hover(name)).unwrap();
+            assert!(hover.contains("Rice"), "{name}");
+            assert!(hover.contains(&format!("AS {name}")), "{name}");
+            let signature = format!("FUNCTION TYPED(VALUE AS {canonical}) AS {canonical}");
+            assert_eq!(
+                find_symbol(&state.symbols, "TYPED")
+                    .unwrap()
+                    .detail
+                    .as_deref(),
+                Some(signature.as_str())
+            );
+        }
+        assert!(keyword_hover("DIM").unwrap().contains("enforce"));
+        assert!(keyword_hover("FUNCTION").unwrap().contains("enforce"));
+        assert!(keyword_hover("TYPE").unwrap().contains("enforce"));
+    }
+
+    #[test]
+    fn native_value_builtins_have_completion_and_hover() {
+        for (name, call, expected) in [
+            ("CINT64", "CINT64(\"9223372036854775807\")", "signed 64-bit"),
+            ("CBOOL", "CBOOL(1)", "boolean"),
+            ("CBYTE", "CBYTE(255)", "0..255"),
+            ("TRUE", "TRUE()", "BOOL"),
+            ("FALSE", "FALSE()", "BOOL"),
+            ("TYPEOF$", "TYPEOF$(1)", "runtime type"),
+            ("BYTES", "BYTES(0, 255)", "binary buffer"),
+            ("BYTEBUFFER", "BYTEBUFFER(3, 255)", "length"),
+            ("BYTELEN", "BYTELEN(BYTES())", "number of bytes"),
+            ("BYTEAT", "BYTEAT(BYTES(255), 1)", "1-based"),
+            ("BYTESET", "BYTESET(BYTES(0), 1, 255)", "copy"),
+            ("BYTESLICE", "BYTESLICE(BYTES(1, 2), 1, 1)", "1-based"),
+            ("UTF8ENCODE", "UTF8ENCODE(\"é😀\")", "UTF-8"),
+            ("UTF8DECODE$", "UTF8DECODE$(BYTES())", "Invalid UTF-8"),
+            ("HEXENCODE$", "HEXENCODE$(BYTES(255))", "uppercase"),
+            ("HEXDECODE", "HEXDECODE(\"00ff\")", "even number"),
+        ] {
+            let state = analyze_source(format!("PRINT {call}\n"), 1);
+            assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+            assert_eq!(
+                resolve_token_name(&state, Position::new(0, 6)).as_deref(),
+                Some(name)
+            );
+            assert!(builtin_hover(name).unwrap().contains(expected), "{name}");
+            assert_eq!(
+                BUILTIN_COMPLETIONS
+                    .iter()
+                    .find(|item| item.label == name)
+                    .unwrap()
+                    .kind,
+                Some(CompletionItemKind::FUNCTION)
+            );
+        }
+        assert!(
+            builtin_hover("LEN")
+                .unwrap()
+                .contains("For BYTES, counts bytes")
+        );
+    }
+
+    #[test]
+    fn const_lists_register_every_symbol() {
+        let source = "CONST First = 1, Second = First + 1, Title$ = \"ok\"\nSUB Worker\nCONST LocalOne = 2, LocalTwo = LocalOne + 1\nEND SUB\nPRINT Second; Title$\n".to_string();
+        let state = analyze_source(source, 1);
+        assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+        assert_eq!(state.symbols.constants.len(), 5);
+        for (name, line) in [
+            ("FIRST", 1),
+            ("SECOND", 1),
+            ("TITLE$", 1),
+            ("LOCALONE", 3),
+            ("LOCALTWO", 3),
+        ] {
+            let symbol = find_symbol(&state.symbols, name).unwrap();
+            assert_eq!(symbol.line, line);
+            let expected = if name == "TITLE$" {
+                "CONST TITLE$ AS STRING".to_owned()
+            } else {
+                format!("CONST {name}")
+            };
+            assert_eq!(symbol.detail.as_deref(), Some(expected.as_str()));
         }
         let state = analyze_source("CONST first = 1,\n".into(), 1);
         assert!(!state.diagnostics.is_empty());
     }
 
     #[test]
+    fn typed_constants_scope_declarations_and_static_variables_keep_symbol_types() {
+        let source = "CONST limit AS INTEGER = 4, caption AS STRING * 3 = \"hi\"\nCOMMON SHARED total AS LONG, samples() AS SINGLE\nSUB Worker\nSHARED sharedValue AS DOUBLE\nSTATIC calls AS INTEGER, cache AS STRING * 4\nEND SUB\nDIM count%\nDIM SHARED result(2) AS LONG\n";
+        let state = analyze_source(source.into(), 1);
+        assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+        for (name, line, detail) in [
+            ("LIMIT", 1, "CONST LIMIT AS INTEGER"),
+            ("CAPTION", 1, "CONST CAPTION AS STRING * 3"),
+            ("TOTAL", 2, "COMMON SHARED TOTAL AS LONG"),
+            ("SAMPLES", 2, "COMMON SHARED SAMPLES() AS SINGLE"),
+            ("SHAREDVALUE", 4, "SHARED SHAREDVALUE AS DOUBLE"),
+            ("CALLS", 5, "STATIC CALLS AS INTEGER"),
+            ("CACHE", 5, "STATIC CACHE AS STRING * 4"),
+            ("COUNT%", 7, "DIM COUNT% AS INTEGER"),
+            ("RESULT", 8, "DIM SHARED RESULT() AS LONG"),
+        ] {
+            let symbol = find_symbol(&state.symbols, name).unwrap();
+            assert_eq!(symbol.line, line, "{name}");
+            assert_eq!(symbol.detail.as_deref(), Some(detail), "{name}");
+        }
+        assert!(
+            KEYWORD_COMPLETIONS
+                .iter()
+                .any(|item| item.label == "COMMON")
+        );
+        assert!(keyword_hover("COMMON").unwrap().contains("AS type"));
+        assert_eq!(
+            resolve_token_name(&state, Position::new(1, 0)).as_deref(),
+            Some("COMMON")
+        );
+        let upgraded = analyze_source("count = 1\nDIM count AS LONG\n".into(), 1);
+        assert_eq!(
+            find_symbol(&upgraded.symbols, "COUNT")
+                .unwrap()
+                .detail
+                .as_deref(),
+            Some("DIM COUNT AS LONG")
+        );
+    }
+
+    #[test]
+    fn declared_procedures_preserve_typed_signatures_and_definitions_take_precedence() {
+        let state = analyze_source("DECLARE FUNCTION Convert(BYVAL item AS INTEGER) AS LONG\nDECLARE SUB Update(value AS STRING * 4)\n".into(), 1);
+        assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+        assert_eq!(
+            find_symbol(&state.symbols, "CONVERT")
+                .unwrap()
+                .detail
+                .as_deref(),
+            Some("DECLARE FUNCTION CONVERT(BYVAL ITEM AS INTEGER) AS LONG")
+        );
+        assert_eq!(
+            find_symbol(&state.symbols, "UPDATE")
+                .unwrap()
+                .detail
+                .as_deref(),
+            Some("DECLARE SUB UPDATE(VALUE AS STRING * 4)")
+        );
+        let state = analyze_source("DECLARE FUNCTION Convert(BYVAL n AS INTEGER) AS LONG\nFUNCTION Convert(BYVAL n AS INTEGER) AS LONG\nEND FUNCTION\n".into(), 1);
+        assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+        let symbol = find_symbol(&state.symbols, "CONVERT").unwrap();
+        assert_eq!(symbol.line, 2);
+        assert_eq!(
+            symbol.detail.as_deref(),
+            Some("FUNCTION CONVERT(BYVAL N AS INTEGER) AS LONG")
+        );
+        assert_eq!(state.symbols.functions.len(), 1);
+        assert!(keyword_hover("DECLARE").unwrap().contains("validates"));
+    }
+
+    #[test]
+    fn typed_conversion_and_assignment_docs_describe_enforcement() {
+        for (name, expected) in [
+            ("CINT", "16-bit INTEGER"),
+            ("CLNG", "32-bit LONG"),
+            ("CSNG", "32-bit SINGLE"),
+            ("TYPEOF$", "DOUBLE shares"),
+            ("CVI", "16-bit INTEGER"),
+            ("CVL", "32-bit LONG"),
+            ("CVS", "32-bit SINGLE"),
+        ] {
+            assert!(builtin_hover(name).unwrap().contains(expected), "{name}");
+        }
+        for (name, expected) in [
+            ("DIM", "All declarations enforce"),
+            ("TYPE", "All fields enforce"),
+            ("STRING", "Unicode scalar"),
+            ("GET", "Explicit AS overrides"),
+            ("PUT", "explicit AS overrides"),
+            ("DEFSNG", "32-bit SINGLE"),
+        ] {
+            assert!(keyword_hover(name).unwrap().contains(expected), "{name}");
+        }
+    }
+
+    #[test]
     fn indexed_swap_registers_targets_and_preserves_index_references() {
-        for dialect in ["QB", "ANSI"] {
-            let state = analyze_source(
-                format!(
-                    "OPTION DIALECT \"{dialect}\"\nDIM index\nSWAP first(index, 2), second$(index)\n"
-                ),
-                1,
+        let state = analyze_source(
+            "DIM index\nSWAP first(index, 2), second$(index)\n".to_string(),
+            1,
+        );
+        assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+        for (column, name, definition_line) in
+            [(5, "FIRST", 2), (11, "INDEX", 1), (22, "SECOND$", 2)]
+        {
+            assert_eq!(
+                resolve_token_name(&state, Position::new(1, column)).as_deref(),
+                Some(name)
             );
-            assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
-            for (column, name, definition_line) in
-                [(5, "FIRST", 3), (11, "INDEX", 2), (22, "SECOND$", 3)]
-            {
-                assert_eq!(
-                    resolve_token_name(&state, Position::new(2, column)).as_deref(),
-                    Some(name)
-                );
-                assert_eq!(
-                    find_symbol(&state.symbols, name).unwrap().line,
-                    definition_line
-                );
-            }
-            assert_eq!(state.symbols.variables.len(), 3);
-            for invalid in ["SWAP a(), b", "SWAP a(1:2), b", "SWAP a.x, b"] {
-                let state = analyze_source(format!("OPTION DIALECT \"{dialect}\"\n{invalid}\n"), 1);
-                assert_eq!(state.diagnostics.len(), 1, "{invalid}");
-                assert_eq!(state.diagnostics[0].range.start.line, 1);
-            }
+            assert_eq!(
+                find_symbol(&state.symbols, name).unwrap().line,
+                definition_line
+            );
+        }
+        assert_eq!(state.symbols.variables.len(), 3);
+        for invalid in ["SWAP a(), b", "SWAP a(1:2), b", "SWAP a.x, b"] {
+            let state = analyze_source(format!("{invalid}\n"), 1);
+            assert_eq!(state.diagnostics.len(), 1, "{invalid}");
+            assert_eq!(state.diagnostics[0].range.start.line, 0);
         }
         assert!(
             keyword_hover("SWAP")
@@ -1845,16 +2289,11 @@ mod tests {
 
     #[test]
     fn data_fields_and_return_targets_have_diagnostics_and_hover() {
-        for dialect in ["QB", "ANSI"] {
-            let state = analyze_source(
-                format!("OPTION DIALECT \"{dialect}\"\nDATA +2, -3, , \"😀\",\nREAD n, m, s$\n"),
-                1,
-            );
-            assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
-            for data in ["DATA +", "DATA 1 + 2", "DATA --1"] {
-                let state = analyze_source(format!("OPTION DIALECT \"{dialect}\"\n{data}\n"), 1);
-                assert_eq!(state.diagnostics.len(), 1, "{data}");
-            }
+        let state = analyze_source("DATA +2, -3, , \"😀\",\nREAD n, m, s$\n".to_string(), 1);
+        assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+        for data in ["DATA +", "DATA 1 + 2", "DATA --1"] {
+            let state = analyze_source(format!("{data}\n"), 1);
+            assert_eq!(state.diagnostics.len(), 1, "{data}");
         }
         let state = analyze_source(
             "RETURN destination\nRETURN 30\ndestination: PRINT 1\n30 END\n".into(),
@@ -1871,9 +2310,6 @@ mod tests {
                 definition_line
             );
         }
-        let ansi = analyze_source("OPTION DIALECT \"ANSI\"\nRETURN destination\n".into(), 1);
-        assert_eq!(ansi.diagnostics.len(), 1);
-        assert_eq!(ansi.diagnostics[0].range.start.line, 1);
         assert!(
             keyword_hover("RETURN")
                 .unwrap()
@@ -1894,54 +2330,47 @@ mod tests {
     #[test]
     fn record_len_and_matrix_det_have_builtin_hover_and_completion() {
         let line = "PRINT \"😀\"; LEN(record), DET(matrix), DET(matrix()) ' LEN DET";
-        for dialect in ["QB", "ANSI"] {
-            let state = analyze_source(format!("OPTION DIALECT \"{dialect}\"\n{line}\n"), 1);
-            assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
-            for (name, expected) in [
-                ("LEN", "record_expression"),
-                ("DET", "two-dimensional MAT shape"),
-            ] {
-                let column = line[..line.find(name).unwrap()].encode_utf16().count() as u32;
-                assert_eq!(
-                    resolve_token_name(&state, Position::new(1, column)).as_deref(),
-                    Some(name)
-                );
-                assert!(builtin_hover(name).unwrap().contains(expected));
-                assert_eq!(
-                    BUILTIN_COMPLETIONS
-                        .iter()
-                        .find(|item| item.label == name)
-                        .unwrap()
-                        .kind,
-                    Some(CompletionItemKind::FUNCTION)
-                );
-                let comment_column =
-                    line[..line.rfind(name).unwrap()].encode_utf16().count() as u32;
-                assert_eq!(
-                    resolve_token_name(&state, Position::new(1, comment_column)),
-                    None
-                );
-            }
+        let state = analyze_source(format!("{line}\n"), 1);
+        assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+        for (name, expected) in [
+            ("LEN", "record_expression"),
+            ("DET", "two-dimensional MAT shape"),
+        ] {
+            let column = line[..line.find(name).unwrap()].encode_utf16().count() as u32;
+            assert_eq!(
+                resolve_token_name(&state, Position::new(0, column)).as_deref(),
+                Some(name)
+            );
+            assert!(builtin_hover(name).unwrap().contains(expected));
+            assert_eq!(
+                BUILTIN_COMPLETIONS
+                    .iter()
+                    .find(|item| item.label == name)
+                    .unwrap()
+                    .kind,
+                Some(CompletionItemKind::FUNCTION)
+            );
+            let comment_column = line[..line.rfind(name).unwrap()].encode_utf16().count() as u32;
+            assert_eq!(
+                resolve_token_name(&state, Position::new(0, comment_column)),
+                None
+            );
         }
     }
 
     #[test]
     fn byref_element_arguments_preserve_array_and_index_references() {
-        for dialect in ["QB", "ANSI"] {
-            let state = analyze_source(
-                format!(
-                    "OPTION DIALECT \"{dialect}\"\nDIM values(2), index\nSUB Update(BYREF item)\nitem = 3\nEND SUB\nCALL Update(values(index))\n"
-                ),
-                1,
+        let state = analyze_source(
+            "DIM values(2), index\nSUB Update(BYREF item)\nitem = 3\nEND SUB\nCALL Update(values(index))\n".to_string(),
+            1,
+        );
+        assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+        for (column, name) in [(12, "VALUES"), (19, "INDEX")] {
+            assert_eq!(
+                resolve_token_name(&state, Position::new(4, column)).as_deref(),
+                Some(name)
             );
-            assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
-            for (column, name) in [(12, "VALUES"), (19, "INDEX")] {
-                assert_eq!(
-                    resolve_token_name(&state, Position::new(5, column)).as_deref(),
-                    Some(name)
-                );
-                assert_eq!(find_symbol(&state.symbols, name).unwrap().line, 2);
-            }
+            assert_eq!(find_symbol(&state.symbols, name).unwrap().line, 1);
         }
         let hover = keyword_hover("BYREF").unwrap();
         assert!(hover.contains("including record-valued elements"));
@@ -2053,77 +2482,81 @@ mod tests {
                 find_symbol(&state.symbols, &name).unwrap().line,
                 expected_line
             );
-            assert!(keyword_hover(branch).unwrap().contains("QBasic"));
+            assert!(
+                keyword_hover(branch)
+                    .unwrap()
+                    .contains("shorthand for GOTO")
+            );
         }
         assert!(keyword_hover("IF").unwrap().contains("THEN 100 ELSE 200"));
     }
 
     #[test]
-    fn min_max_have_completions_and_hover_in_both_dialects() {
-        for dialect in ["QB", "ANSI"] {
-            let source = format!("OPTION DIALECT \"{dialect}\"\nPRINT MIN(3, MAX(1, 2))\n");
-            let state = analyze_source(source, 1);
-            assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
-            for (expected_name, character) in [("MIN", 6), ("MAX", 13)] {
-                let name = resolve_token_name(&state, Position::new(1, character)).unwrap();
-                assert_eq!(name, expected_name);
-                let hover = builtin_hover(&name).unwrap();
-                assert!(hover.contains("one or more numeric arguments"));
-                assert!(hover.contains("NaN propagates"));
-                let completion = BUILTIN_COMPLETIONS
-                    .iter()
-                    .find(|item| item.label == name)
-                    .unwrap();
-                assert_eq!(completion.kind, Some(CompletionItemKind::FUNCTION));
-            }
+    fn min_max_have_completions_and_hover() {
+        let source = "PRINT MIN(3, MAX(1, 2))\n".to_string();
+        let state = analyze_source(source, 1);
+        assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+        for (expected_name, character) in [("MIN", 6), ("MAX", 13)] {
+            let name = resolve_token_name(&state, Position::new(0, character)).unwrap();
+            assert_eq!(name, expected_name);
+            let hover = builtin_hover(&name).unwrap();
+            assert!(hover.contains("one or more numeric arguments"));
+            assert!(hover.contains("NaN propagates"));
+            let completion = BUILTIN_COMPLETIONS
+                .iter()
+                .find(|item| item.label == name)
+                .unwrap();
+            assert_eq!(completion.kind, Some(CompletionItemKind::FUNCTION));
         }
     }
 
     #[test]
-    fn qbasic_expression_and_branch_syntax_produce_ansi_diagnostics() {
-        for statement in ["PRINT 7 \\ 2", "IF 1 THEN 30 ELSE 40"] {
-            let source = format!("OPTION DIALECT \"ANSI\"\n{statement}\n30 END\n40 END\n");
-            let state = analyze_source(source, 1);
-            assert_eq!(state.diagnostics.len(), 1, "{statement}");
+    fn removed_dialect_directives_have_diagnostics_and_no_completion() {
+        for name in ["QB", "ANSI", "QBasic 1.1", "unknown"] {
+            let state = analyze_source(format!("OPTION DIALECT \"{name}\"\nPRINT 42\n"), 1);
+            assert_eq!(state.diagnostics.len(), 1);
             assert_eq!(
                 state.diagnostics[0].severity,
                 Some(DiagnosticSeverity::ERROR)
             );
-            assert_eq!(state.diagnostics[0].range.start.line, 1);
+            assert_eq!(state.diagnostics[0].range.start.line, 0);
+            assert!(state.diagnostics[0].message.contains("OPTION"));
         }
+        assert!(keyword_hover("OPTION DIALECT").is_none());
+        assert!(
+            !KEYWORD_COMPLETIONS
+                .iter()
+                .any(|item| item.label == "OPTION DIALECT")
+        );
     }
 
     #[test]
     fn indexed_input_targets_and_subscripts_resolve_to_symbols() {
-        for dialect in ["QB", "ANSI"] {
-            let source = format!(
-                "OPTION DIALECT \"{dialect}\"\nDIM index\nREAD table(index, 2)\nINPUT values(index)\nINPUT #1, filevalues$(index), count\nLINE INPUT lines$(index)\nLINE INPUT #1, filelines$(index)\n"
+        let source = "DIM index\nREAD table(index, 2)\nINPUT values(index)\nINPUT #1, filevalues$(index), count\nLINE INPUT lines$(index)\nLINE INPUT #1, filelines$(index)\n".to_string();
+        let state = analyze_source(source.clone(), 1);
+        assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+        for (name, expected_line) in [
+            ("TABLE", 2),
+            ("VALUES", 3),
+            ("FILEVALUES$", 4),
+            ("COUNT", 4),
+            ("LINES$", 5),
+            ("FILELINES$", 6),
+        ] {
+            assert_eq!(
+                find_symbol(&state.symbols, name).unwrap().line,
+                expected_line
             );
-            let state = analyze_source(source.clone(), 1);
-            assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
-            for (name, expected_line) in [
-                ("TABLE", 3),
-                ("VALUES", 4),
-                ("FILEVALUES$", 5),
-                ("COUNT", 5),
-                ("LINES$", 6),
-                ("FILELINES$", 7),
-            ] {
-                assert_eq!(
-                    find_symbol(&state.symbols, name).unwrap().line,
-                    expected_line
-                );
-            }
-            for (line_number, line) in source.lines().enumerate().skip(2) {
-                let character = line.find("(index").unwrap() + 1;
-                let name =
-                    resolve_token_name(&state, Position::new(line_number as u32, character as u32))
-                        .unwrap();
-                assert_eq!(name, "INDEX");
-                assert_eq!(find_symbol(&state.symbols, &name).unwrap().line, 2);
-            }
-            assert_eq!(state.symbols.variables.len(), 7);
         }
+        for (line_number, line) in source.lines().enumerate().skip(1) {
+            let character = line.find("(index").unwrap() + 1;
+            let name =
+                resolve_token_name(&state, Position::new(line_number as u32, character as u32))
+                    .unwrap();
+            assert_eq!(name, "INDEX");
+            assert_eq!(find_symbol(&state.symbols, &name).unwrap().line, 1);
+        }
+        assert_eq!(state.symbols.variables.len(), 7);
         for keyword in ["READ", "INPUT", "LINE INPUT"] {
             assert!(keyword_hover(keyword).unwrap().contains("array element"));
             assert!(KEYWORD_COMPLETIONS.iter().any(|item| item.label == keyword));
@@ -2131,7 +2564,7 @@ mod tests {
     }
 
     #[test]
-    fn eqv_imp_have_hover_completions_and_dialect_diagnostics() {
+    fn eqv_imp_have_hover_and_completions() {
         for operator in ["EQV", "IMP"] {
             let source = format!("PRINT 3 {operator} 5\n");
             let state = analyze_source(source.clone(), 1);
@@ -2146,40 +2579,34 @@ mod tests {
                     .iter()
                     .any(|item| item.label == operator)
             );
-
-            let ansi = analyze_source(format!("OPTION DIALECT \"ANSI\"\n{source}"), 1);
-            assert_eq!(ansi.diagnostics.len(), 1);
-            assert_eq!(ansi.diagnostics[0].range.start.line, 1);
         }
     }
 
     #[test]
     fn doubled_quotes_preserve_unicode_cursor_and_comment_boundaries() {
         let source = r#"PRINT "é ""' REM 😀"""; marker ' 日本語"#;
-        for dialect in ["QB", "ANSI"] {
-            let state = analyze_source(format!("OPTION DIALECT \"{dialect}\"\n{source}\n"), 1);
-            assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
-            let character =
-                |text: &str| source[..source.find(text).unwrap()].encode_utf16().count() as u32;
+        let state = analyze_source(format!("{source}\n"), 1);
+        assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+        let character =
+            |text: &str| source[..source.find(text).unwrap()].encode_utf16().count() as u32;
+        assert_eq!(
+            resolve_token_name(&state, Position::new(0, character("marker"))).as_deref(),
+            Some("MARKER")
+        );
+        for text in ["REM", "😀", "日本語"] {
             assert_eq!(
-                resolve_token_name(&state, Position::new(1, character("marker"))).as_deref(),
-                Some("MARKER")
+                resolve_token_name(&state, Position::new(0, character(text))),
+                None
             );
-            for text in ["REM", "😀", "日本語"] {
-                assert_eq!(
-                    resolve_token_name(&state, Position::new(1, character(text))),
-                    None
-                );
-            }
-            assert!(state.tokens.iter().any(|token| matches!(
-                &token.token,
-                rice::token::Token::StringLiteral(value) if value == "é \"' REM 😀\""
-            )));
         }
+        assert!(state.tokens.iter().any(|token| matches!(
+            &token.token,
+            rice::token::Token::StringLiteral(value) if value == "é \"' REM 😀\""
+        )));
     }
 
     #[test]
-    fn escaped_directive_text_does_not_select_the_lsp_dialect() {
+    fn removed_directive_text_is_valid_inside_strings() {
         let state = analyze_source(
             "PRINT \"OPTION DIALECT \"\"ANSI\"\"\"\nPRINT 1 EQV 1\n".into(),
             1,
@@ -2189,41 +2616,36 @@ mod tests {
 
     #[test]
     fn next_lists_preserve_counter_references_and_comma_spans() {
-        for dialect in ["QB", "ANSI"] {
-            let source = format!(
-                "OPTION DIALECT \"{dialect}\"\nFOR outer = 1 TO 2\nFOR inner = 1 TO 2\nPRINT inner\nNEXT inner, outer\n"
+        let source =
+            "FOR outer = 1 TO 2\nFOR inner = 1 TO 2\nPRINT inner\nNEXT inner, outer\n".to_string();
+        let state = analyze_source(source, 1);
+        assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+        for (column, name, definition_line) in [(5, "INNER", 2), (12, "OUTER", 1)] {
+            assert_eq!(
+                resolve_token_name(&state, Position::new(3, column)).as_deref(),
+                Some(name)
             );
-            let state = analyze_source(source, 1);
-            assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
-            for (column, name, definition_line) in [(5, "INNER", 3), (12, "OUTER", 2)] {
-                assert_eq!(
-                    resolve_token_name(&state, Position::new(4, column)).as_deref(),
-                    Some(name)
-                );
-                assert_eq!(
-                    find_symbol(&state.symbols, name).unwrap().line,
-                    definition_line
-                );
-            }
-            assert_eq!(resolve_token_name(&state, Position::new(4, 10)), None);
-            assert!(state.tokens.iter().any(|token| {
-                token.span.line == 5 && matches!(token.token, rice::token::Token::Comma)
-            }));
-            assert!(
-                keyword_hover("NEXT")
-                    .unwrap()
-                    .contains("innermost to outermost")
+            assert_eq!(
+                find_symbol(&state.symbols, name).unwrap().line,
+                definition_line
             );
-
-            let invalid = analyze_source(
-                format!(
-                    "OPTION DIALECT \"{dialect}\"\nFOR outer = 1 TO 2\nFOR inner = 1 TO 2\nNEXT outer, inner\n"
-                ),
-                1,
-            );
-            assert_eq!(invalid.diagnostics.len(), 1);
-            assert_eq!(invalid.diagnostics[0].range.start.line, 3);
         }
+        assert_eq!(resolve_token_name(&state, Position::new(3, 10)), None);
+        assert!(state.tokens.iter().any(|token| {
+            token.span.line == 4 && matches!(token.token, rice::token::Token::Comma)
+        }));
+        assert!(
+            keyword_hover("NEXT")
+                .unwrap()
+                .contains("innermost to outermost")
+        );
+
+        let invalid = analyze_source(
+            "FOR outer = 1 TO 2\nFOR inner = 1 TO 2\nNEXT outer, inner\n".to_string(),
+            1,
+        );
+        assert_eq!(invalid.diagnostics.len(), 1);
+        assert_eq!(invalid.diagnostics[0].range.start.line, 2);
     }
 
     #[test]
@@ -2242,32 +2664,24 @@ mod tests {
             assert!(builtin_hover(name).is_some());
             assert!(rice::builtins::BuiltinRegistry::new().exists(name));
         }
-        let invalid = analyze_source(format!("OPTION DIALECT \"ANSI\"\n{source}"), 1);
-        assert_eq!(invalid.diagnostics.len(), 1);
-        assert_eq!(invalid.diagnostics[0].range.start.line, 2);
-        assert!(invalid.diagnostics[0].message.contains("MID$ assignment"));
     }
 
     #[test]
     fn completion_and_hover_cover_language_completeness_additions() {
-        for dialect in ["QB", "ANSI"] {
-            let source = format!(
-                "OPTION DIALECT \"{dialect}\"\nDIM values(2)\nWHILE 1\nSELECT CASE 1\nCASE 1\nGET #1, , values(1)\nPUT #1, , values(2)\nEXIT SELECT\nEND SELECT\nEXIT WHILE\nWEND\nFUNCTION TextValue() AS STRING\nEND FUNCTION\nPRINT VAL(\"1D2tail\"); ENVIRON$(1)\n"
-            );
-            let state = analyze_source(source, 1);
-            assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
-            assert_eq!(
-                find_symbol(&state.symbols, "TEXTVALUE")
-                    .unwrap()
-                    .detail
-                    .as_deref(),
-                Some("FUNCTION TEXTVALUE() AS STRING")
-            );
-            assert_eq!(
-                resolve_token_name(&state, Position::new(3, 7)).as_deref(),
-                Some("CASE")
-            );
-        }
+        let source = "DIM values(2)\nWHILE 1\nSELECT CASE 1\nCASE 1\nGET #1, , values(1)\nPUT #1, , values(2)\nEXIT SELECT\nEND SELECT\nEXIT WHILE\nWEND\nFUNCTION TextValue() AS STRING\nEND FUNCTION\nPRINT VAL(\"1D2tail\"); ENVIRON$(1)\n".to_string();
+        let state = analyze_source(source, 1);
+        assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+        assert_eq!(
+            find_symbol(&state.symbols, "TEXTVALUE")
+                .unwrap()
+                .detail
+                .as_deref(),
+            Some("FUNCTION TEXTVALUE() AS STRING")
+        );
+        assert_eq!(
+            resolve_token_name(&state, Position::new(2, 7)).as_deref(),
+            Some("CASE")
+        );
         for label in ["EXIT WHILE", "EXIT SELECT", "GET", "PUT", "FUNCTION"] {
             assert!(KEYWORD_COMPLETIONS.iter().any(|item| item.label == label));
         }
@@ -2283,22 +2697,18 @@ mod tests {
     }
 
     #[test]
-    fn string_comparison_and_patterns_have_editor_support_in_both_modes() {
-        for dialect in ["QB", "ANSI"] {
-            let source = format!(
-                "OPTION DIALECT \"{dialect}\"\nPRINT \"é\" LIKE \"?\"\nPRINT STRCOMP(\"É\", \"é\", 1)\n"
-            );
-            let state = analyze_source(source, 1);
-            assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
-            assert_eq!(
-                resolve_token_name(&state, Position::new(1, 11)).as_deref(),
-                Some("LIKE")
-            );
-            assert_eq!(
-                resolve_token_name(&state, Position::new(2, 8)).as_deref(),
-                Some("STRCOMP")
-            );
-        }
+    fn string_comparison_and_patterns_have_editor_support() {
+        let source = "PRINT \"é\" LIKE \"?\"\nPRINT STRCOMP(\"É\", \"é\", 1)\n".to_string();
+        let state = analyze_source(source, 1);
+        assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+        assert_eq!(
+            resolve_token_name(&state, Position::new(0, 11)).as_deref(),
+            Some("LIKE")
+        );
+        assert_eq!(
+            resolve_token_name(&state, Position::new(1, 8)).as_deref(),
+            Some("STRCOMP")
+        );
         let like = KEYWORD_COMPLETIONS
             .iter()
             .find(|item| item.label == "LIKE")

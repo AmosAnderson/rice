@@ -1,9 +1,8 @@
 # String Slicing
 
-Rice BASIC supports colon slicing in both the default QBasic mode and ANSI mode.
-It is an ANSI-style feature, not a claim that QBasic 1.1 recognizes this syntax.
-The `LEFT$`, `MID$`, and `RIGHT$` functions are also available in both modes.
-See [Dialects](dialects.md) and [Built-in Functions](builtins.md).
+Rice BASIC supports colon slicing.
+The `LEFT$`, `MID$`, and `RIGHT$` functions are also available.
+See [Language reference](language-reference.md) and [Built-in Functions](builtins.md).
 
 ## Extraction syntax
 
@@ -23,7 +22,7 @@ PRINT s$(8:12)                     ' World
 PRINT s$(1:1)                      ' H
 ```
 
-The `$` suffix is conventional and gives an undefined scalar its string default.
+The `$` suffix establishes an enforced STRING binding and an empty default.
 An explicitly declared `DIM s AS STRING` also works. An existing numeric value
 cannot be sliced and is not implicitly converted to text.
 
@@ -43,7 +42,6 @@ not separately validated by slicing; no portable behavior is promised for them.
 Indices count Unicode scalar values, as do `LEN`, `LEFT$`, `MID$`, `RIGHT$`,
 and `INSTR`. They do not count UTF-8 bytes or grapheme clusters. Thus `"é"` is one
 position, while a letter followed by a separate combining accent occupies two.
-This differs from historical byte/code-page string behavior.
 
 ```basic
 s$ = "éx"
@@ -83,7 +81,7 @@ s$(3:1) = "ignored"
 PRINT s$                           ' ABC!
 ```
 
-An undefined slice target is treated as `""` unless QBasic's `OPTION EXPLICIT` rejects the
+An undefined slice target is treated as `""` unless `OPTION EXPLICIT` rejects the
 name. This slice-specific fallback can also apply to an unsuffixed name that has
 not been read or initialized as a numeric variable. Existing non-string targets
 still fail. Use string declarations or `$` names for predictable defaults.
@@ -109,9 +107,9 @@ These are not general substitutions at the boundaries. `LEFT$(s$, 0)` and
 formula above would produce an invalid lower slice bound. Empty strings and
 zero-length `MID$` results also require care.
 
-## MID$ assignment in QBasic mode
+## MID$ assignment
 
-This separate statement is accepted only in QBasic mode:
+This separate statement is accepted:
 
 ```text
 MID$(target, start [, count]) = replacement
@@ -130,7 +128,6 @@ It never grows or shrinks the original string; a start past its end makes no
 change. A short replacement leaves the rest of the selected area intact.
 
 ```basic
-OPTION DIALECT "QB"
 s$ = "ABCDEF"
 MID$(s$, 3, 2) = "XYZ"
 PRINT s$                           ' ABXYEF
@@ -153,17 +150,13 @@ Destinations follow INPUT's declaration and constant checks, including constants
 at a flattened array key. Bounds and rank remain unchecked. Existing array values
 must be strings; untouched elements use their declared `AS` type or ordinary
 suffix/DEFSTR default. A missing scalar retains MID$'s empty-string fallback.
-Writing into an empty string never extends it.
-
-The `MID$` **function** remains available in ANSI mode; only this assignment
-statement is rejected there.
+Writing into an empty string never extends it. Fixed-string targets retain their declared character width after the assignment.
 
 ## Concatenation
 
-`&` concatenates two string values in both modes. It does not automatically convert
-numbers to strings; use `STR$` or separate `PRINT` items. QBasic additionally
-permits string `+`; ANSI treats `+` as arithmetic and rejects string operands.
-In QBasic mode, an `&` immediately following an identifier is its numeric suffix;
+`&` concatenates two string values. It does not automatically convert
+numbers to strings; use `STR$` or separate `PRINT` items. `+` also concatenates strings.
+An `&` immediately following an identifier is its numeric suffix;
 put spaces around the concatenation operator to avoid that ambiguity.
 
 ```basic
@@ -174,7 +167,7 @@ PRINT first$ & ", " & last$ & "!"
 
 ## Comparison and matching
 
-For comparisons, `STRCOMP(a$, b$)` returns ordering `-1`, `0`, or `1`; pass mode `1` as a third argument to compare after Unicode lowercasing. Ordinary `=` and ordering operators remain case-sensitive. `text$ LIKE pattern$` performs whole-string wildcard matching with `*`, `?`, `#`, and character classes/ranges in both dialects. See [STRCOMP](builtins.md#strings) and [LIKE](language-reference.md#wildcard-matching) for exact semantics.
+For comparisons, `STRCOMP(a$, b$)` returns ordering `-1`, `0`, or `1`; pass mode `1` as a third argument to compare after Unicode lowercasing. Ordinary `=` and ordering operators remain case-sensitive. `text$ LIKE pattern$` performs whole-string wildcard matching with `*`, `?`, `#`, and character classes/ranges. See [STRCOMP](builtins.md#strings) and [LIKE](language-reference.md#wildcard-matching) for exact semantics.
 
 ## Example: reversing scalar-value order
 
@@ -190,5 +183,4 @@ PRINT ReverseStr$("Hello")         ' olleH
 ```
 
 This reverses Unicode scalar values, not displayed grapheme clusters. Colon
-slicing and Unicode indexing are exercised by the integration suite; exact
-historical byte-string compatibility is not claimed.
+slicing and Unicode indexing are exercised by the integration suite.

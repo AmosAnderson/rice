@@ -1,13 +1,13 @@
 # PRINT USING
 
-`PRINT USING` uses the same formatting engine in QBasic and ANSI modes, for console and file output:
+`PRINT USING` uses the same formatting engine for console and file output:
 
 ```basic
 PRINT USING format$; value [, value ...]
 PRINT #channel, USING format$; value [, value ...]
 ```
 
-A semicolon is required after the format expression. Values may be separated by commas or semicolons. The format expression must be a string; numeric fields require numeric values and string fields require strings. There is no implicit conversion between these value types.
+A semicolon is required after the format expression. Values may be separated by commas or semicolons. The format expression must be a string; numeric fields require numeric values and string fields require strings. There is no implicit conversion between these value types. Fixed numeric formats preserve native INT64/BYTE digits exactly across their full ranges, including signs, grouping, and decimal zero padding. Scientific formats require an exactly representable f64 conversion; otherwise use CDBL explicitly to permit rounding. Plain PRINT and STR$ also preserve all INT64 digits. BOOL and BYTES are not numeric formatting operands.
 
 ## Applying a format
 
@@ -38,7 +38,7 @@ If values are supplied but the format has no consuming fields, the statement rai
 | Comma before decimal | Enable thousands grouping |
 | `^^^^` after digit/decimal portion | Scientific notation |
 
-Unmarked integer padding uses spaces. Fixed-point numbers round the absolute value to the requested precision, using halfway-away-from-zero rounding, then apply the sign. A field without a decimal point rounds to an integer. Floating-point representation can affect decimal ties. A negative value without an explicit sign marker replaces the final available leading padding character with `-`; if there is no room, it overflows.
+Unmarked integer padding uses spaces. Fixed-point numbers round the absolute value to the requested precision, using halfway-away-from-zero rounding, then apply the sign. A field without a decimal point rounds to an integer. Floating-point representation can affect decimal ties. Finite floating-point values retain their magnitude throughout formatting, including values outside the INT64 range and subnormal values; formatting to many decimal places does not turn them into infinity. A negative value without an explicit sign marker replaces the final available leading padding character with `-`; if there is no room, it overflows.
 
 Examples below show exact output inside backticks; spaces inside the backticks are significant.
 
@@ -67,7 +67,7 @@ If the ungrouped integer digits exceed the allocated positions, the formatter pr
 
 Grouping is determined by the total count of integer digit positions; commas in the format enable grouping rather than defining independent literal-width slots. The output width includes the grouping commas required for that count. `$` markers float by replacing fill just before the first digit/sign, or by prepending `$` if no fill is available. Consequently total output width is not always the literal number of characters in the format.
 
-A decimal point can start a numeric field, but `.##` allocates no integer positions: even `0.5` formats as `%0.50`. Use `#.##` for a leading zero. Integer-only formatting internally casts to `i64`; huge/non-finite values do not have a validated QB-compatible display contract. Negative zero is not treated as negative for sign selection.
+A decimal point can start a numeric field, but `.##` allocates no integer positions: even `0.5` formats as `%0.50`. Use `#.##` for a leading zero. Integer-only formatting prints the full rounded value, including NUMERIC values outside the INT64 range. Negative zero is not treated as negative for sign selection.
 
 ### Scientific notation
 
@@ -79,7 +79,7 @@ PRINT USING "##.##^^^^"; 0.00456  ' 45.60E-04
 PRINT USING "#.##^^^^"; 1         ' 1.00E+00
 ```
 
-Exponents have `E`, an explicit sign, and at least two digits. Leading/trailing sign markers work. Scientific formatting does not renormalize a mantissa that rounds past its allocated width: `PRINT USING "#.##^^^^"; 9.999` produces `10.00E+00`. It does not use the fixed-point `%` overflow mechanism, and dollar/grouping flags are not applied as they are for fixed-point formatting. Very small, very large, and non-finite scientific values have not been established as compatible with historical BASIC output.
+Exponents have `E`, an explicit sign, and at least two digits. Leading/trailing sign markers work. Scientific formatting covers the full finite floating-point range: `PRINT USING "#.##^^^^"; 1E-309` produces `1.00E-309`. Scientific formatting does not renormalize a mantissa that rounds past its allocated width: `PRINT USING "#.##^^^^"; 9.999` produces `10.00E+00`. It does not use the fixed-point `%` overflow mechanism, and dollar/grouping flags are not applied as they are for fixed-point formatting.
 
 ## String fields
 
@@ -96,7 +96,7 @@ PRINT USING "\  \"; "Hello"     ' Hell (4 characters)
 PRINT USING "\    \"; "Hi"      ' Hi followed by 4 spaces (6 characters total)
 ```
 
-Width is measured in Unicode characters, not bytes or terminal display cells. A backslash field currently treats **any** intervening characters as field width, not just spaces: `"\ab\"` is a four-character field. If no closing backslash appears, the field runs to the end of the format. These permissive malformed-format behaviors are implementation quirks rather than a portable formatting convention.
+Width is measured in Unicode characters, not bytes or terminal display cells. A backslash field currently treats **any** intervening characters as field width, not just spaces: `"\ab\"` is a four-character field. If no closing backslash appears, the field runs to the end of the format.
 
 ## Escapes and literal text
 

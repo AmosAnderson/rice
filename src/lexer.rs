@@ -7,7 +7,6 @@ pub struct Lexer {
     line: usize,
     col: usize,
     at_line_start: bool,
-    pub dialect: crate::Dialect,
 }
 
 impl Lexer {
@@ -18,18 +17,6 @@ impl Lexer {
             line: 1,
             col: 1,
             at_line_start: true,
-            dialect: crate::DEFAULT_DIALECT,
-        }
-    }
-
-    pub fn with_dialect(source: &str, dialect: crate::Dialect) -> Self {
-        Self {
-            source: source.chars().collect(),
-            pos: 0,
-            line: 1,
-            col: 1,
-            at_line_start: true,
-            dialect,
         }
     }
 
@@ -132,8 +119,7 @@ impl Lexer {
             ':' => Token::Colon,
             '#' => Token::Hash,
             '&' => {
-                if self.dialect == crate::Dialect::QuickBasic
-                    && let Some(next_c) = self.peek_char()
+                if let Some(next_c) = self.peek_char()
                     && matches!(next_c, 'H' | 'h' | 'O' | 'o')
                 {
                     let radix = if next_c.eq_ignore_ascii_case(&'H') {
@@ -305,10 +291,9 @@ impl Lexer {
         let suffix = if self.peek_char() == Some('$') {
             self.advance_char();
             Some('$')
-        } else if self.dialect == crate::Dialect::QuickBasic
-            && self
-                .peek_char()
-                .is_some_and(|ch| ch == '%' || ch == '!' || ch == '#' || ch == '&')
+        } else if self
+            .peek_char()
+            .is_some_and(|ch| ch == '%' || ch == '!' || ch == '#' || ch == '&')
         {
             let ch = self.advance_char();
             Some(ch)
@@ -717,29 +702,27 @@ mod tests {
     }
 
     #[test]
-    fn test_doubled_quotes_in_both_dialects() {
-        for dialect in [crate::Dialect::QuickBasic, crate::Dialect::Ansi] {
-            for (source, expected) in [
-                ("\"\"", ""),
-                ("\"\"\"\"", "\""),
-                ("\"\"\"\"\"\"", "\"\""),
-                ("\"a\"\"b\"", "a\"b"),
-                ("\"\"\"leading\"", "\"leading"),
-                ("\"trailing\"\"\"", "trailing\""),
-                ("\"é\"\"😀\"", "é\"😀"),
-                ("\"'REM \"\"x\"\"\"", "'REM \"x\""),
-                ("\"a\\b\"", "a\\b"),
-            ] {
-                let tokens = Lexer::with_dialect(source, dialect).tokenize().unwrap();
-                assert_eq!(
-                    tokens[0].token,
-                    Token::StringLiteral(expected.into()),
-                    "{dialect:?}: {source}"
-                );
-                assert_eq!(tokens[0].span, Span { line: 1, col: 1 });
-                assert_eq!(tokens[1].token, Token::Eof);
-                assert_eq!(tokens.len(), 2);
-            }
+    fn test_doubled_quotes() {
+        for (source, expected) in [
+            ("\"\"", ""),
+            ("\"\"\"\"", "\""),
+            ("\"\"\"\"\"\"", "\"\""),
+            ("\"a\"\"b\"", "a\"b"),
+            ("\"\"\"leading\"", "\"leading"),
+            ("\"trailing\"\"\"", "trailing\""),
+            ("\"é\"\"😀\"", "é\"😀"),
+            ("\"'REM \"\"x\"\"\"", "'REM \"x\""),
+            ("\"a\\b\"", "a\\b"),
+        ] {
+            let tokens = Lexer::new(source).tokenize().unwrap();
+            assert_eq!(
+                tokens[0].token,
+                Token::StringLiteral(expected.into()),
+                "{source}"
+            );
+            assert_eq!(tokens[0].span, Span { line: 1, col: 1 });
+            assert_eq!(tokens[1].token, Token::Eof);
+            assert_eq!(tokens.len(), 2);
         }
     }
 
@@ -761,22 +744,20 @@ mod tests {
 
     #[test]
     fn test_doubled_quotes_still_require_a_closing_quote() {
-        for dialect in [crate::Dialect::QuickBasic, crate::Dialect::Ansi] {
-            for source in [
-                "PRINT \"",
-                "PRINT \"\"\"",
-                "PRINT \"unfinished\"\"",
-                "PRINT \"unfinished\"\"\n",
-                "PRINT \"unfinished\"\"\r\n",
-            ] {
-                assert!(
-                    matches!(
-                        Lexer::with_dialect(source, dialect).tokenize(),
-                        Err(LexError::UnterminatedString { line: 1, col: 7 })
-                    ),
-                    "{dialect:?}: {source:?}"
-                );
-            }
+        for source in [
+            "PRINT \"",
+            "PRINT \"\"\"",
+            "PRINT \"unfinished\"\"",
+            "PRINT \"unfinished\"\"\n",
+            "PRINT \"unfinished\"\"\r\n",
+        ] {
+            assert!(
+                matches!(
+                    Lexer::new(source).tokenize(),
+                    Err(LexError::UnterminatedString { line: 1, col: 7 })
+                ),
+                "{source:?}"
+            );
         }
     }
 

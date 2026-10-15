@@ -20,7 +20,6 @@ fn run() {
     let mut source_file: Option<String> = None;
     let mut program_args = Vec::new();
     let mut parse_options = true;
-    let mut dialect = rice::DEFAULT_DIALECT;
     let mut check_only = false;
 
     let mut i = 1;
@@ -30,22 +29,6 @@ fn run() {
             parse_options = false;
         } else if parse_options && arg == "--check" {
             check_only = true;
-        } else if parse_options && arg == "--compat" {
-            dialect = rice::Dialect::QuickBasic;
-        } else if parse_options && arg == "--dialect" {
-            if i + 1 >= args.len() {
-                eprintln!("error: --dialect requires an argument (ansi, qb, or qbasic)");
-                process::exit(1);
-            }
-            i += 1;
-            match args[i].to_lowercase().as_str() {
-                "ansi" => dialect = rice::Dialect::Ansi,
-                "qb" | "qbasic" | "quickbasic" => dialect = rice::Dialect::QuickBasic,
-                other => {
-                    eprintln!("error: unknown dialect: {other}");
-                    process::exit(1);
-                }
-            }
         } else if parse_options && arg.starts_with('-') {
             eprintln!("error: unknown option: {arg}");
             process::exit(1);
@@ -63,15 +46,14 @@ fn run() {
             process::exit(1);
         }
         None => {
-            let mut repl = rice::repl::Repl::with_dialect(dialect);
+            let mut repl = rice::repl::Repl::new();
             repl.run();
         }
         Some(filename) => {
             let result = if check_only {
-                check_file(&filename, dialect)
+                check_file(&filename)
             } else {
                 let mut interpreter = rice::interpreter::Interpreter::new();
-                interpreter.dialect = dialect;
                 interpreter.set_command_line_args(&program_args);
                 interpreter.run_file(&filename)
             };
@@ -83,7 +65,7 @@ fn run() {
     }
 }
 
-fn check_file(filename: &str, dialect: rice::Dialect) -> Result<(), Box<dyn std::error::Error>> {
+fn check_file(filename: &str) -> Result<(), Box<dyn std::error::Error>> {
     let path = std::path::Path::new(filename);
     let canonical =
         std::fs::canonicalize(path).map_err(|e| rice::error::RuntimeError::General {
@@ -93,8 +75,7 @@ fn check_file(filename: &str, dialect: rice::Dialect) -> Result<(), Box<dyn std:
         std::fs::read_to_string(&canonical).map_err(|e| rice::error::RuntimeError::General {
             msg: format!("Cannot read '{}': {}", canonical.display(), e),
         })?;
-    let dialect = rice::detect_dialect(&source).unwrap_or(dialect);
-    let tokens = rice::lexer::Lexer::with_dialect(&source, dialect).tokenize()?;
-    rice::parser::Parser::with_dialect(tokens, dialect).parse_program()?;
+    let tokens = rice::lexer::Lexer::new(&source).tokenize()?;
+    rice::parser::Parser::new(tokens).parse_program()?;
     Ok(())
 }

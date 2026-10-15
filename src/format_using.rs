@@ -97,9 +97,15 @@ pub fn format_using(format_str: &str, values: &[Value]) -> Result<String, Runtim
             }
             let (field, new_fi) = parse_numeric_field(&chars, fi);
             fi = new_fi;
-            let val = values[vi].to_f64()?;
+            let formatted = if !field.scientific
+                && let Some(integer) = values[vi].integer_value()
+            {
+                format_integer(integer, &field)
+            } else {
+                format_numeric(values[vi].to_f64()?, &field)
+            };
             vi += 1;
-            output.push_str(&format_numeric(val, &field));
+            output.push_str(&formatted);
             continue;
         }
 
@@ -223,25 +229,102 @@ fn format_numeric(value: f64, field: &NumericField) -> String {
     let negative = value < 0.0;
     let abs_val = value.abs();
 
-    // Round to the specified decimal places
-    let rounded = if field.has_decimal {
-        let factor = 10f64.powi(field.digits_after as i32);
-        (abs_val * factor).round() / factor
-    } else {
-        abs_val.round()
-    };
+    let formatted = format_magnitude(abs_val, field.digits_after);
 
-    // Format the absolute value
-    let formatted = if field.has_decimal {
-        format!("{:.prec$}", rounded, prec = field.digits_after)
-    } else {
-        format!("{}", rounded as i64)
-    };
+    format_fixed(&formatted, negative, field)
+}
 
+fn format_magnitude(value: f64, places: usize) -> String {
+    if !value.is_finite() {
+        return value.to_string();
+    }
+
+    // Preserve ordinary decimal rounding, including halfway-away-from-zero ties.
+    // Large values or precisions need a decimal fallback: neither an infinite
+    // scaling factor nor an overflowing product says the value itself is infinite.
+    if places <= 308 {
+        let factor = 10f64.powi(places as i32);
+        let scaled = value * factor;
+        if scaled.is_finite() {
+            let rounded = scaled.round() / factor;
+            return format!("{rounded:.places$}");
+        }
+        // At this magnitude the f64 has no significant fractional digits beyond
+        // the requested precision, so ordinary formatting needs no rounding aid.
+        return format!("{value:.places$}");
+    }
+    round_decimal(exact_decimal(value, 0), places)
+}
+
+fn exact_decimal(value: f64, shift: i128) -> String {
+    // Every finite f64 has an exact terminating decimal expansion with at most
+    // 1074 fractional digits (the denominator of the smallest subnormal is 2^1074).
+    let exact = format!("{value:.1074}");
+    let point = exact.find('.').unwrap();
+    let mut digits = exact.replace('.', "");
+    let shifted_point = point as i128 + shift;
+    if shifted_point <= 0 {
+        digits = format!("0.{}{}", "0".repeat((-shifted_point) as usize), digits);
+    } else if shifted_point >= digits.len() as i128 {
+        digits.extend(std::iter::repeat_n(
+            '0',
+            shifted_point as usize - digits.len(),
+        ));
+    } else {
+        digits.insert(shifted_point as usize, '.');
+    }
+    // Shifting a tiny value can leave leading zeros before its first digit.
+    let leading_zeros = digits
+        .bytes()
+        .take_while(|&ch| ch == b'0')
+        .count()
+        .min(digits.find('.').unwrap_or(digits.len()).saturating_sub(1));
+    digits.drain(..leading_zeros);
+    digits
+}
+
+fn round_decimal(decimal: String, places: usize) -> String {
+    let point = decimal.find('.').unwrap_or(decimal.len());
+    let mut digits: Vec<u8> = decimal.bytes().filter(|&ch| ch != b'.').collect();
+    let retained = point + places;
+    let round_up = digits.get(retained).is_some_and(|&ch| ch >= b'5');
+    digits.resize(retained, b'0');
+    if round_up {
+        let mut cursor = digits.len();
+        loop {
+            if cursor == 0 {
+                digits.insert(0, b'1');
+                break;
+            }
+            cursor -= 1;
+            if digits[cursor] != b'9' {
+                digits[cursor] += 1;
+                break;
+            }
+            digits[cursor] = b'0';
+        }
+    }
+    if places > 0 {
+        digits.insert(digits.len() - places, b'.');
+    }
+    String::from_utf8(digits).expect("decimal formatting contains only ASCII digits")
+}
+
+fn format_integer(value: i64, field: &NumericField) -> String {
+    // unsigned_abs also handles i64::MIN without overflow or floating-point conversion.
+    let mut formatted = value.unsigned_abs().to_string();
+    if field.has_decimal && field.digits_after > 0 {
+        formatted.push('.');
+        formatted.extend(std::iter::repeat_n('0', field.digits_after));
+    }
+    format_fixed(&formatted, value < 0, field)
+}
+
+fn format_fixed(formatted: &str, negative: bool, field: &NumericField) -> String {
     // Split into integer and fractional parts (including the dot)
     let (int_part, frac_part) = match formatted.find('.') {
         Some(dot) => (&formatted[..dot], &formatted[dot..]),
-        None => (formatted.as_str(), ""),
+        None => (formatted, ""),
     };
 
     // Apply thousands separator
@@ -352,25 +435,26 @@ fn format_scientific(value: f64, field: &NumericField) -> String {
 
     let effective_digits_before = field.digits_before.max(1);
 
-    // Compute mantissa and exponent
-    // For digits_before=2 and value=1234.5: exp=3, adjusted_exp=2, man=12.345
-    let (mantissa, exponent) = if abs_val == 0.0 {
-        (0.0, 0i32)
+    // Decimal decomposition avoids log10 rounding across powers of ten. Keep the
+    // original exponent when rounding widens the mantissa, as the format requires.
+    let (man_str, exponent) = if abs_val == 0.0 || !abs_val.is_finite() {
+        (format_magnitude(abs_val, field.digits_after), 0i128)
     } else {
-        let exp = abs_val.log10().floor() as i32;
-        let adjusted_exp = exp - (effective_digits_before as i32 - 1);
-        let man = abs_val / 10f64.powi(adjusted_exp);
-        (man, adjusted_exp)
-    };
-
-    // Round mantissa
-    let factor = 10f64.powi(field.digits_after as i32);
-    let rounded_man = (mantissa * factor).round() / factor;
-
-    let man_str = if field.has_decimal {
-        format!("{:.prec$}", rounded_man, prec = field.digits_after)
-    } else {
-        format!("{}", rounded_man as i64)
+        let scientific = format!("{abs_val:e}");
+        let (_, exponent) = scientific.split_once('e').unwrap();
+        let exponent: i128 = exponent.parse().unwrap();
+        let adjusted_exp = exponent - (effective_digits_before as i128 - 1);
+        let divisor = i32::try_from(adjusted_exp)
+            .ok()
+            .map(|exp| 10f64.powi(exp))
+            .unwrap_or(0.0);
+        let mantissa = abs_val / divisor;
+        let formatted = if divisor.is_finite() && divisor != 0.0 && mantissa.is_finite() {
+            format_magnitude(mantissa, field.digits_after)
+        } else {
+            round_decimal(exact_decimal(abs_val, -adjusted_exp), field.digits_after)
+        };
+        (formatted, adjusted_exp)
     };
 
     // Pad the mantissa part
@@ -411,7 +495,7 @@ fn format_scientific(value: f64, field: &NumericField) -> String {
     result
 }
 
-fn format_exponent(exp: i32) -> String {
+fn format_exponent(exp: i128) -> String {
     if exp >= 0 {
         format!("E+{:02}", exp)
     } else {
@@ -469,5 +553,247 @@ mod tests {
             format_using("##.##^^^^+", &[Value::Numeric(1234.5)]).unwrap(),
             "12.35E+02+",
         );
+    }
+
+    #[test]
+    fn fixed_fields_preserve_full_int64_range_and_fractional_zeroes() {
+        for (format, value, expected) in [
+            ("###################", i64::MAX, "9223372036854775807"),
+            ("####################", i64::MIN, "-9223372036854775808"),
+            (
+                "################.##",
+                9_007_199_254_740_993,
+                "9007199254740993.00",
+            ),
+            (
+                "####################.##",
+                i64::MIN,
+                "-9223372036854775808.00",
+            ),
+            ("#.###", 0, "0.000"),
+            ("###.", 42, " 42"),
+        ] {
+            assert_eq!(
+                format_using(format, &[Value::Int64(value)]).unwrap(),
+                expected
+            );
+        }
+        assert_eq!(
+            format_using("###.##", &[Value::Byte(255)]).unwrap(),
+            "255.00"
+        );
+    }
+
+    #[test]
+    fn exact_integer_fields_share_sign_grouping_currency_and_overflow_rules() {
+        for (format, value, expected) in [
+            ("+###################", i64::MAX, "+9223372036854775807"),
+            ("###################+", i64::MIN, "9223372036854775808-"),
+            ("###################-", i64::MAX, "9223372036854775807 "),
+            (
+                "###################,",
+                i64::MAX,
+                "9,223,372,036,854,775,807",
+            ),
+            (
+                "$$###################.##",
+                i64::MAX,
+                "$9223372036854775807.00",
+            ),
+            ("**###################", i64::MIN, "*-9223372036854775808"),
+            ("##", i64::MAX, "%9223372036854775807"),
+            ("##.##", i64::MIN, "%-9223372036854775808.00"),
+            ("###################", i64::MIN, "%-9223372036854775808"),
+        ] {
+            assert_eq!(
+                format_using(format, &[Value::Int64(value)]).unwrap(),
+                expected,
+                "{format}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_integers_preserve_existing_numeric_field_layouts() {
+        for format in [
+            "###",
+            "###.##",
+            "###.",
+            "+###",
+            "###+",
+            "###-",
+            "##,###.##",
+            "**###.##",
+            "$$###.##",
+            "**$###.##",
+        ] {
+            for value in [-255, -1, 0, 1, 255] {
+                assert_eq!(
+                    format_using(format, &[Value::Int64(value)]).unwrap(),
+                    format_using(format, &[Value::Numeric(value as f64)]).unwrap(),
+                    "{format}, {value}"
+                );
+            }
+            assert_eq!(
+                format_using(format, &[Value::Byte(255)]).unwrap(),
+                format_using(format, &[Value::Numeric(255.0)]).unwrap(),
+                "{format}"
+            );
+        }
+    }
+
+    #[test]
+    fn scientific_integer_fields_require_exact_float_conversion() {
+        assert!(matches!(
+            format_using("#.##^^^^", &[Value::Int64(9_007_199_254_740_993)]),
+            Err(RuntimeError::Overflow { .. })
+        ));
+        assert_eq!(
+            format_using("#.##^^^^", &[Value::Int64(1234)]).unwrap(),
+            "1.23E+03"
+        );
+        assert_eq!(
+            format_using("#.##^^^^", &[Value::Byte(255)]).unwrap(),
+            "2.55E+02"
+        );
+        for value in [Value::Bool(true), Value::Bytes(vec![42])] {
+            assert!(matches!(
+                format_using("###", &[value]),
+                Err(RuntimeError::TypeMismatch { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn fixed_width_numeric_types_use_their_exact_values() {
+        for (format, value, expected) in [
+            ("######", Value::Integer(i16::MIN), "-32768"),
+            ("###########", Value::Long(i32::MIN), "-2147483648"),
+            ("##########.##", Value::Long(i32::MAX), "2147483647.00"),
+            ("#.###", Value::Single(0.125), "0.125"),
+            ("#.##^^^^", Value::Single(1234.0), "1.23E+03"),
+            ("#.##^^^^", Value::Integer(1234), "1.23E+03"),
+        ] {
+            assert_eq!(format_using(format, &[value]).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn fixed_numeric_fields_preserve_finite_extremes() {
+        for value in [1e308, f64::MAX] {
+            for signed in [value, -value] {
+                assert_eq!(
+                    format_using("##.##", &[Value::Numeric(signed)]).unwrap(),
+                    format!("%{signed:.2}"),
+                );
+                assert_eq!(
+                    format_using("##", &[Value::Numeric(signed)]).unwrap(),
+                    format!("%{signed:.0}"),
+                );
+            }
+        }
+        assert_eq!(
+            format_using("#####################", &[Value::Numeric(1e20)]).unwrap(),
+            "100000000000000000000",
+        );
+        for value in [f64::MIN_POSITIVE, f64::from_bits(1)] {
+            assert_eq!(
+                format_using("##.##", &[Value::Numeric(value)]).unwrap(),
+                " 0.00",
+            );
+            assert_eq!(
+                format_using("##.##", &[Value::Numeric(-value)]).unwrap(),
+                "-0.00",
+            );
+        }
+    }
+
+    #[test]
+    fn high_precision_fields_round_subnormals_and_exact_ties() {
+        let format = format!("+#.{}", "#".repeat(324));
+        let expected = format!("0.{}5", "0".repeat(323));
+        for (value, sign) in [(f64::from_bits(1), '+'), (-f64::from_bits(1), '-')] {
+            assert_eq!(
+                format_using(&format, &[Value::Numeric(value)]).unwrap(),
+                format!("{sign}{expected}"),
+            );
+        }
+
+        // 2^-310 terminates at decimal place 310 with ...625, so rounding to
+        // place 309 must produce ...63, even though the retained digit is even.
+        let tie = 2f64.powi(-310);
+        let exact = format!("{tie:.310}");
+        assert!(exact.ends_with("625"));
+        let expected = format!("{}3", &exact[..exact.len() - 2]);
+        assert_eq!(format_magnitude(tie, 309), expected);
+        assert_eq!(format_magnitude(tie, 310), exact);
+    }
+
+    #[test]
+    fn decimal_rounding_keeps_ordinary_ties_and_scientific_width() {
+        for (format, value, expected) in [
+            ("##", 2.5, " 3"),
+            ("##", -2.5, "-3"),
+            ("##.##", 1.125, " 1.13"),
+            ("##.##", -1.125, "-1.13"),
+            ("#.##", 2.675, "2.68"),
+            ("#.##^^^^", 9.999, "10.00E+00"),
+            ("##.##^^^^", 1234.5, "12.35E+02"),
+            ("##.##^^^^", 0.00456, "45.60E-04"),
+            ("#.##^^^^", 0.0, "0.00E+00"),
+            ("#.##^^^^", -0.0, "0.00E+00"),
+        ] {
+            assert_eq!(
+                format_using(format, &[Value::Numeric(value)]).unwrap(),
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn scientific_fields_cover_the_full_finite_range() {
+        for (value, expected) in [
+            (f64::MAX, "1.80E+308"),
+            (f64::MIN_POSITIVE, "2.23E-308"),
+            (1e-309, "1.00E-309"),
+            (f64::from_bits(1), "4.94E-324"),
+        ] {
+            assert_eq!(
+                format_using("#.##^^^^", &[Value::Numeric(value)]).unwrap(),
+                expected,
+            );
+            assert_eq!(
+                format_using("#.##^^^^", &[Value::Numeric(-value)]).unwrap(),
+                format!("-{expected}"),
+            );
+        }
+        assert_eq!(
+            format_using("##.##^^^^", &[Value::Numeric(f64::from_bits(1))]).unwrap(),
+            "49.41E-325",
+        );
+        let format = format!("{}.##^^^^", "#".repeat(310));
+        assert_eq!(
+            format_using(&format, &[Value::Numeric(1.0)]).unwrap(),
+            format!("1{}.00E-309", "0".repeat(309)),
+        );
+    }
+
+    #[test]
+    fn nonfinite_values_do_not_enter_decimal_scaling() {
+        for (value, expected) in [
+            (f64::INFINITY, "infE+00"),
+            (f64::NEG_INFINITY, "-infE+00"),
+            (f64::NAN, "NaNE+00"),
+        ] {
+            assert_eq!(
+                format_using("#.##^^^^", &[Value::Numeric(value)]).unwrap(),
+                expected,
+            );
+            assert!(
+                !format_using("###.##", &[Value::Numeric(value)])
+                    .unwrap()
+                    .is_empty()
+            );
+        }
     }
 }

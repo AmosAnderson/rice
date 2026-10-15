@@ -9,8 +9,12 @@ fixed(1) = "longer"
 PRINT words(1); "|"; LEN(fixed(1)); "|"; LEN(grid(99, -2))
 DIM replacement AS NUMERIC
 replacement = 42
-SWAP words(2), replacement
-PRINT words(2); "|"; LEN(replacement)
+WHEN EXCEPTION IN
+    SWAP words(2), replacement
+USE
+    PRINT "rejected"
+END WHEN
+PRINT LEN(words(2)); "|"; replacement
 READ words(3), fixed(2), numbers$(2)
 PRINT LEN(words(3)); "|"; LEN(fixed(2)); "|"; numbers$(2)
 DATA ,,0

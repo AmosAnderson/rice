@@ -1,9 +1,7 @@
 # MAT Operations
 
-Rice implements the matrix operations below in both the default QBasic mode and
-ANSI mode. They form a limited ANSI-style extension, not the complete ANSI Full
-BASIC matrix facility or a claim that QBasic 1.1 supports this syntax.
-See [Dialects](dialects.md) and [Language Reference](language-reference.md).
+Rice implements the matrix operations below.
+See [Language reference](language-reference.md) and [Language Reference](language-reference.md).
 
 ## Syntax and dimensions
 
@@ -34,10 +32,9 @@ matrix powers, and `MAT PRINT USING` are not implemented.
 automatically treated as a column vector. Declare a vector as
 `DIM v(1 TO n, 1 TO 1)` or a row vector as `DIM v(1 TO 1, 1 TO n)`.
 
-Bounds are inclusive. Rice currently defaults to lower bound `1` in both modes,
+Bounds are inclusive. Rice currently defaults to lower bound `1`,
 so `DIM a(2, 2)` means a 2-by-2 matrix. `OPTION BASE 0` makes the same declaration
-3-by-3; this explicit option is needed when porting code that assumes QBasic's
-usual zero base. Use explicit bounds to make the matrix shape clear:
+3-by-3. Use explicit bounds to make the matrix shape clear:
 
 ```basic
 DIM a(1 TO 2, 1 TO 2)
@@ -51,6 +48,11 @@ Two-dimensional `DIM`/`REDIM` metadata defines the matrix's shape even before an
 elements have been assigned. Unassigned cells are zero. Explicit lower bounds,
 including zero and negative bounds, are preserved when reading and storing a
 dimensioned matrix.
+
+Small matrices can use bounds at either end of the signed 64-bit index range.
+Stored cells outside declared bounds are ignored by MAT extraction. Inferred
+dimensions and destination indices that exceed the supported index range raise
+an overflow error; a failed destination-index check leaves existing cells intact.
 
 ## Initialization and copying
 
@@ -107,8 +109,7 @@ without an error.
 
 ### Determinants
 
-`DET(matrix)` and `DET(matrix())` independently compute a matrix's determinant in
-both modes. This is a Rice extension. The argument is a bare matrix name, optionally
+`DET(matrix)` and `DET(matrix())` independently compute a matrix's determinant in Rice. The argument is a bare matrix name, optionally
 followed by empty parentheses; indexed elements, additional arguments, and other
 expressions are rejected without evaluating them. A same-named scalar variable or
 function is not read or called to resolve this matrix reference.
@@ -120,7 +121,7 @@ name. Calculation uses Gaussian elimination with partial pivoting and `f64`
 arithmetic; an exactly zero pivot returns determinant `0`. No tolerance is applied
 to small pivots. The input cells, array metadata, and saved determinant are unchanged.
 As with inversion, ill-conditioned matrices and non-finite values have no special
-accuracy or compatibility guarantee; arithmetic can overflow or produce NaN.
+accuracy guarantee; arithmetic can overflow or produce NaN.
 
 ```basic
 DIM a(1 TO 2, 1 TO 2)
@@ -131,8 +132,8 @@ PRINT DET(a())               ' Same calculation
 ```
 
 After a successful `MAT target = INV(source)`, `DET` or `DET()` reports that
-source matrix's saved determinant. It is initially `0`; a failed inverse leaves
-the previous value, and `CLEAR` does not reset it. Calling `DET(matrix)` does not
+source matrix's saved determinant. It is initially `0`; a failed inverse, including
+a rejected destination assignment, leaves the previous value, and `CLEAR` does not reset it. Calling `DET(matrix)` does not
 update this saved value. An ordinary variable named `DET` shadows the bare form;
 `DET()` explicitly requests the saved value.
 
@@ -166,8 +167,7 @@ string handling.
 
 ### File channels
 
-`MAT PRINT #channel, array` and `MAT INPUT #channel, array` use an open file in
-both dialects. The channel expression is evaluated once before matrix/handle
+`MAT PRINT #channel, array` and `MAT INPUT #channel, array` use an open file in Rice. The channel expression is evaluated once before matrix/handle
 validation. Neither form prompts, reads console input, or writes console output.
 The matrix must have a usable two-dimensional shape, using the same DIM metadata
 or local-element inference as the other MAT operations.
@@ -241,13 +241,12 @@ MAT uses the interpreter's existing flattened array storage:
   other MAT paths do not consistently perform ordinary checks. Do not rely on
   `OPTION EXPLICIT` as full matrix validation.
 
-These are implementation limitations, not alternate mathematical definitions.
-Portable ANSI conformance, broader MAT grammar, and automatic
-destination redimensioning are not implemented or claimed.
+Only the MAT grammar described on this page is implemented. Destinations are not
+automatically redimensioned.
 
 ## Complete example: solving a linear system
 
-This example works in both Rice dialects:
+This example works:
 
 ```basic
 ' Solve 2*x + 3*y = 8 and 4*x + y = 6.
@@ -271,3 +270,7 @@ PRINT "y = "; solution(2,1)         ' Approximately 2
 Relevant regression coverage is in [`tests/integration.rs`](../tests/integration.rs)
 and [`src/mat.rs`](../src/mat.rs), including explicit lower bounds, shape changes
 through `REDIM`, arithmetic, transpose, inverse, and small invertible matrices.
+
+## Native element types
+
+MAT retains its floating-point calculation model. INTEGER, LONG, SINGLE, INT64, and BYTE inputs convert to f64; INT64 must be exactly representable. BOOL and BYTES are not numeric matrix inputs. Every declared destination element is validated and converted before any destination cells change. Fractions cannot enter integer arrays and finite overflow cannot enter SINGLE. Use scalar INT64 arithmetic for exact full-range integers.

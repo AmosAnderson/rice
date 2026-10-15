@@ -1,8 +1,8 @@
 # Error handling
 
-Rice supports structured `WHEN EXCEPTION` handling in **both dialects** and classic `ON ERROR GOTO` handling in **QBasic mode only**. These catch runtime errors during execution, not lexer/parser errors, failures loading the main source, or errors from the definition prescan. An unhandled error ends file execution with a diagnostic and a failing process status; the REPL reports it.
+Rice supports structured `WHEN EXCEPTION` handling and classic `ON ERROR GOTO` handling. These catch runtime errors during execution, not lexer/parser errors, failures loading the main source, or errors from the definition prescan. An unhandled error ends file execution with a diagnostic and a failing process status; the REPL reports it.
 
-## Structured handlers: both modes
+## Structured handlers
 
 ```basic
 WHEN EXCEPTION IN
@@ -15,6 +15,8 @@ PRINT "after the protected block"
 ```
 
 The protected body runs until a runtime error occurs. Control then enters `USE`; if the handler finishes normally, the rest of the protected body is skipped and execution continues after `END WHEN`. If the body succeeds, `USE` is skipped. Errors raised by a handler propagate outward, where an enclosing structured handler or an eligible classic handler may catch them.
+
+`GOTO` can jump to a label in the current protected body or the current `USE` handler, including a jump out of a nested `IF` or loop. A target outside that current block is passed to the enclosing statement list, following ordinary nested-block jump rules. Jumping between the protected body and its sibling handler is not supported.
 
 `RETRY` restarts the protected body from its beginning. It does not undo assignments, output, consumed input, or other side effects. Fix the cause or bound retries to avoid an endless loop:
 
@@ -42,6 +44,8 @@ END WHEN
 
 If the failure occurs inside a loop, `IF`, or procedure call, that entire enclosing direct statement is skipped; Rice does not resume inside the failed nested construct. A normal handler exit similarly discards the rest of the protected body. `RETRY` and `CONTINUE` are control-flow statements for handlers, not general loop controls; using them outside a handler has no useful defined recovery behavior.
 
+After one or more `CONTINUE` recoveries, a later `RETRY` still restarts the original protected body from its first statement. Repeated `CONTINUE` recoveries do not nest new executions of the protected body.
+
 ### Structured exception information
 
 `EXTYPE` (also `EXTYPE()`) returns the current structured exception code; `EXTEXT$` (also `EXTEXT$()`) returns its diagnostic text. Initially and after ordinary completion they are `0` and `""`. They do not form a permanent history of the most recent error. Copy them into variables inside `USE` when the information is needed later.
@@ -59,9 +63,9 @@ The interpreter has one shared exception-information slot. Nested handlers are s
 | Other mapped I/O error with code `n` | `8000 + n` |
 | Other runtime error, including `ERROR n` | 9999 |
 
-These are Rice's implemented mappings, not a complete ANSI exception taxonomy. Floating-point operations do not all raise overflow: some can produce infinity or NaN. Only actual runtime errors enter a handler.
+Native INT64 arithmetic overflow and out-of-range integer/byte assignment use the overflow category; fractional integer assignment or incompatible types use type mismatch. Explicit parsers such as CINT64 with malformed text can raise illegal function call. Floating-point operations do not all raise overflow: some can produce infinity or NaN. Only actual runtime errors enter a handler.
 
-## Classic handlers: QBasic only
+## Classic handlers
 
 ```basic
 10 ON ERROR GOTO 100
@@ -106,7 +110,7 @@ A handler is marked active until `RESUME` or `ON ERROR GOTO 0`; another error wh
 | Other mapped host I/O errors | 76 |
 | `ERROR n` | `n` |
 
-Mapping follows the runtime error category: for example, a Rice validation failure such as an unopened channel can report general code 5 rather than a historical QB file error number. Diagnostic wording from host filesystem errors varies by platform.
+Mapping follows the runtime error category: for example, an unopened channel can report general code 5. Diagnostic wording from host filesystem errors varies by platform.
 
 `RETURN` and `RETURN label` without an active GOSUB in the current program/procedure produce the general runtime-error category (5). An executed targeted RETURN first ends one GOSUB invocation; an unknown or unreachable destination then produces the undefined-label category (8). These are category mappings, not a guarantee that ON ERROR traps the failure: unmatched RETURN and unresolved transfers handled at the top-level program boundary can bypass the handler, following the existing GOTO behavior. Reading an empty DATA item into a record reports type-mismatch code 13 and leaves that item unconsumed. Earlier successful READ destinations remain assigned.
 

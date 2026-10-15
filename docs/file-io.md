@@ -1,12 +1,12 @@
 # File I/O
 
-Rice provides text I/O in both dialects, typed binary serialization in QBasic mode, and raw text/byte-count `GET`/`PUT` in ANSI mode. Both `OPEN` syntaxes below are accepted in **both** profiles. Historical names do not imply full ANSI or QB file-format compatibility. See [dialects](dialects.md) and [error handling](error-handling.md).
+Rice provides text I/O, typed binary serialization, and raw BYTES transfers. Both `OPEN` syntaxes below are accepted. See the [language reference](language-reference.md) and [error handling](error-handling.md).
 
 Paths are host filesystem paths, relative to the process's current working directory, not automatically to the `.bas` source directory. `CHDIR` changes that directory. File channels are integer-converted numeric expressions from 1 through 255; fractional values truncate toward zero. Opening an occupied or invalid channel raises an error.
 
 ## Opening and closing
 
-### ANSI-style syntax
+### Named-channel syntax
 
 ```basic
 OPEN #channel: NAME path$ [, ACCESS INPUT|OUTPUT|OUTIN] [, ORGANIZATION SEQUENTIAL|STREAM]
@@ -21,7 +21,6 @@ OPEN #channel: NAME path$ [, ACCESS INPUT|OUTPUT|OUTIN] [, ORGANIZATION SEQUENTI
 | `OUTIN` | Read and write; create if missing, preserve existing contents |
 
 ```basic
-OPTION DIALECT "ANSI"
 OPEN #1: NAME "notes.txt", ACCESS OUTPUT
 PRINT #1, "Hello"
 CLOSE #1
@@ -31,7 +30,7 @@ PRINT text$
 CLOSE #1
 ```
 
-### QB-style syntax
+### FOR syntax
 
 ```basic
 OPEN path$ FOR mode [ACCESS READ|WRITE|READ WRITE] [SHARED|LOCK READ|LOCK WRITE|LOCK READ WRITE] AS [#]channel [LEN = length]
@@ -47,7 +46,7 @@ OPEN path$ FOR mode [ACCESS READ|WRITE|READ WRITE] [SHARED|LOCK READ|LOCK WRITE|
 
 The optional `ACCESS` and sharing/locking clauses are parsed and discarded: they do not change the access selected by `FOR`, acquire locks, or enforce sharing. The order shown is the supported clause order. The older comma-separated `OPEN "I", #1, ...` form is not implemented.
 
-`LEN` must convert to a positive integer. It supplies a record length even with modes other than `RANDOM`; the parser does not restrict it by mode. QB `RANDOM` defaults to **128 bytes**. ANSI mode does not supply that default, even when `FOR RANDOM` is used. In QB mode an ANSI-style `ACCESS OUTIN, ORGANIZATION SEQUENTIAL` also gets the 128-byte default; omitting `ORGANIZATION` does not trigger it.
+`LEN` must convert to a positive integer. It supplies a record length even with modes other than `RANDOM`; the parser does not restrict it by mode. `RANDOM` defaults to **128 bytes**. A named-channel `ACCESS OUTIN, ORGANIZATION SEQUENTIAL` also gets the 128-byte default; omitting `ORGANIZATION` does not trigger it.
 
 ```basic
 OPEN "events.txt" FOR APPEND AS #1
@@ -55,7 +54,7 @@ PRINT #1, "new event"
 CLOSE #1
 ```
 
-`CLOSE [#]n [, [#]n ...]` flushes and closes selected channels. `CLOSE` or `RESET` closes all. Closing a channel that is not open is silently ignored. If a flush fails, handles remain available so an error handler can retry. Normal interpreter destruction attempts to flush remaining writers, but explicit closing reports failures to the program.
+`CLOSE [#]n [, [#]n ...]` flushes and closes selected channels. `CLOSE` or `RESET` closes all. Closing a channel that is not open is silently ignored. Both `CLOSE` and `RESET` report flush failures and retain all selected handles so an error handler can retry; channels close only after every selected writer flushes successfully. Normal interpreter destruction attempts to flush remaining writers, but explicit closing reports failures to the program.
 
 ## Text output
 
@@ -85,13 +84,13 @@ LINE INPUT #n, stringTarget
 value$ = INPUT$(count, #n)
 ```
 
-Targets of statement-level file input are scalar names or indexed array elements in either dialect, for example `INPUT #1, names$(i), scores(i, 2)` and `LINE INPUT #1, lines$(i)`. Record-member destinations, slices, and empty subscripts are rejected. Declare a scalar string with `$` or `DIM name AS STRING` before reading it. Untouched array elements use their explicit AS type if present, so `DIM lines(3) AS STRING` and `AS STRING * n` work without a `$` suffix; otherwise suffix/DEFSTR defaults apply. Existing element values take precedence. A numeric target cannot receive text through `INPUT #`; `LINE INPUT #` requires a string value. Record values are rejected by both file-input statements.
+File-input destinations are scalar names or array elements. Members, slices, and empty subscripts are rejected. Retained declarations select conversion and defaults; strings need STRING or a $ suffix, while STRING * n pads/truncates. INPUT # rejects text for numeric destinations, LINE INPUT # requires a string destination, and both reject records.
 
 After evaluating the channel expression, file input resolves all destination indices once from left to right, before consuming file data. Index values truncate through a checked integer conversion. Base-name declaration checks and constant checks also happen before reading, including a constant that aliases a flattened element key. Array bounds/rank are not enforced. All INPUT values are committed after successful conversion, so `INPUT #1, i, values(i)` uses the old `i` to choose its element. Unlike READ, earlier input values cannot change later target locations. Index-expression side effects are not rolled back.
 
 `INPUT #` reads exactly as many fields as there are targets. Fields may cross physical lines or be consumed by subsequent `INPUT #` statements. It handles quoted fields, doubled quotes, embedded commas/newlines inside quotes, and surrounding whitespace. Unquoted fields are trimmed. Leading spaces, tabs, CR, and LF are skipped before each field. Empty fields between commas are preserved; blank lines and a final delimiter are not a complete CSV empty-record model. Text must be valid UTF-8. This is intended for Rice `WRITE #` round-trips, not unrestricted CSV validation.
 
-Numeric fields use Rust's `f64` text parser rather than BASIC `VAL` syntax; malformed numbers cause a type mismatch. All requested fields are consumed before conversion/assignment; a later conversion error leaves targets unchanged but advances the file position. Numeric file input currently accepts `NaN` and infinity spellings accepted by that parser, unlike interactive `INPUT`, which requires finite numbers.
+NUMERIC/DOUBLE fields use the f64 text parser, independently of VAL syntax. INTEGER, LONG, INT64, and BYTE parse decimal integers with range checks; SINGLE converts numeric text to f32 with finite-overflow checks. BOOL accepts TRUE/FALSE/1/0, and BYTES accepts hex pairs with optional &H. All fields are consumed before conversion and assignment; a later conversion error leaves all targets unchanged but advances the file position. NUMERIC/DOUBLE file input accepts the parser's NaN/infinity spellings; interactive INPUT requires finite numeric values.
 
 `LINE INPUT #` reads through LF, removes trailing LF/CR, and preserves spaces and commas. `INPUT #` and `LINE INPUT #` raise error 62 when reading past EOF; an unfinished quoted string also raises 62.
 
@@ -129,17 +128,17 @@ CLOSE #1
 | Form | Meaning |
 |---|---|
 | `FREEFILE` (bare keyword only) | First unused channel in 1–255; returns 0 if none is free |
-| `EOF(n)` | Dialect true (`-1` QB, `1` ANSI) at EOF, otherwise 0 |
+| `EOF(n)` | `-1` at EOF, otherwise `0` |
 | `LOF(n)` | File length in bytes; flushes buffered output first |
-| `LOC(n)` | Current **zero-based byte offset**, not a QB record count |
+| `LOC(n)` | Current **zero-based byte offset** |
 | `SEEK(n)` | Next byte position, 1-based; flushes output first |
 | `SEEK [#]n, position` | Seek to 1-based byte position |
 | `SET #n: POINTER position` | Same byte seek |
 | `ASK #n: POINTER variable` | Store the 1-based byte position in a scalar variable; flushes output first |
 
-All positioning is in bytes, even for UTF-8 text. Explicit `SEEK`/`SET POINTER` positions must convert to integers at least 1; they flush writers, reposition both reader and writer, and clear the cached EOF flag. These operations also work on sequential handles. `SET #n: RECORD` is not implemented. APPEND writes remain at the host file's end even if a seek is requested.
+All positioning is in bytes, even for UTF-8 text. Explicit `SEEK`/`SET POINTER` positions must convert to integers at least 1; they flush pending output at its original position before repositioning either reader or writer, then clear the cached EOF flag. A flush failure prevents the requested seek. These operations also work on sequential handles. `SET #n: RECORD` is not implemented. APPEND writes remain at the host file's end even if a seek is requested.
 
-`EOF` peeks at a readable handle and caches its result; a write-only channel reports true. Peek errors are currently treated as EOF. `LOC` prefers the reader on read/write handles; `SEEK(n)` and `ASK POINTER` prefer the writer. Buffered reader/writer positions can diverge when operations are mixed, and their reported values are not a unified QB record pointer. Prefer an explicit `SEEK`/`SET POINTER` between reading and writing. Record-positioned `GET` does not itself clear a previously cached EOF flag. Trailing whitespace can also leave `EOF` false immediately before an `INPUT #` that finds no further field.
+`EOF` peeks at a readable handle and caches its result; a write-only channel reports true. Peek errors are currently treated as EOF. `LOC` prefers the reader on read/write handles; `SEEK(n)` and `ASK POINTER` prefer the writer. Buffered reader/writer positions can diverge when operations are mixed. Prefer an explicit `SEEK`/`SET POINTER` between reading and writing. Record-positioned `GET` does not itself clear a previously cached EOF flag. Trailing whitespace can also leave `EOF` false immediately before an `INPUT #` that finds no further field.
 
 ## GET and PUT syntax
 
@@ -150,36 +149,67 @@ GET #n, , records(i)
 PUT #n, , values%(i, j)
 ```
 
-The parser requires `#` and uses **commas**, not `GET #n: variable`. Operands may be scalar names or indexed array elements in either dialect, including record-valued elements. Empty subscripts, individual record members, and slices are not accepted. Omitting the position uses the current cursor. An explicit position is at least 1 and means byte offset `position - 1`, or `(position - 1) * recordLength` when `LEN`/the RANDOM default/`FIELD` supplies a record length. Seek positions from `SEEK` remain byte positions regardless of record length.
+The parser requires `#` and uses **commas**, not `GET #n: variable`. Operands may be scalar names or indexed array elements, including record-valued elements. Empty subscripts, individual record members, and slices are not accepted. Omitting the position uses the current cursor. An explicit position is at least 1 and means byte offset `position - 1`, or `(position - 1) * recordLength` when `LEN`/the RANDOM default/`FIELD` supplies a record length. Seek positions from `SEEK` remain byte positions regardless of record length.
 
 The channel, optional position, and array indices are evaluated in that order, with indices evaluated left to right exactly once. The location, current/default value, and binary layout are captured before this operation flushes, seeks, or transfers data. Index functions can inspect or use the same open channel; their side effects are retained. Invalid indices or destination checks fail before this operation moves the file cursor. GET checks the base name and flattened element key for constants and follows INPUT's declaration checks. PUT permits constant sources; indexed PUT checks the base declaration under `OPTION EXPLICIT`, while scalar PUT retains its existing declaration-check exception. No array bounds or rank checks are added.
 
-Missing array elements use their ordinary numeric/string default or a default record for a declared record array. Existing scalar fallback behavior is unchanged: a missing scalar PUT source defaults to numeric zero in QB and an empty string in ANSI. GET assigns one complete decoded value to its captured location, so a failed typed read leaves that element unchanged even when it has consumed bytes.
+Missing declared values use their typed defaults, including after CLEAR. Missing array elements use their declared type's default or a default record for a declared record array. An undeclared scalar PUT source defaults to numeric zero. GET assigns one complete decoded value to its captured location, so a failed typed read leaves that value unchanged even when it has consumed bytes.
 
 With no variable, a defined `FIELD` buffer is read/written. Without a field layout, the operation merely validates the handle and optionally seeks; it does not transfer a default record. Typed scalar/record I/O is not padded to `LEN` and does not enforce that the serialized value fits one record; the caller must choose a matching layout and length.
 
-### QBasic typed binary serialization
+### Native scalar values and raw byte buffers
+
+Native `INT64`, `BOOL`/`BOOLEAN`, `BYTE`, and `BYTES` scalar or array-element
+operands work. Their native representation takes
+precedence over suffix shorthand. INT64 uses eight little-endian bytes;
+BOOL uses one byte (`0` or `1`, with other values rejected when read); BYTE uses
+one byte. These transfers preserve the native type.
+
+Top-level BYTES PUT writes the buffer directly, without a length header. Before
+GET, allocate the requested read size with BYTEBUFFER; a short read returns only
+the bytes available, preserving every byte without text decoding. A zero-length
+buffer requests zero bytes.
+
+```basic
+DIM payload AS BYTES
+OPEN "payload.bin" FOR BINARY AS #1
+payload = BYTES(0, 128, 255)
+PUT #1, 1, payload
+payload = BYTEBUFFER(3)
+GET #1, 1, payload
+PRINT HEXENCODE$(payload)           ' 0080FF
+CLOSE #1
+```
+
+Native fields inside a record follow the structured table below. In
+particular, BYTES fields include a four-byte length header; this differs from
+raw top-level BYTES transfer.
+
+### Typed binary serialization
 
 `PUT` serializes the scalar or selected element; `GET` deserializes the same layout. Values are little-endian, without array descriptors or automatic record padding:
 
 | Type selection | Binary layout |
 |---|---|
-| Scalar `%`; `INTEGER` record field | Signed 16-bit integer, 2 bytes |
-| Scalar `&`; `LONG` record field | Signed 32-bit integer, 4 bytes |
-| Scalar `!`; `SINGLE` record field | IEEE 754 binary32, 4 bytes |
-| Scalar `#`, unsuffixed numeric; `DOUBLE`/`NUMERIC` field | IEEE 754 binary64, 8 bytes |
-| Scalar `$`; `STRING` field | Unsigned 16-bit byte count, then that many bytes (maximum 65535) |
-| `STRING * n` record field | Exactly `n` bytes, truncated or NUL-padded; `GET` strips trailing NULs |
+| INTEGER declaration or `%` suffix | Signed 16-bit integer, 2 bytes |
+| LONG declaration or `&` suffix | Signed 32-bit integer, 4 bytes |
+| SINGLE declaration or `!` suffix | IEEE 754 binary32, 4 bytes |
+| NUMERIC/DOUBLE declaration, `#`, or dynamic numeric value | IEEE 754 binary64, 8 bytes |
+| Native INT64 scalar/element; `INT64` record field | Signed 64-bit integer, 8 bytes |
+| Native BOOL scalar/element; `BOOL`/`BOOLEAN` record field | One byte, `0` or `1` |
+| Native BYTE scalar/element; `BYTE` record field | One unsigned byte |
+| `BYTES` record field | Unsigned 32-bit little-endian length, followed by that many bytes |
+| STRING declaration or `$` suffix | Unsigned 16-bit byte count, then that many bytes (maximum 65535) |
+| STRING * n declaration | Exactly n bytes; assignment pads/truncates characters before serialization; GET restores the fixed character width |
 | User-defined record | Each field recursively in declaration order, using declared field types |
 
-Scalar width selection follows the variable suffix and retained record/array type metadata, not a complete scalar declaration table. For example, `DIM n AS INTEGER` does not make unsuffixed `n` a two-byte scalar; use `n%`. An unsuffixed scalar declared `AS STRING` is likewise not a reliable binary string operand; use `s$`. Fixed-length scalar declarations do not retain the fixed binary width. Record fields retain their declared serialization types.
+Retained AS metadata selects binary layouts for scalars, array elements, and fields. An explicit AS overrides suffix shorthand: DIM n AS INTEGER transfers two bytes, DIM n% AS DOUBLE transfers eight, and AS STRING * n transfers exactly n bytes. Without an explicit declaration, suffixes or the actual typed value select the layout.
 
-For an array element, the suffix is taken from the array's base name: `samples%(i)` uses two bytes and `names$(i)` uses a string length header. A record-valued element uses its current record type; an untouched declared record-array element uses the array's record type. Primitive `AS` metadata sets missing-element defaults but does not select binary widths: use suffixed names for INTEGER/LONG/SINGLE/STRING array transfers. `DIM names(3) AS STRING` supplies empty string defaults for text input, but an unsuffixed QB binary PUT still selects numeric storage and rejects such a string value. Likewise, `AS STRING * n` does not impose a fixed width on `$` array transfers. Array syntax always names storage here; it does not call a same-named builtin or user function.
+Array-element transfers use the same declared types and layouts as scalars, taking suffix shorthand from the base name. Untouched elements use declared defaults, including records and fixed strings. Array syntax names storage here; it never calls a same-named builtin or user function.
 
-Integer serialization truncates fractions and saturates out-of-range values through casts; it does not raise QB integer overflow. Single serialization converts to `f32` and can lose precision or produce infinity. Binary strings map characters U+0000–U+00FF to bytes directly; characters above U+00FF become byte 255. They do not use UTF-8 or historical code-page conversion.
+Integer serialization requires exact in-range values; SINGLE conversion rejects finite overflow. Binary strings map Unicode U+0000–U+00FF directly to bytes and clamp higher characters to 255. They do not use UTF-8; use BYTES and explicit encoding for UTF-8 data.
 
 ```basic
-OPTION DIALECT "QB"
 TYPE Person
     name AS STRING * 12
     age AS INTEGER
@@ -196,24 +226,7 @@ CLOSE #1
 
 Typed `GET` requires every byte of the selected layout and reports an I/O error on truncation. It assigns the target only after successful decoding, but the file position can have advanced on failure. `PUT` can have written earlier fields before a later field fails. Neither is a transactional operation.
 
-### ANSI raw transfers
-
-ANSI mode does not use the typed serialization table. `PUT` writes a string as UTF-8 bytes; a numeric value is written as ordinary numeric text. A record value writes its display marker, such as `[PERSON]`, rather than binary fields. `GET` always stores a string, even if the target previously held a number or record. It reads up to the existing nonempty string's UTF-8 byte length, otherwise up to 128 bytes, performs lossy UTF-8 decoding, and strips trailing NULs. At EOF it returns an empty string and sets EOF; short reads are allowed. These rules apply equally to scalar names and indexed elements.
-
-```basic
-OPTION DIALECT "ANSI"
-OPEN #1: NAME "raw.txt", ORGANIZATION STREAM, ACCESS OUTIN
-text$ = "ABC"
-PUT #1, 1, text$
-text$ = SPACE$(3)
-GET #1, 1, text$
-PRINT text$
-CLOSE #1
-```
-
-This is Rice's implemented raw transfer behavior, not a complete ANSI record/file organization facility.
-
-## FIELD buffers: QBasic only
+## FIELD buffers
 
 ```basic
 OPEN "records.dat" FOR RANDOM AS #1 LEN = 12
@@ -228,11 +241,11 @@ CLOSE #1
 
 `FIELD [#]n, width AS variable$ [, ...]` defines consecutive byte slices of a channel buffer. Widths truncate toward zero and must be nonnegative; the total cannot exceed the record length. A channel without a record length gets `MAX(totalWidth, 1)`; the implementation does not require it to have been opened `FOR RANDOM`. New buffers are space-filled. A later `FIELD` replaces that channel's layout.
 
-`LSET variable$ = expression$` left-aligns; `RSET` right-aligns. Both pad with spaces and truncate to the **first** `width` source bytes when too long. They update the matched buffer slot and variable. Plain assignment to a field variable does not update the buffer. `GET` without a variable reads into a space-filled buffer, updates all mapped variables, and permits short records; missing bytes stay spaces. `PUT` without a variable writes the whole buffer, including unmapped trailing bytes.
+`LSET variable$ = expression$` left-aligns; `RSET` right-aligns. Both pad with spaces and truncate to the **first** `width` source bytes when too long. They update the matched buffer slot and variable. Plain assignment to a field variable does not update the buffer. `GET` without a variable reads a complete record across internal buffer boundaries before updating all mapped variables. A final record shortened by EOF is permitted; missing bytes stay spaces. `PUT` without a variable writes the whole buffer, including unmapped trailing bytes.
 
-Only `$`-suffixed names qualify for `FIELD`, `LSET`, and `RSET`, even if an unsuffixed variable was declared `AS STRING`. Without a field binding, `LSET`/`RSET` use the existing variable's byte length, or the replacement length if the variable has no string value. Existing empty strings therefore stay empty. Avoid binding the same variable name in multiple channels: lookup searches a hash map and which channel is updated is unspecified. These operations use the binary string mapping above and do not implement record-to-record `LSET`.
+FIELD, LSET, and RSET accept $-suffixed names and variables explicitly declared AS STRING or STRING * n. Without a field binding, `LSET`/`RSET` use the existing variable's byte length, or the replacement length if the variable has no string value. Existing empty strings therefore stay empty. Avoid binding the same variable name in multiple channels: lookup searches a hash map and which channel is updated is unspecified. These operations use the binary string mapping above and do not implement record-to-record `LSET`.
 
-### Packed conversion functions: both modes
+### Packed conversion functions
 
 | Pack | Unpack | Bytes and representation |
 |---|---|---|
@@ -241,9 +254,9 @@ Only `$`-suffixed names qualify for `FIELD`, `LSET`, and `RSET`, even if an unsu
 | `MKS$(number)` | `CVS(string$)` | 4, IEEE binary32 |
 | `MKD$(number)` | `CVD(string$)` | 8, IEEE binary64 |
 
-All take one argument. The packers use the same casts as typed serialization. Unpackers require at least the listed byte count, ignore extra bytes, and return `f64`. Use them with FIELD buffers or typed binary strings, not UTF-8 `PRINT #`/`INPUT$` for byte-preserving storage. `PUT` of a packed `$` string adds its own two-byte string-length header.
+All packed conversion functions take one argument. MKI$/MKL$ require exact integers in range, and MKS$ rejects finite overflow. CVI, CVL, and CVS return INTEGER, LONG, and SINGLE; CVD returns NUMERIC. Unpackers require the specified byte count and ignore trailing bytes. Use packed strings with binary I/O; PUT of a variable STRING adds its own two-byte length header.
 
-## Filesystem and host commands: both modes
+## Filesystem and host commands
 
 | Statement | Behavior |
 |---|---|
@@ -256,4 +269,4 @@ All take one argument. The packers use the same casts as typed serialization. Un
 | `FILES [path$]` | List directory names, default `.`; no sorting or wildcard filtering |
 | `SHELL [command$]` | Synchronously invoke `sh -c` on non-Windows or `cmd /c` on Windows; no argument does nothing |
 
-If `FILES` receives a non-directory path or wildcard-looking argument, it lists its parent directory without filtering. Individual directory entry failures are skipped. `CHDRIVE` does not provide DOS drive emulation on non-Windows hosts. `SHELL` inherits host standard streams and interpreter-local environment overrides; command launch failures raise an error, but a nonzero child exit status is currently ignored. `ENVIRON` setting is QB-only; `ENVIRON$` reading is shared.
+If `FILES` receives a non-directory path or wildcard-looking argument, it lists its parent directory without filtering. Individual directory entry failures are skipped. `CHDRIVE` does not provide DOS drive emulation on non-Windows hosts. `SHELL` inherits host standard streams and interpreter-local environment overrides; command launch failures raise an error, but a nonzero child exit status is currently ignored. `ENVIRON` sets interpreter-local overrides; `ENVIRON$` reads environment values.

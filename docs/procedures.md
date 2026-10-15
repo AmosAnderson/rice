@@ -1,9 +1,6 @@
 # Procedures and Scope
 
-This page specifies the procedures implemented by Rice BASIC. Both the default
-QBasic mode and ANSI mode support these forms unless a difference is stated.
-The mode names describe Rice's compatibility behavior; they do not imply complete
-QBasic 1.1 or ANSI Full BASIC conformance. See [Dialects](dialects.md).
+This page specifies the procedures implemented by Rice BASIC. See the [language reference](language-reference.md) for core language rules.
 
 ## Definitions and calls
 
@@ -44,18 +41,18 @@ Banner "Hello", 12
 PRINT Factorial(5)                  ' 120
 ```
 
-| Call form | QBasic mode (default) | ANSI mode |
-| --- | --- | --- |
-| `CALL P(x, y)` | Calls `SUB P` | Calls `SUB P` |
-| `P x, y` | Calls `SUB P` | Calls `SUB P` |
-| `CALL P` or `P` | Calls a zero-argument `SUB` | Same |
-| `P(x, y)` | Not a parenthesized argument-list form; use `CALL` | Accepted |
-| `P (x)` | One parenthesized expression; forces value passing | Accepted as a one-argument call; explicit `BYREF` still writes back |
-| `CALL P((x))` | Forces value passing for `x` | Forces value passing for `x` |
-| `F(x, y)` in an expression | Calls a function or accesses an array | Same |
+| Call form | Behavior |
+| --- | --- |
+| `CALL P(x, y)` | Calls `SUB P` |
+| `P x, y` | Calls `SUB P` |
+| `CALL P` or `P` | Calls a zero-argument `SUB` |
+| `P(x, y)` | Not a parenthesized argument-list form; use `CALL` |
+| `P (x)` | One parenthesized expression; forces value passing |
+| `CALL P((x))` | Forces value passing for `x` |
+| `F(x, y)` in an expression | Calls a function or accesses an array |
 
 With `CALL`, arguments must be inside parentheses: `CALL P x` is not supported.
-Without `CALL` in QBasic mode, individual arguments may be parenthesized, as in
+Without `CALL`, individual arguments may be parenthesized, as in
 `P (x), (y)`, but a comma-separated list cannot be enclosed in one pair.
 
 Zero-argument functions can be called with `F()` or, when no variable named `F`
@@ -72,20 +69,9 @@ depth is limited by the host stack; there is no specified portable recursion lim
 
 ## Function result types
 
-`AS type` initializes the function-name result variable at each call in both
-dialects. `AS STRING` and `AS STRING * n` start as `""`; numeric types start as
-`0`; `AS RecordType` creates a fresh record with recursively initialized fields.
-An explicit `AS` takes precedence over the name suffix, just as in `DIM`.
-Without `AS`, `$` names start as `""` and other names as `0`; DEFSTR does not
-change this result default. Early `EXIT FUNCTION` returns the current result.
+`AS type` initializes and enforces the function-name result binding at each call. STRING starts empty; STRING * n starts with n spaces; numeric types start with their own zero, BOOL false, BYTES an empty buffer, and records recursively initialized fields. Explicit AS overrides suffix shorthand. A suffix without AS enforces its corresponding type. An unsuffixed result without AS starts at numeric zero and remains dynamic; DEFtype does not change that result default. EXIT FUNCTION returns the current result.
 
-Assignments remain permissive: `AS` does not coerce or enforce the returned
-value, and fixed-length strings are not padded/truncated by assignment. The
-initial result is fresh even for recursive calls or a `STATIC` function.
-An undefined or recursively defined result TYPE raises an error before the
-function body runs. TYPE definitions may appear later in the same source because
-they are prescanned before execution. This extends the old behavior in which
-`AS` was ignored and an unassigned `FUNCTION Text() AS STRING` returned `0`.
+Result assignments obey the same conversion rules as variables, including integer range checks, fixed-string padding/truncation, and matching record TYPE names. The initial result is fresh even for recursive calls and STATIC functions. Undefined or recursive result TYPEs fail before the body runs. TYPE definitions are prescanned.
 
 ```basic
 FUNCTION Greeting$(who$) AS STRING
@@ -107,8 +93,7 @@ END FUNCTION
 PRINT Origin().x; ","; Origin().y   ' 10,0
 ```
 
-Use `EXIT FUNCTION` for an early return. `RETURN` belongs to `GOSUB` in QBasic
-mode and is not a function-return statement. `END` inside a `SUB` stops the whole
+Use `EXIT FUNCTION` for an early return. `RETURN` belongs to `GOSUB` and is not a function-return statement. `END` inside a `SUB` stops the whole
 program. A current implementation limitation is that `END` inside a `FUNCTION`
 does not stop the caller; do not use it for program termination. Unmatched RETURN
 and unresolved GOTO/RETURN targets at a function boundary report runtime errors.
@@ -120,11 +105,9 @@ for the limitations of error handlers in procedures.
 
 ## DEF functions
 
-QBasic mode accepts single-expression and multiline `DEF` functions. ANSI mode
-rejects `DEF`; use `FUNCTION` there.
+Rice accepts single-expression and multiline `DEF` functions.
 
 ```basic
-OPTION DIALECT "QB"
 DEF FNSquare(x) = x * x
 
 DEF FNAbsolute(x)
@@ -147,23 +130,23 @@ may use `EXIT FUNCTION`; `EXIT DEF` is not recognized.
 
 ```text
 DECLARE SUB name [(parameter, ...)]
-DECLARE FUNCTION name [(parameter, ...)]
+DECLARE FUNCTION name [(parameter, ...)] [AS type]
 ```
 
-These declarations are optional and have no runtime effect. They do not validate
-the eventual definition, supply missing parameters, or define an external
-procedure. A return `AS type` clause after `DECLARE FUNCTION` is **not accepted**,
-even though `FUNCTION` itself accepts it. Type clauses on parameters are accepted.
+DECLARE signatures are checked against matching definitions after source prescan and before execution. The procedure kind, parameter count, passing modes, array markers, parameter types, and function result type must agree; parameter names may differ. NUMERIC and DOUBLE are equivalent. A declaration without a definition can remain available for a later REPL submission, but cannot supply executable code. Runtime conversion follows the actual definition.
+
+If signature validation fails, the submission does not execute or retain its prescanned definitions, declarations, TYPE definitions, or DATA. Previously accepted definitions and DATA remain available, so a rejected declaration or redefinition does not prevent later REPL commands from running. Errors raised after validation during execution retain the usual runtime side effects.
 
 ## Parameter passing
 
-| Property | QBasic mode (default) | ANSI mode |
-| --- | --- | --- |
-| Unqualified parameter | `BYREF` | `BYVAL` |
-| Explicit `BYREF` / `BYVAL` | Accepted | Accepted |
-| Scalar `AS type` | Parsed, not enforced at runtime | Same |
-| Whole record argument | Copied in; copied back for a `BYREF` variable or array element | Copied in; copied back only with explicit `BYREF` |
-| Array parameter `a()` | Syntax accepted; array binding is not implemented | Same |
+| Property | Behavior |
+| --- | --- |
+| Unqualified parameter | `BYREF` |
+| Explicit `BYREF` / `BYVAL` | Accepted |
+| Explicit `AS type` or suffix shorthand | Converts arguments and enforces assignments, including record identity and fixed strings |
+| Unsuffixed parameter without AS | Keeps dynamic argument values |
+| Whole record argument | Copied in; copied back for a `BYREF` variable or array element |
+| Array parameter `a()` | Syntax accepted; array binding is not implemented |
 
 Arguments are evaluated left to right in the caller, before entering the procedure.
 Each value is copied into a parameter. At exit, parameters marked `BYREF` are
@@ -188,25 +171,24 @@ END SUB
 
 n = 10
 CALL Change(n)
-PRINT n                            ' 42 in both modes
+PRINT n                            ' 42
 n = 10
 CALL Change((n))
-PRINT n                            ' 10 in both modes
+PRINT n                            ' 10
 
 DIM a(1 TO 2)
 a(1) = 7
 CALL Change(a(1))
-PRINT a(1)                         ' 42 in both modes
+PRINT a(1)                         ' 42
 CALL Change((a(1)))                ' Explicit expression: no write-back
 ```
 
-This is copy-in/copy-out, not a live alias. When the same variable or element is
-passed to two parameters, they start with independent values, and later
-parameters win on write-back. Changes are also copied back when a procedure exits
-with a runtime error. Parameter `AS` declarations do not coerce values or reject
-mismatched types. Invalid index evaluation prevents entering the procedure;
-earlier argument-evaluation side effects are not rolled back. These rules apply
-to SUB, FUNCTION, and DEF calls.
+This is copy-in/copy-out, not a live alias. Aliased parameters begin with independent values; later parameters win on write-back. Copy-back also occurs on a runtime-error exit. Every explicit parameter type and suffix shorthand converts arguments and assignments. All caller destination conversions are validated before any copy-back write; a conversion failure preserves the caller destinations. Invalid index evaluation prevents entry, while earlier argument side effects remain. These rules apply to SUB, FUNCTION, and DEF calls.
+
+Copy-back follows ordinary assignment scope and type rules. If an argument reads
+an inherited value but copy-back creates a local binding, the current DEFtype
+applies to that new binding. Failed conversion does not create a local declaration
+that would hide the inherited value.
 
 ### Array parameter limitation
 
@@ -246,17 +228,12 @@ by a normal assignment. Avoid using parameter names that collide with shared
 variables or constants: parameter binding uses the same environment rules.
 
 ```text
-SHARED name [, name ...]
+SHARED name [()] [AS type] [, ...]
 DIM SHARED declaration [, declaration ...]
-COMMON [SHARED] name [()] [AS type] [, ...]     QBasic mode only
+COMMON [SHARED] name [()] [AS type] [, ...]
 ```
 
-`SHARED` inside a procedure sends reads and writes of that exact name to the root
-environment. It accepts plain names only, without `AS` clauses or array
-parentheses. Module-level `DIM SHARED` initializes a variable and makes it shared
-in subsequent procedure calls. `COMMON` and `COMMON SHARED` are identical in
-Rice: both mark names shared, without initializing their values. The optional
-`COMMON` type and array placeholders are parsed but have no type/allocation effect.
+SHARED sends reads and writes of a name to the root environment. SHARED and COMMON accept optional empty array markers and AS types. An explicit AS validates/converts an existing dynamic shared value without resetting it, or initializes a missing value to its declared default. A conflicting existing declaration is rejected; NUMERIC/DOUBLE aliases agree. Without AS, an existing binding keeps its type/value; a missing binding uses suffix/DEFtype defaults. DIM SHARED initializes and declares a shared variable. COMMON and COMMON SHARED have identical single-program sharing behavior; empty array markers do not allocate dimensions or create array parameters.
 
 ```basic
 DIM SHARED total AS NUMERIC
@@ -264,15 +241,16 @@ SUB AddTotal(amount)
     total = total + amount
 END SUB
 CALL AddTotal(5)
-PRINT total                        ' 5 in both modes
+PRINT total                        ' 5
 ```
 
-Sharing an array's base name does not share the flattened element names used by
-the current runtime. `DIM SHARED a(...)`, `SHARED a`, and `COMMON a()` do not make
-element writes propagate to the caller. Scalar records do share as whole values,
-so `SHARED state` also permits updating `state.field`.
+Sharing an array's base name routes its element reads and writes to the root
+environment. `DIM SHARED a(...)`, `SHARED a`, and `COMMON a()` share element
+values and enforce the root array's declared type. A local declaration can
+shadow an inherited shared array. Scalar records share as whole values, so
+`SHARED state` also permits updating `state.field`.
 
-In QBasic mode, `OPTION EXPLICIT` recognizes local declarations, parameters, the function-result
+`OPTION EXPLICIT` recognizes local declarations, parameters, the function-result
 name, constants, and shared names. Ordinary undeclared reads that already find a
 value in an ancestor can still succeed; declaration checking is not a complete
 static scope check. Array bounds/type metadata is interpreter-wide rather than
@@ -285,12 +263,14 @@ See [Multi-Module Programming](multi-module.md) for the single-source restrictio
 
 ## Static storage
 
-`STATIC declaration [, declaration ...]` preserves named scalar or record values
-between calls to a procedure. A declaration may include `AS type`.
+`STATIC declaration [, declaration ...]` preserves local scalar, record, and array
+values with their declared types between procedure calls. It accepts the same
+type and dimension forms as DIM. Initialization uses local storage even when a
+parent scope has an identically named value, unless the name is explicitly SHARED.
 
 ```basic
 SUB Counter
-    STATIC count AS NUMERIC
+    STATIC count AS INTEGER
     count = count + 1
     PRINT count
 END SUB
@@ -299,23 +279,26 @@ CALL Counter                       ' 2
 ```
 
 `SUB name(...) STATIC` and `FUNCTION name(...) [AS type] STATIC` preserve all local
-values except parameters and the function result. Static state is keyed by
-procedure name, persists through `CLEAR`, and is not discarded when a procedure
-is redefined in the same interpreter. A fresh interpreter, including a fresh REPL
-`RUN`, starts with empty static storage.
+values and types except parameters and the function result. Explicit STATIC
+bindings and array elements remain persistent even when a later invocation skips
+the declaration; updates on that invocation are saved too.
+Implicit arrays also retain their initialization state, including arrays first
+used only in a read, so later DEFtype statements do not change existing bindings.
 
-Current limitations:
+CLEAR within a procedure resets its current local values to their declared
+defaults. It retains static type metadata even when no values remain to save, so a
+later call that skips STATIC still enforces the type. The next invocation resumes
+from the values saved when the previous call exited. DIM still executes and resets
+its scalar/record slot whenever reached, including inside a STATIC procedure.
+CLEAR removes implicit array initialization state, allowing a later DEFtype to
+apply when an undeclared array is next initialized.
 
-- A `DIM` statement still runs every call and resets its scalar/record value, even
-  in a procedure declared `STATIC`. Prefer `STATIC count` for an explicit counter.
-- `STATIC` initializes only when no value resolves, so an identically named outer
-  variable can affect initialization. Choose distinct names when that matters.
-- `STATIC a(bounds)` is parsed, but it does not create dimension metadata or retain
-  individual array elements. A procedure-wide `STATIC` saves local element values,
-  but array metadata still has the shared-scope limitation described above.
-- Static values are saved even when execution returns a runtime error. Recursive
-  calls do not provide a single live shared static cell; each call loads and saves
-  a snapshot. Recursive static behavior is not claimed to match QBasic.
+Static state is keyed by procedure name and is retained when a procedure is
+redefined in the same interpreter. A fresh interpreter, including REPL RUN,
+starts with empty static storage. Values are saved on runtime-error exits too.
+Recursive calls load and save snapshots rather than sharing one live static cell.
+STATIC arrays retain element values and types, and their declarations record
+bounds; array dimension metadata still has interpreter-wide lifetime.
 
 ## Function and array resolution
 
@@ -327,6 +310,4 @@ some, but suffixes and other declarations can still make them legal array names.
 
 The implementation behavior above is covered by the procedure, sharing, static,
 record, and BYREF integration tests in [`tests/integration.rs`](../tests/integration.rs)
-and direct runtime checks. Full historical ABI, stack-depth, recursive-static, and
-external-procedure compatibility remain unverified; no external-linking ABI is
-implemented.
+and direct runtime checks. Rice does not implement an external-linking ABI.

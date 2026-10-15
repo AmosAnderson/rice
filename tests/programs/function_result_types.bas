@@ -7,7 +7,7 @@ PRINT BuildRecord(17).position.x
 PRINT BuildRecord(17).caption
 PRINT FreshRecord().position.x
 PRINT FreshRecord().position.x
-PRINT LooseResult()
+PRINT TypedResult()
 
 TYPE Point
     x AS INTEGER
@@ -34,6 +34,6 @@ END FUNCTION
 FUNCTION FreshRecord() AS Entry STATIC
     FreshRecord.position.x = FreshRecord.position.x + 1
 END FUNCTION
-FUNCTION LooseResult() AS INTEGER
-    LooseResult = "permissive"
+FUNCTION TypedResult() AS INTEGER
+    TypedResult = 42
 END FUNCTION

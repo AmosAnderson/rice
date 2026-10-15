@@ -1,4 +1,3 @@
-OPTION DIALECT "QB"
 
 ' Test suffix-typed variables co-existing
 x% = 10
@@ -46,7 +45,7 @@ ON idx GOTO 300, 400, 500
 500 PRINT "500"
 600 PRINT "done ON GOTO"
 
-' Test default BYREF parameter passing in QB mode
+' Test default BYREF parameter passing
 val = 10
 ChangeMe val
 PRINT val

@@ -30,7 +30,7 @@ pub enum Token {
     Minus,
     Star,
     Slash,
-    Backslash, // integer division (QBasic)
+    Backslash, // integer division
     Caret,     // ^
     Equal,     // = (assignment AND comparison)
     NotEqual,  // <>
@@ -192,7 +192,7 @@ pub enum Token {
     KwWidth,
     KwView,
 
-    // FIELD (legacy, unsupported)
+    // FIELD record buffers
     KwField,
 
     // WHEN EXCEPTION
