@@ -1,6 +1,6 @@
 # Compatibility gaps, quirks, and unknowns
 
-This page records Rice BASIC **0.17.0 implementation behavior**. QBasic is the default; `OPTION DIALECT "ANSI"` selects the ANSI-style dialect. Neither name establishes full conformance to QBasic 1.1 or ANSI X3.113-1991. The complete Rice specification is the [core reference](language-reference.md), [builtins](builtins.md), [dialect table](dialects.md), and linked topic guides.
+This page records Rice BASIC **0.17.1 implementation behavior**. QBasic is the default; `OPTION DIALECT "ANSI"` selects the ANSI-style dialect. Neither name establishes full conformance to QBasic 1.1 or ANSI X3.113-1991. The complete Rice specification is the [core reference](language-reference.md), [builtins](builtins.md), [dialect table](dialects.md), and linked topic guides.
 
 “Implemented” means supported by the parser/runtime described here. “Partial” means accepted syntax or familiar names have a smaller or different effect. “Unverified” means there is no established compatibility guarantee; it does not assert a known failure.
 
@@ -22,6 +22,7 @@ This page records Rice BASIC **0.17.0 implementation behavior**. QBasic is the d
 | Numeric conversion | VAL now reads scientific decimal prefixes with E/D exponents and stops at a second decimal point. An incomplete exponent leaves the valid mantissa. Radix width limits and whole-string NaN/infinity behavior remain Rice-specific. See [builtins](builtins.md). |
 | Decimal places | ROUND/TRUNCATE accept negative places down to -308 for tens, hundreds, and larger powers of ten. ROUND keeps ties away from zero, distinct from CINT/CLNG's nearest-even rule. Finite overflow in a negative-place result raises an error; the nonnegative-place path is unchanged. |
 | String search/replacement | REPLACE$ and INSTRREV are Rice extensions in both modes. They are case-sensitive and count Unicode scalar values. REPLACE$ returns only the selected suffix; INSTRREV's start limits the final character of a match. No locale/case-insensitive comparison option is implemented. |
+| String ordering and patterns | STRCOMP mode 1 compares Unicode-lowercased strings, without locale collation, full case folding, or normalization. LIKE is case-sensitive whole-string matching with Unicode scalars and ASCII digit wildcards. Both are Rice extensions; LIKE is newly reserved as an unsuffixed keyword. Malformed pattern classes raise error 5. |
 | Indexed string overwrite | QB MID$ assignment now accepts array elements, resolving indices once before start/replacement/count processing. It retains the scalar evaluation order and never changes string length. Record-member/slice targets remain unsupported; ANSI continues to reject the statement. |
 | Environment enumeration | ENVIRON$(index) now returns sorted, 1-based NAME=value entries, merging interpreter overrides and Unicode host entries; indices truncate, and past-end returns an empty string. This deterministic ordering does not emulate a historical DOS environment block. The ENVIRON() alias remains host-only. |
 | Procedure calls | BYREF is copy-in/copy-out of variables and individual array elements. Element indices run once during argument evaluation; later index changes do not redirect writeback. Fields, expressions, constants, and function results have no writeback. Two arguments referencing the same location are independent copies; later parameters win. Array-parameter syntax is parsed but does not bind whole arrays. |
@@ -41,7 +42,7 @@ This page records Rice BASIC **0.17.0 implementation behavior**. QBasic is the d
 | Record length | LEN(record) reports the current QB binary payload byte count in both modes, including variable-string headers and nested records. It is value/schema-dependent and excludes RANDOM stride padding and host alignment. LEN(string) continues to count Unicode scalar values. |
 | Relative paths | File and directory operations use process cwd, not source-file directory. FILES does not filter wildcard patterns; KILL does not expand them. |
 | Process/clock | QB-only ENVIRON and DATE$/TIME$ assignments are interpreter-local overrides. COMMAND$() returns only BASIC program arguments, joined with spaces; shell quoting is not reconstructed. It defaults to empty in new library/REPL interpreters. Use `--` to pass dash-leading CLI arguments. SHELL ignores child exit status. SLEEP without a positive argument does not wait for a key. |
-| REPL state | NEW clears stored lines only. RUN uses a fresh interpreter. Immediate END/SYSTEM exit detection has top-level syntax quirks. See [runtime](runtime.md). |
+| REPL state | NEW clears stored lines only. RUN uses a fresh interpreter. LOAD/SAVE restore/persist numbered source only; LOAD leaves the old buffer intact on read/structure errors and never executes or resets immediate state. Immediate END/SYSTEM exit detection has top-level syntax quirks. See [runtime](runtime.md). |
 
 ## Accepted syntax with limited or ignored effects
 
@@ -64,7 +65,7 @@ Detailed syntax and the exact extent of these limitations are in [procedures](pr
 | Audio | SOUND, PLAY; BEEP only writes a terminal bell. |
 | Memory/hardware | DEF SEG, PEEK, POKE, INP, OUT, machine-language CALL interfaces, hardware port control. |
 | Event traps | ON TIMER, ON KEY, ON PLAY and event-driven callbacks. TIMER itself is available. |
-| Modules/program management | CHAIN, MERGE, `$INCLUDE`, external linking, LOAD/SAVE/RENUM commands. `$INCLUDE` written inside a comment is simply ignored. See [modules](multi-module.md). |
+| Modules/program management | CHAIN, MERGE, `$INCLUDE`, external linking, RENUM, and BASIC LOAD/SAVE statements. REPL LOAD/SAVE support numbered-source persistence only. `$INCLUDE` written inside a comment is simply ignored. See [modules](multi-module.md). |
 | General expressions | Standalone matrix expressions, implied complete support for all ANSI math/string functions. Integer division and EQV/IMP are QB-only; numeric MIN/MAX are Rice extensions available in both modes. The [builtin inventory](builtins.md) is exhaustive. |
 | Full array/record model | Runtime bounds/rank enforcement, whole-array argument binding, arrays inside TYPE fields, a binary-compatible general record model. |
 | Device/file model | Historical device aliases, OS record locking guarantees, printer routing (LPRINT aliases console PRINT), complete QBasic file-mode/error compatibility. Supported file operations are enumerated in [file I/O](file-io.md). |

@@ -21,12 +21,15 @@ fn run() {
     let mut program_args = Vec::new();
     let mut parse_options = true;
     let mut dialect = rice::DEFAULT_DIALECT;
+    let mut check_only = false;
 
     let mut i = 1;
     while i < args.len() {
         let arg = &args[i];
         if parse_options && arg == "--" {
             parse_options = false;
+        } else if parse_options && arg == "--check" {
+            check_only = true;
         } else if parse_options && arg == "--compat" {
             dialect = rice::Dialect::QuickBasic;
         } else if parse_options && arg == "--dialect" {
@@ -55,18 +58,43 @@ fn run() {
     }
 
     match source_file {
+        None if check_only => {
+            eprintln!("error: --check requires a source file");
+            process::exit(1);
+        }
         None => {
             let mut repl = rice::repl::Repl::with_dialect(dialect);
             repl.run();
         }
         Some(filename) => {
-            let mut interpreter = rice::interpreter::Interpreter::new();
-            interpreter.dialect = dialect;
-            interpreter.set_command_line_args(&program_args);
-            if let Err(e) = interpreter.run_file(&filename) {
+            let result = if check_only {
+                check_file(&filename, dialect)
+            } else {
+                let mut interpreter = rice::interpreter::Interpreter::new();
+                interpreter.dialect = dialect;
+                interpreter.set_command_line_args(&program_args);
+                interpreter.run_file(&filename)
+            };
+            if let Err(e) = result {
                 eprintln!("{e}");
                 process::exit(1);
             }
         }
     }
+}
+
+fn check_file(filename: &str, dialect: rice::Dialect) -> Result<(), Box<dyn std::error::Error>> {
+    let path = std::path::Path::new(filename);
+    let canonical =
+        std::fs::canonicalize(path).map_err(|e| rice::error::RuntimeError::General {
+            msg: format!("Cannot open '{}': {}", path.display(), e),
+        })?;
+    let source =
+        std::fs::read_to_string(&canonical).map_err(|e| rice::error::RuntimeError::General {
+            msg: format!("Cannot read '{}': {}", canonical.display(), e),
+        })?;
+    let dialect = rice::detect_dialect(&source).unwrap_or(dialect);
+    let tokens = rice::lexer::Lexer::with_dialect(&source, dialect).tokenize()?;
+    rice::parser::Parser::with_dialect(tokens, dialect).parse_program()?;
+    Ok(())
 }

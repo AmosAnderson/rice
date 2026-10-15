@@ -1,0 +1,10 @@
+PRINT STRCOMP("apple", "banana")
+PRINT STRCOMP("same", "same")
+PRINT STRCOMP("pear", "apple")
+PRINT STRCOMP("Rice", "rice", 0)
+PRINT STRCOMP("Rice", "rice", 1)
+PRINT STRCOMP("É", "é", 1)
+PRINT STRCOMP("", "x")
+PRINT STRCOMP("x", "")
+PRINT STRCOMP("Z", "a", 1)
+IF STRCOMP("Hello", "hello", 1) = 0 THEN PRINT "matched"

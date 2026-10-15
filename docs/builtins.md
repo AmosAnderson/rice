@@ -1,6 +1,6 @@
 # Built-in functions
 
-This is the function reference for Rice BASIC 0.17.0. Unless stated otherwise, functions are available in **both** QBasic and ANSI modes. Names such as “ANSI math additions” in the source do not restrict a function to that dialect. The [language reference](language-reference.md) defines expression operators and the [dialect guide](dialects.md) defines truth values.
+This is the function reference for Rice BASIC 0.17.1. Unless stated otherwise, functions are available in **both** QBasic and ANSI modes. Names such as “ANSI math additions” in the source do not restrict a function to that dialect. The [language reference](language-reference.md) defines expression operators and the [dialect guide](dialects.md) defines truth values.
 
 ## Calling conventions and types
 
@@ -85,6 +85,7 @@ Text uses Unicode strings. `LEN(string)`, positions, substrings, and most string
 | `INSTR(s$, needle$)` | 1-based first match, or `0` if absent. Empty needle returns `1`, including in an empty string. |
 | `INSTR(start, s$, needle$)` | Searches at or after 1-based start; start must be at least 1. Starting past the last character returns `0`, even for an empty needle. |
 | `INSTRREV(s$, needle$[, start])` | 1-based last match whose final character is at or before `start`, or `0` if absent. Omitted start or `-1` searches the entire string. |
+| `STRCOMP(a$, b$[, compare])` | Returns `-1`, `0`, or `1` for less than, equal to, or greater than. Mode `0` (default) compares case-sensitive Unicode scalar order; `1` compares after lowercasing both strings. |
 | `REPLACE$(s$, find$, replacement$[, start[, count]])` | Replaces nonoverlapping matches in the suffix beginning at 1-based `start` (default 1). Returns that suffix, omitting any preceding text. Count defaults to `-1` for all matches. |
 | `LTRIM$(s$)`, `RTRIM$(s$)` | Remove leading/trailing Unicode whitespace, including tabs and newlines, not just spaces. |
 | `UCASE$(s$)`, `LCASE$(s$)` | Unicode case conversion; can change the character count. |
@@ -95,6 +96,8 @@ Text uses Unicode strings. `LEN(string)`, positions, substrings, and most string
 | `STR$(x)` | Numeric text with no leading/trailing positive-number space. Uses integer text for integral magnitudes below `1e15`, otherwise Rust floating-point formatting. |
 | `VAL(s$)` | Trims surrounding whitespace; parses a leading decimal number with optional E/D exponent, or leading `&H` hex/`&O` octal digits. Empty/invalid input returns `0`. |
 | `HEX$(x)`, `OCT$(x)` | Uppercase hexadecimal / octal text after direct truncating signed 64-bit cast. Out-of-range inputs saturate and NaN becomes zero. Negative values use unsigned 64-bit two's-complement representation; this is not QBasic's 16/32-bit formatting. |
+
+`STRCOMP` is a Rice extension in both dialects. Its result is an ordering, independent of the dialect's true value: test `STRCOMP(a$, b$, 1) = 0` for equality. Both operands must be strings. The optional comparison mode must be exactly numeric `0` or `1`; fractions, other numbers, NaN, and infinity raise illegal function call (error 5). Arguments evaluate once from left to right. Mode 1 uses Unicode lowercase conversion, which can expand characters, but does not perform locale collation, full case folding, or Unicode normalization. Thus `STRCOMP("É", "é", 1)` is `0`, while `"ß"` and `"SS"`, or composed and decomposed accents, remain distinct. Ordinary comparison operators are unchanged. Use the [LIKE operator](language-reference.md#wildcard-matching) for wildcard matching.
 
 `INSTRREV` and `REPLACE$` are Rice extensions in both dialects. Matches are case-sensitive and positions count Unicode scalar values. Optional positions and counts use the checked, truncating integer conversion described above. Arguments are evaluated once, from left to right; even no-op calls validate their argument types and ranges.
 

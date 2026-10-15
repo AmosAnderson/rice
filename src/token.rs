@@ -127,7 +127,7 @@ pub enum Token {
     KwError,
     KwResume,
 
-    // Logical operators (keywords)
+    // Operators (keywords)
     KwAnd,
     KwOr,
     KwNot,
@@ -135,6 +135,7 @@ pub enum Token {
     KwEqv,
     KwImp,
     KwMod,
+    KwLike,
 
     KwRem,
 

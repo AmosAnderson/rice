@@ -526,6 +526,7 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("XOR", "Bitwise XOR in QBasic; logical XOR in ANSI"),
         ("EQV", "Bitwise equivalence in QBasic"),
         ("IMP", "Bitwise implication in QBasic"),
+        ("LIKE", "Match a string against a wildcard pattern"),
         (
             "\\",
             "Integer division in QBasic; rounds operands, truncates quotient",
@@ -538,7 +539,7 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
     .iter()
     .map(|(kw, doc)| CompletionItem {
         label: kw.to_string(),
-        kind: Some(if *kw == "\\" {
+        kind: Some(if matches!(*kw, "\\" | "LIKE") {
             CompletionItemKind::OPERATOR
         } else {
             CompletionItemKind::KEYWORD
@@ -599,6 +600,10 @@ static BUILTIN_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
             "MID$(s$, start[, len]) — Substring; QB scalar/array overwrite statement",
         ),
         ("INSTR", "INSTR([start,] s$, search$) — Find substring"),
+        (
+            "STRCOMP",
+            "STRCOMP(a$, b$[, compare]) — String ordering; 0 binary, 1 Unicode lowercase",
+        ),
         (
             "INSTRREV",
             "INSTRREV(s$, search$[, start]) — Find the last substring match",
@@ -829,6 +834,10 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         (
             "INSTRREV",
             "```basic\nINSTRREV(s$, search$[, start])\n```\nReturns the last case-sensitive match's 1-based Unicode character position, or 0. Omitted start or -1 searches the whole string; a positive start limits the final character of a match. Start truncates; 0 or values below -1 are errors. Empty text or start past the end returns 0; an empty search returns the effective start. Rice extension in both dialects.",
+        ),
+        (
+            "STRCOMP",
+            "```basic\nSTRCOMP(a$, b$[, compare])\n```\nReturns -1, 0, or 1 when a$ sorts before, equal to, or after b$, independent of dialect truth values. Mode 0 (default) compares case-sensitive Unicode scalar order; mode 1 lowercases both complete strings before comparing. Mode must be exactly numeric 0 or 1. No locale collation, full case folding, or Unicode normalization. Both inputs must be strings. Rice extension in both dialects.",
         ),
         (
             "REPLACE$",
@@ -1100,6 +1109,10 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         (
             "IMP",
             "```basic\nresult = a IMP b\n```\nQBasic mode only. Combines the bitwise complement of the left operand with the right using OR, after signed 64-bit casts that truncate fractions, saturate out-of-range values, and map NaN to zero. Returns an f64; both operands are always evaluated. Has the lowest operator precedence, below EQV; repeated IMP associates left to right.",
+        ),
+        (
+            "LIKE",
+            "```basic\nmatched = text$ LIKE pattern$\n```\nCase-sensitive whole-string wildcard matching in both Rice dialects. Supports * (any sequence), ? (one Unicode scalar), # (one ASCII digit), [abc], [a-z], and [!abc]. Use [*], [?], [#], or [[] for literal wildcard characters; ] is literal outside a class. Empty, unclosed, or reversed-range classes raise illegal function call. Both operands must be strings and are evaluated once, left to right. Comparison precedence; true is -1 in QB and 1 in ANSI, false is 0. Rice extension, without locale collation or Unicode normalization.",
         ),
         (
             "FOR",
@@ -1477,6 +1490,7 @@ fn token_name(tok: &rice::token::Token) -> Option<String> {
         rice::token::Token::KwXor => Some("XOR".into()),
         rice::token::Token::KwEqv => Some("EQV".into()),
         rice::token::Token::KwImp => Some("IMP".into()),
+        rice::token::Token::KwLike => Some("LIKE".into()),
         rice::token::Token::KwMod => Some("MOD".into()),
         rice::token::Token::KwEndSub => Some("END SUB".into()),
         rice::token::Token::KwEndFunction => Some("END FUNCTION".into()),
@@ -2266,5 +2280,40 @@ mod tests {
         assert!(keyword_hover("PUT").unwrap().contains("array element"));
         assert!(builtin_hover("VAL").unwrap().contains("1D2tail"));
         assert!(builtin_hover("ENVIRON$").unwrap().contains("NAME=value"));
+    }
+
+    #[test]
+    fn string_comparison_and_patterns_have_editor_support_in_both_modes() {
+        for dialect in ["QB", "ANSI"] {
+            let source = format!(
+                "OPTION DIALECT \"{dialect}\"\nPRINT \"é\" LIKE \"?\"\nPRINT STRCOMP(\"É\", \"é\", 1)\n"
+            );
+            let state = analyze_source(source, 1);
+            assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+            assert_eq!(
+                resolve_token_name(&state, Position::new(1, 11)).as_deref(),
+                Some("LIKE")
+            );
+            assert_eq!(
+                resolve_token_name(&state, Position::new(2, 8)).as_deref(),
+                Some("STRCOMP")
+            );
+        }
+        let like = KEYWORD_COMPLETIONS
+            .iter()
+            .find(|item| item.label == "LIKE")
+            .unwrap();
+        assert_eq!(like.kind, Some(CompletionItemKind::OPERATOR));
+        assert!(keyword_hover("LIKE").unwrap().contains("whole-string"));
+        assert!(
+            BUILTIN_COMPLETIONS
+                .iter()
+                .any(|item| item.label == "STRCOMP")
+        );
+        assert!(
+            builtin_hover("STRCOMP")
+                .unwrap()
+                .contains("exactly numeric 0 or 1")
+        );
     }
 }

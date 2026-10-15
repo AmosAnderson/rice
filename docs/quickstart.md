@@ -166,10 +166,13 @@ Run `cargo run` and enter statements at the `Ok` prompt. Variables and definitio
 LIST
 RUN
 DELETE 20
+SAVE "hello.bas"
 NEW
+LOAD "hello.bas"
+RUN
 SYSTEM
 ```
 
-`RUN` uses a fresh interpreter; `NEW` only clears stored program lines. `SYSTEM` or Ctrl+D exits; Ctrl+C while editing also exits. The [runtime guide](runtime.md) explains range commands, history, and further exit/state quirks.
+`RUN` uses a fresh interpreter; `NEW` only clears stored program lines. `SAVE` writes numbered source, and `LOAD` restores that format without executing it. Check a source file's syntax without running it using `cargo run -- --check file.bas`. `SYSTEM` or Ctrl+D exits; Ctrl+C while editing also exits. The [runtime guide](runtime.md) explains file commands, range commands, history, and further exit/state quirks.
 
 Use `REM` or an apostrophe for comments. Colons separate statements, and optional numeric or named labels support branches. Additional examples and complete syntax are in the [documentation index](README.md).

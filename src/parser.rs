@@ -2506,6 +2506,7 @@ impl Parser {
                 Token::Greater => BinOp::Gt,
                 Token::LessEqual => BinOp::Le,
                 Token::GreaterEqual => BinOp::Ge,
+                Token::KwLike => BinOp::Like,
                 _ => break,
             };
             self.advance();
@@ -3759,6 +3760,79 @@ mod tests {
                 .to_string()
                 .contains("Integer division (\\) is not supported in ANSI")
         );
+    }
+
+    #[test]
+    fn test_like_has_comparison_precedence_in_both_dialects() {
+        for dialect in [crate::Dialect::QuickBasic, crate::Dialect::Ansi] {
+            let source = "result = NOT text$ & suffix$ LIKE pattern$ & \"*\" AND enabled\n";
+            let tokens = Lexer::with_dialect(source, dialect).tokenize().unwrap();
+            let program = Parser::with_dialect(tokens, dialect)
+                .parse_program()
+                .unwrap();
+            let Stmt::Let { expr, .. } = &program.statements[0].stmt else {
+                panic!("expected assignment");
+            };
+            let Expr::BinaryOp {
+                op: BinOp::And,
+                left,
+                ..
+            } = expr
+            else {
+                panic!("AND must have lower precedence than LIKE");
+            };
+            let Expr::UnaryOp {
+                op: UnaryOp::Not,
+                operand,
+            } = left.as_ref()
+            else {
+                panic!("NOT must have lower precedence than LIKE");
+            };
+            let Expr::BinaryOp {
+                op: BinOp::Like,
+                left,
+                right,
+            } = operand.as_ref()
+            else {
+                panic!("expected LIKE");
+            };
+            assert!(matches!(
+                left.as_ref(),
+                Expr::BinaryOp {
+                    op: BinOp::Concat,
+                    ..
+                }
+            ));
+            assert!(matches!(
+                right.as_ref(),
+                Expr::BinaryOp {
+                    op: BinOp::Concat,
+                    ..
+                }
+            ));
+        }
+        let program = parse("result = \"abc\" LIKE \"a*\" = -1");
+        let Stmt::Let { expr, .. } = &program.statements[0].stmt else {
+            panic!("expected assignment");
+        };
+        let Expr::BinaryOp {
+            op: BinOp::Eq,
+            left,
+            ..
+        } = expr
+        else {
+            panic!("comparisons must associate left to right");
+        };
+        assert!(matches!(
+            left.as_ref(),
+            Expr::BinaryOp {
+                op: BinOp::Like,
+                ..
+            }
+        ));
+        for source in ["PRINT \"abc\" LIKE", "PRINT LIKE \"abc\""] {
+            assert!(parse_result(source).is_err(), "{source}");
+        }
     }
 
     #[test]

@@ -1,0 +1,11 @@
+' LIKE is a Rice extension in both dialects; matches cover the entire string.
+PRINT "report42.bas" LIKE "report##.bas"; "|"; "report4.bas" LIKE "report##.bas"
+PRINT "é漢🙂" LIKE "???"; "|"; "é漢🙂" LIKE "??"
+PRINT "abc" LIKE "a*c"; "|"; "ac" LIKE "a*c"; "|"; "abc" LIKE "b"
+PRINT "" LIKE "*"; "|"; "" LIKE ""; "|"; "" LIKE "?"
+PRINT "b" LIKE "[a-c]"; "|"; "z" LIKE "[!a-c]"; "|"; "b" LIKE "[!a-c]"
+PRINT "é" LIKE "[à-ê]"; "|"; "٤" LIKE "#"; "|"; "9" LIKE "#"
+PRINT "*?#[" LIKE "[*][?][#][[]"; "|"; "]" LIKE "]"; "|"; "-" LIKE "[-a]"
+PRINT "Rice" LIKE "rice"; "|"; UCASE$("Rice") LIKE "RICE"
+PRINT "prefix" & "suffix" LIKE "prefix*"; "|"; NOT "abc" LIKE "a*"
+IF "note.txt" LIKE "*.txt" THEN PRINT "text file" ELSE PRINT "other file"

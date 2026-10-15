@@ -2739,6 +2739,112 @@ impl Interpreter {
             .unwrap_or(Value::Numeric(0.0)))
     }
 
+    /// Case-sensitive, whole-string wildcard matching over Unicode scalar values.
+    fn matches_like(text: &str, pattern: &str) -> Result<bool, RuntimeError> {
+        enum PatternItem {
+            AnySequence,
+            AnyCharacter,
+            Digit,
+            Literal(char),
+            Class {
+                negated: bool,
+                ranges: Vec<(char, char)>,
+            },
+        }
+
+        let invalid_pattern = |message: &str| RuntimeError::IllegalFunctionCall {
+            msg: format!("LIKE: {message}"),
+        };
+        let pattern: Vec<char> = pattern.chars().collect();
+        let mut items = Vec::new();
+        let mut position = 0;
+        while position < pattern.len() {
+            let item = match pattern[position] {
+                '*' => PatternItem::AnySequence,
+                '?' => PatternItem::AnyCharacter,
+                '#' => PatternItem::Digit,
+                '[' => {
+                    position += 1;
+                    let negated = pattern.get(position) == Some(&'!');
+                    if negated {
+                        position += 1;
+                    }
+                    let start = position;
+                    while position < pattern.len() && pattern[position] != ']' {
+                        position += 1;
+                    }
+                    if position == pattern.len() {
+                        return Err(invalid_pattern("unterminated character class"));
+                    }
+                    if position == start {
+                        return Err(invalid_pattern("empty character class"));
+                    }
+                    let mut ranges = Vec::new();
+                    let mut member = start;
+                    while member < position {
+                        let first = pattern[member];
+                        if member + 2 < position
+                            && pattern[member + 1] == '-'
+                            && !(member == start && first == '-')
+                            && !(member + 3 == position && pattern[member + 2] == '-')
+                        {
+                            let last = pattern[member + 2];
+                            if first > last {
+                                return Err(invalid_pattern("reversed character range"));
+                            }
+                            ranges.push((first, last));
+                            member += 3;
+                        } else {
+                            ranges.push((first, first));
+                            member += 1;
+                        }
+                    }
+                    PatternItem::Class { negated, ranges }
+                }
+                character => PatternItem::Literal(character),
+            };
+            // Adjacent stars describe the same set of strings as one star.
+            if !matches!(item, PatternItem::AnySequence)
+                || !matches!(items.last(), Some(PatternItem::AnySequence))
+            {
+                items.push(item);
+            }
+            position += 1;
+        }
+
+        let text: Vec<char> = text.chars().collect();
+        // matched[n] means the processed pattern matches the first n characters.
+        // A single row avoids recursive backtracking and stack growth.
+        let mut matched = vec![false; text.len() + 1];
+        matched[0] = true;
+        for item in items {
+            if matches!(item, PatternItem::AnySequence) {
+                for length in 1..matched.len() {
+                    matched[length] |= matched[length - 1];
+                }
+                continue;
+            }
+            for length in (1..matched.len()).rev() {
+                let character = text[length - 1];
+                let accepts = match &item {
+                    PatternItem::AnyCharacter => true,
+                    PatternItem::Digit => character.is_ascii_digit(),
+                    PatternItem::Literal(expected) => character == *expected,
+                    PatternItem::Class { negated, ranges } => {
+                        let included = ranges
+                            .iter()
+                            .any(|&(first, last)| first <= character && character <= last);
+                        included != *negated
+                    }
+                    PatternItem::AnySequence => unreachable!(),
+                };
+                matched[length] = matched[length - 1] && accepts;
+            }
+            matched[0] = false;
+        }
+        Ok(matched[text.len()])
+    }
+
     fn eval_binary_op(
         &self,
         left: &Value,
@@ -2750,6 +2856,13 @@ impl Interpreter {
         } else {
             1.0
         };
+
+        if op == BinOp::Like {
+            let text = left.to_string_val()?;
+            let pattern = right.to_string_val()?;
+            let result = Self::matches_like(&text, &pattern)?;
+            return Ok(Value::Numeric(if result { true_val } else { 0.0 }));
+        }
 
         // String concatenation with &
         if matches!(op, BinOp::Concat) {
@@ -2866,7 +2979,7 @@ impl Interpreter {
             }
             BinOp::Eqv => Ok(Value::Numeric((!((a as i64) ^ (b as i64))) as f64)),
             BinOp::Imp => Ok(Value::Numeric((!(a as i64) | (b as i64)) as f64)),
-            BinOp::Concat => unreachable!("Concat handled above"),
+            BinOp::Concat | BinOp::Like => unreachable!("string operators handled above"),
         }
     }
 
@@ -4849,6 +4962,130 @@ impl Interpreter {
         let res = self.exec_get_put_inner(&mut fh, gp, record, operand.as_ref());
         self.file_handles.insert(file_num, fh);
         res
+    }
+}
+
+#[cfg(test)]
+mod like_tests {
+    use super::*;
+
+    #[test]
+    fn like_matches_entire_unicode_strings_and_wildcards() {
+        for (text, pattern, expected) in [
+            ("", "", true),
+            ("", "*", true),
+            ("", "?", false),
+            ("a", "", false),
+            ("a", "?", true),
+            ("é漢🙂", "???", true),
+            ("e\u{301}", "?", false),
+            ("e\u{301}", "??", true),
+            ("abc", "a*c", true),
+            ("ac", "a*c", true),
+            ("abc", "a**c", true),
+            ("abdc", "a*c", true),
+            ("abc", "b", false),
+            ("abc", "*b*", true),
+            ("Abc", "a*", false),
+            ("file42.bas", "file##.bas", true),
+            ("file4.bas", "file##.bas", false),
+            ("٤", "#", false),
+            ("9", "#", true),
+            ("b", "[abc]", true),
+            ("d", "[abc]", false),
+            ("b", "[a-c]", true),
+            ("b", "[!a-c]", false),
+            ("🙂", "[!a-z]", true),
+            ("é", "[à-ê]", true),
+            ("A", "[a-zA-Z0-9]", true),
+            ("-", "[-a]", true),
+            ("-", "[a-]", true),
+            ("0", "[--a]", false),
+            ("-", "[--a]", true),
+            ("a", "[a--]", true),
+            ("-", "[a--]", true),
+            ("b", "[a--]", false),
+            ("*", "[*--]", true),
+            ("-", "[*--]", true),
+            ("+", "[*--]", false),
+            ("-", "[!a--]", false),
+            ("b", "[!a--]", true),
+            ("*?#[!]", "[*][?][#][[][!a]]", true),
+            ("!", "[a!]", true),
+            ("]", "]", true),
+            ("\\", "\\", true),
+            ("a\nb", "a?b", true),
+        ] {
+            assert_eq!(
+                Interpreter::matches_like(text, pattern).unwrap(),
+                expected,
+                "{text:?} LIKE {pattern:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn like_validates_the_whole_pattern_even_if_text_cannot_match() {
+        for pattern in ["[", "[]", "[!", "[!]", "[z-a]", "no-match*[", "[a-zZ-A]"] {
+            for text in ["", "x"] {
+                assert!(
+                    matches!(
+                        Interpreter::matches_like(text, pattern),
+                        Err(RuntimeError::IllegalFunctionCall { .. })
+                    ),
+                    "{text:?} LIKE {pattern:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn like_handles_long_repeated_wildcards_without_backtracking() {
+        let text = "a".repeat(400);
+        let pattern = format!("{}b", "*a".repeat(200));
+        assert!(!Interpreter::matches_like(&text, &pattern).unwrap());
+        assert!(Interpreter::matches_like(&text, &"*".repeat(10_000)).unwrap());
+    }
+
+    #[test]
+    fn like_requires_strings_and_returns_dialect_truth_values() {
+        for (dialect, truth) in [
+            (crate::Dialect::QuickBasic, -1.0),
+            (crate::Dialect::Ansi, 1.0),
+        ] {
+            let mut interpreter = Interpreter::with_io(
+                Box::new(Vec::new()),
+                Box::new(std::io::Cursor::new(Vec::new())),
+            );
+            interpreter.dialect = dialect;
+            let text = Value::Str("abc".into());
+            let pattern = Value::Str("a*".into());
+            assert_eq!(
+                interpreter
+                    .eval_binary_op(&text, BinOp::Like, &pattern)
+                    .unwrap()
+                    .to_f64()
+                    .unwrap(),
+                truth
+            );
+            assert_eq!(
+                interpreter
+                    .eval_binary_op(&pattern, BinOp::Like, &text)
+                    .unwrap()
+                    .to_f64()
+                    .unwrap(),
+                0.0
+            );
+            for (left, right) in [
+                (Value::Numeric(1.0), pattern.clone()),
+                (text.clone(), Value::Numeric(1.0)),
+            ] {
+                assert!(matches!(
+                    interpreter.eval_binary_op(&left, BinOp::Like, &right),
+                    Err(RuntimeError::TypeMismatch { .. })
+                ));
+            }
+        }
     }
 }
 

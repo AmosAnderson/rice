@@ -492,6 +492,7 @@ pub enum BinOp {
     Gt,
     Le,
     Ge,
+    Like,
     And,
     Or,
     Xor,

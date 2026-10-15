@@ -1,6 +1,6 @@
 # Running Rice, the REPL, and editor integration
 
-This page describes Rice BASIC 0.17.0. See the [quick start](quickstart.md), [language specification](language-reference.md), and [dialect selection rules](dialects.md).
+This page describes Rice BASIC 0.17.1. See the [quick start](quickstart.md), [language specification](language-reference.md), and [dialect selection rules](dialects.md).
 
 ## Build and command line
 
@@ -15,7 +15,7 @@ cargo test
 The executables are `target/release/rice` and `target/release/rice-lsp` (`.exe` on Windows). For development, `cargo build` builds the package binaries, `cargo run` selects the `rice` binary, and output goes in `target/debug/`.
 
 ```text
-rice [--compat] [--dialect ansi|qb|qbasic|quickbasic] [--] [source-file [program-argument ...]]
+rice [--check] [--compat] [--dialect ansi|qb|qbasic|quickbasic] [--] [source-file [program-argument ...]]
 ```
 
 With no file, Rice starts the REPL. With a file, it reads UTF-8 source and executes it once. The extension is not enforced. Default dialect is QB. Options may precede or follow the filename, and the last CLI dialect option wins. Dialect argument values are case-insensitive; option names are case-sensitive. A recognized `OPTION DIALECT` in source overrides the CLI selection for the entire source unit.
@@ -25,11 +25,14 @@ The first positional argument is the source filename; subsequent positional argu
 ```sh
 cargo run -- program.bas
 cargo run -- --dialect ansi program.bas
+cargo run -- --check program.bas
 cargo run -- program.bas First "two words" -- --flag
 cargo run -- --compat
 ```
 
-`COMMAND$()` returns only the program arguments, joined with one space between arguments. In the third example it returns `First two words --flag`. Case, Unicode, and whitespace inside arguments are preserved; shell quoting is not reconstructed. Empty arguments contribute empty fields, so `one`, an empty argument, and `two` become `one  two`. A single empty argument and no arguments both produce `""`. This string cannot recover the original argument boundaries. `COMMAND()` is an alias; bare `COMMAND$` remains an ordinary variable.
+`COMMAND$()` returns only the program arguments, joined with one space between arguments. In the program-argument example it returns `First two words --flag`. Case, Unicode, and whitespace inside arguments are preserved; shell quoting is not reconstructed. Empty arguments contribute empty fields, so `one`, an empty argument, and `two` become `one  two`. A single empty argument and no arguments both produce `""`. This string cannot recover the original argument boundaries. `COMMAND()` is an alias; bare `COMMAND$` remains an ordinary variable.
+
+`--check` requires a source filename and checks lexical and parser syntax without executing statements or prescanning runtime definitions. Valid syntax exits quietly with status 0; file read, lexer, and parser failures print their normal diagnostic and exit with status 1. Dialect selection works exactly as for execution, including source directives. Undefined names/labels, runtime types, file access in BASIC, and module loading are not checked. The option may appear before or after the filename; after `--`, the text `--check` is an ordinary filename/program argument. Program arguments otherwise have no effect during checking.
 
 `--help` and `--version` are not implemented. Missing/unknown dialect values, unknown options before `--`, source read failures, and BASIC errors exit with status 1; successful file execution exits with 0. Extra positional arguments are passed to the program rather than treated as additional files. A missing dialect value remains an error even after a filename or program arguments; `--dialect --` reports an unknown dialect value rather than treating that `--` as a separator.
 
@@ -65,7 +68,7 @@ Each native runner installs stable Rust, runs `cargo test --locked`, and builds 
 To release a tag that predates this workflow, or retry a release, use **Actions → Release → Run workflow** on `master` and supply the existing tag. The equivalent CLI command is:
 
 ```sh
-gh workflow run release.yml --ref master -f tag=v0.17.0
+gh workflow run release.yml --ref master -f tag=v0.17.1
 ```
 
 Manual runs enforce the same master-history check and build the tagged source. A new release is staged as a draft until all assets are uploaded. Retries resume uploads to an existing draft; an already published release is left unchanged. Publish a new tag to distribute changed binaries. Push release tags individually: [GitHub does not emit tag-push events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#push) when more than three tags are pushed together; use manual runs for those tags.
@@ -83,8 +86,12 @@ Immediate unnumbered input executes as soon as a complete statement/block is ent
 | `LIST 20`, `LIST 10-50`, `LIST -50`, `LIST 20-` | List one line or an inclusive range. |
 | `DELETE 20`, `DELETE 10-50`, `DELETE 20-` | Delete one line or an inclusive range. Bare `DELETE`, an omitted lower bound, and reversed ranges are errors. |
 | `NEW` | Clear stored program lines only; immediate interpreter state remains. |
+| `SAVE "path.bas"` | Write stored numbered lines in ascending order to a UTF-8 file, replacing existing file contents. An empty program writes an empty file. |
+| `LOAD "path.bas"` | Replace stored lines from a UTF-8 numbered-source file after the entire file has been read and validated. Does not execute it or reset the immediate interpreter. |
 
-These commands are REPL operations, not BASIC statements in source files. There is no `LOAD`, `SAVE`, `RENUM`, `RUN "file"`, or resumable debugger. Use an editor and file execution for persistent programs.
+These commands are REPL operations, not BASIC statements in source files. LOAD/SAVE accept a single unquoted path without whitespace, or a quoted path with spaces; doubled quotes inside a quoted path represent one literal quote. Path case is preserved and relative paths use the process working directory. No filename extension is added. Assignment forms such as `SAVE = 42` remain BASIC; quote filenames that resemble assignment targets, such as `SAVE "=42"`.
+
+LOAD accepts LF, CRLF, and CR line endings, ignores blank lines, and requires a valid line number on every other line. Duplicate numbers use their last occurrence; a bare number deletes that line from the newly loaded program, matching interactive entry. Read failures or invalid numbered-line structure leave the old program intact. BASIC syntax is checked later by RUN, so incomplete programs can be saved and reloaded for editing. This format retains the existing restriction on numbered block terminators; LOAD does not import arbitrary unnumbered source. There is no `RENUM`, `RUN "file"`, or resumable debugger. Use file execution for ordinary unnumbered BASIC files.
 
 Block detection accumulates `FOR`, `WHILE`, `DO`, block `IF`, `SELECT CASE`, `SUB`, `FUNCTION`, block `DEF`, `TYPE`, and `WHEN` until their closing keywords. A comma-separated NEXT list closes one FOR per listed variable, so `NEXT j, i` closes two nested FOR blocks. The continuation prompt is `. ` with suggested indentation. Numbered lines bypass block accumulation. Detection is a lexical nesting heuristic; it is not a second full parser. While a block is being entered, text is part of the block and REPL commands are not intercepted.
 

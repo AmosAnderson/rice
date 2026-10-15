@@ -172,6 +172,10 @@ last$ = "world"
 PRINT first$ & ", " & last$ & "!"
 ```
 
+## Comparison and matching
+
+For comparisons, `STRCOMP(a$, b$)` returns ordering `-1`, `0`, or `1`; pass mode `1` as a third argument to compare after Unicode lowercasing. Ordinary `=` and ordering operators remain case-sensitive. `text$ LIKE pattern$` performs whole-string wildcard matching with `*`, `?`, `#`, and character classes/ranges in both dialects. See [STRCOMP](builtins.md#strings) and [LIKE](language-reference.md#wildcard-matching) for exact semantics.
+
 ## Example: reversing scalar-value order
 
 ```basic

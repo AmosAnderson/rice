@@ -1,6 +1,6 @@
 # RICE BASIC
 
-Rice BASIC 0.17.0 is a text-mode BASIC interpreter written in Rust, with an interactive REPL, file execution, and a stdio language server. It defaults to **QBasic compatibility mode** and also provides an **ANSI-style mode** inspired by ANSI X3.113-1991 Full BASIC.
+Rice BASIC 0.17.1 is a text-mode BASIC interpreter written in Rust, with an interactive REPL, file execution, and a stdio language server. It defaults to **QBasic compatibility mode** and also provides an **ANSI-style mode** inspired by ANSI X3.113-1991 Full BASIC.
 
 These are Rice dialects, not claims of complete QBasic 1.1 or ANSI conformance. Both share extensions and implementation limits. The documentation specifies the behavior implemented in this repository, including accepted syntax that has partial or no runtime effect.
 
@@ -16,6 +16,7 @@ cargo run                         # REPL, QBasic mode
 cargo run -- program.bas          # Execute a file
 cargo run -- program.bas -- one two  # Arguments available through COMMAND$()
 cargo run -- --dialect ansi program.bas
+cargo run -- --check program.bas   # Check syntax without executing
 cargo test
 ```
 
@@ -73,6 +74,15 @@ Version 0.17.0 adds six core language features:
 
 All except the QB-only MID$ assignment are available in both modes. The [core reference](docs/language-reference.md), [string guide](docs/string-slicing.md), and [builtin reference](docs/builtins.md) document each addition. Explicit array types choose missing-element defaults without coercing existing values; array storage, scope, and binary-width limits remain documented. REPLACE$ returns the selected suffix when a start position is supplied.
 
+Version 0.17.1 adds four capabilities:
+
+- `rice --check program.bas` validates syntax without running the program.
+- REPL `LOAD`/`SAVE` restore and persist numbered programs.
+- `STRCOMP(a$, b$[, compare])` returns string ordering, with an optional Unicode lowercase comparison mode.
+- `text$ LIKE pattern$` matches whole strings using wildcards, character sets, and ranges.
+
+STRCOMP and LIKE work in both dialects as Rice extensions. See the [runtime](docs/runtime.md), [builtin](docs/builtins.md), and [operator](docs/language-reference.md#wildcard-matching) references for exact behavior and limits.
+
 ## REPL and editor support
 
 Unnumbered input executes immediately; numbered lines build a stored program:
@@ -84,7 +94,7 @@ RUN
 LIST
 ```
 
-`RUN` starts the stored program with a fresh interpreter. `LIST`, `NEW`, and `DELETE` manage stored lines. Complete blocks can also be entered directly. The [runtime guide](docs/runtime.md) documents command ranges, state persistence, exit behavior, and limitations.
+`RUN` starts the stored program with a fresh interpreter. `LIST`, `NEW`, and `DELETE` manage stored lines; `SAVE "program.bas"` and `LOAD "program.bas"` persist and restore numbered programs. Complete blocks can also be entered directly. The [runtime guide](docs/runtime.md) documents command ranges, state persistence, exit behavior, and limitations.
 
 Build the language server with `cargo build --release --bin rice-lsp`. It provides parser diagnostics, completions, hover documentation, and current-document go-to-definition over stdio. See [editor setup and limits](docs/runtime.md#language-server).
 

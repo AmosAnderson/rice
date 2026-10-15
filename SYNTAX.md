@@ -9,6 +9,7 @@ In the syntax forms below, `[ ... ]` means optional text, `{ ... }` means altern
 ```sh
 cargo build
 cargo run -- program.bas
+cargo run -- --check program.bas
 cargo run -- --dialect ansi program.bas
 cargo run -- --dialect qb program.bas
 cargo run -- --compat program.bas
@@ -45,7 +46,7 @@ Numbers include `12`, `.5`, `1.5E-3`, and `1D3`. QB additionally accepts unsigne
 | Integer division (QB only) | `\` |
 | Modulus | `MOD` |
 | Additive/concatenation | `+`, `-`, `&` |
-| Comparison | `=`, `<>`, `<`, `>`, `<=`, `>=` |
+| Comparison | `=`, `<>`, `<`, `>`, `<=`, `>=`, `LIKE` |
 | Negation | `NOT` |
 | Conjunction | `AND` |
 | Disjunction | `OR` |
@@ -54,6 +55,8 @@ Numbers include `12`, `.5`, `1.5E-3`, and `1D3`. QB additionally accepts unsigne
 | Implication (QB only) | `IMP` |
 
 QB comparisons return `-1`/`0`; ANSI comparisons return `1`/`0`. QB logical operators are 64-bit bitwise operations; ANSI uses logical nonzero/zero tests. Both eagerly evaluate operands. QB-only EQV complements XOR; IMP combines the complement of the left operand with the right using OR, after integer conversion. QB `\` rounds operands to nearest-even signed 64-bit integers and truncates the quotient toward zero, with zero-divisor and overflow checks. MOD uses real-number floor modulus in both modes. `&` concatenates strings in both modes; string `+` is QB-only. See [Expressions and operators](docs/language-reference.md#expressions-and-operators).
+
+`text$ LIKE pattern$` performs case-sensitive whole-string wildcard matching in both modes: `*` matches any sequence, `?` one Unicode scalar, `#` one ASCII digit, and `[abc]`, `[a-z]`, `[!abc]` match sets/ranges or their complements. Malformed classes raise an error. See [wildcard matching](docs/language-reference.md#wildcard-matching) for literal escapes and exact rules.
 
 ## Values, declarations, arrays, and assignment
 
@@ -335,10 +338,11 @@ Both modes also support these Rice extensions:
 ```text
 REPLACE$(text$, find$, replacement$ [, start [, count]])
 INSTRREV(text$, find$ [, start])
+STRCOMP(left$, right$ [, compare])
 ROUND(number [, places])
 TRUNCATE(number [, places])
 ```
 
-REPLACE$ returns the suffix beginning at start, with nonoverlapping matches replaced; it does not retain the preceding text. INSTRREV searches backward and returns a character position or zero. String positions count Unicode scalar values. ROUND/TRUNCATE accept places from -308 through 308 after truncation; negative places select tens, hundreds, and higher powers of ten. The [builtin reference](docs/builtins.md) specifies defaults, empty-string behavior, validation, and overflow rules.
+REPLACE$ returns the suffix beginning at start, with nonoverlapping matches replaced; it does not retain the preceding text. INSTRREV searches backward and returns a character position or zero. STRCOMP returns ordering -1/0/1; mode 0 (default) compares case-sensitively and mode 1 compares after Unicode lowercasing. String positions count Unicode scalar values. ROUND/TRUNCATE accept places from -308 through 308 after truncation; negative places select tens, hundreds, and higher powers of ten. The [builtin reference](docs/builtins.md) specifies defaults, empty-string behavior, validation, and overflow rules.
 
 `COMMAND$()` (alias `COMMAND()`) returns program arguments joined with spaces. Run `rice program.bas -- argument ...` to pass them; `--` protects dash-leading arguments from Rice option parsing. New library and REPL interpreters default to empty arguments. See [runtime](docs/runtime.md) for the complete CLI and library contract.

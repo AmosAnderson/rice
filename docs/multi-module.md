@@ -7,8 +7,10 @@ report that it is unsupported. An include-looking directive in an apostrophe or
 `REM` comment remains a comment; it does not load another file.
 
 The command-line interpreter accepts one source filename. Its REPL can store and
-run a numbered program, but provides no `LOAD`, `SAVE`, or `MERGE` module facility.
-See [Quickstart](quickstart.md) for the actual command-line and REPL interfaces.
+run a numbered program, and `LOAD`/`SAVE` restore and persist that numbered source.
+These are REPL commands, not BASIC module statements; there is no `MERGE` facility.
+See [Runtime](runtime.md#repl-state-and-program-editing) for the file-command contract
+and [Quickstart](quickstart.md) for the command-line and REPL interfaces.
 
 ## COMMON in QBasic mode
 

@@ -65,6 +65,7 @@ impl BuiltinRegistry {
         reg.register("LEN", builtin_len, 1);
         reg.register_variadic("INSTR", builtin_instr);
         reg.register_variadic("INSTRREV", builtin_instrrev);
+        reg.register_variadic("STRCOMP", builtin_strcomp);
         reg.register_variadic("REPLACE$", builtin_replace);
         reg.register("LTRIM$", builtin_ltrim, 1);
         reg.register("RTRIM$", builtin_rtrim, 1);
@@ -497,6 +498,36 @@ fn builtin_instr(args: &[Value]) -> Result<Value, RuntimeError> {
             got: args.len(),
         }),
     }
+}
+
+fn builtin_strcomp(args: &[Value]) -> Result<Value, RuntimeError> {
+    if !(2..=3).contains(&args.len()) {
+        return Err(RuntimeError::ArityMismatch {
+            expected: 2,
+            got: args.len(),
+        });
+    }
+    let mut left = args[0].to_string_val()?;
+    let mut right = args[1].to_string_val()?;
+    let compare = args.get(2).map(Value::to_f64).transpose()?.unwrap_or(0.0);
+    match compare {
+        0.0 => {}
+        1.0 => {
+            left = left.to_lowercase();
+            right = right.to_lowercase();
+        }
+        _ => {
+            return Err(RuntimeError::IllegalFunctionCall {
+                msg: "STRCOMP comparison mode must be 0 (binary) or 1 (Unicode lowercase)".into(),
+            });
+        }
+    }
+    let result = match left.cmp(&right) {
+        std::cmp::Ordering::Less => -1.0,
+        std::cmp::Ordering::Equal => 0.0,
+        std::cmp::Ordering::Greater => 1.0,
+    };
+    Ok(Value::Numeric(result))
 }
 
 fn builtin_instrrev(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -1115,6 +1146,74 @@ fn builtin_command(_args: &[Value]) -> Result<Value, RuntimeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strcomp_orders_strings_and_supports_unicode_lowercase_mode() {
+        let registry = BuiltinRegistry::new();
+        for (left, right, mode, expected) in [
+            ("", "", None, 0.0),
+            ("", "a", None, -1.0),
+            ("a", "", None, 1.0),
+            ("a", "aa", None, -1.0),
+            ("Z", "a", None, -1.0),
+            ("é", "z", Some(0.0), 1.0),
+            ("Rice", "rice", Some(0.0), -1.0),
+            ("Rice", "rice", Some(1.0), 0.0),
+            ("É", "é", Some(1.0), 0.0),
+            ("İ", "i\u{307}", Some(1.0), 0.0),
+            ("ß", "SS", Some(1.0), 1.0),
+            ("é", "e\u{301}", Some(1.0), 1.0),
+            ("Z", "a", Some(1.0), 1.0),
+        ] {
+            let mut args = vec![Value::Str(left.into()), Value::Str(right.into())];
+            if let Some(mode) = mode {
+                args.push(Value::Numeric(mode));
+            }
+            assert_eq!(
+                registry.call("strcomp", &args).unwrap(),
+                Some(Value::Numeric(expected)),
+                "{left:?}, {right:?}, {mode:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn strcomp_rejects_invalid_modes_types_and_arities() {
+        let registry = BuiltinRegistry::new();
+        let text = Value::Str("same".into());
+        for mode in [-1.0, 0.5, 1.5, 2.0, f64::NAN, f64::INFINITY] {
+            assert!(matches!(
+                registry.call(
+                    "STRCOMP",
+                    &[text.clone(), text.clone(), Value::Numeric(mode)]
+                ),
+                Err(RuntimeError::IllegalFunctionCall { .. }),
+            ));
+        }
+        for args in [
+            vec![Value::Numeric(1.0), text.clone()],
+            vec![text.clone(), Value::Numeric(1.0)],
+            vec![text.clone(), text.clone(), Value::Str("1".into())],
+            vec![
+                Value::Record {
+                    type_name: "T".into(),
+                    fields: HashMap::new(),
+                },
+                text.clone(),
+            ],
+        ] {
+            assert!(matches!(
+                registry.call("STRCOMP", &args),
+                Err(RuntimeError::TypeMismatch { .. })
+            ));
+        }
+        for count in [0, 1, 4] {
+            assert!(matches!(
+                registry.call("STRCOMP", &vec![text.clone(); count]),
+                Err(RuntimeError::ArityMismatch { .. }),
+            ));
+        }
+    }
 
     #[test]
     fn standalone_command_has_no_host_arguments_and_checks_arity() {

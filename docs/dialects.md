@@ -67,6 +67,7 @@ Unless a row above explicitly rejects a construct, do not infer that its histori
 - Comma-separated NEXT lists such as `NEXT j, i`, closing nested FOR loops from innermost to outermost. Their availability in ANSI mode is a Rice extension.
 - `COMMAND$()`/`COMMAND()` for program arguments joined with spaces, with an explicit CLI/library argument contract; see [runtime](runtime.md).
 - Doubled quotes inside string literals (`"a""b"` contains `a"b`) as a Rice extension; backslashes remain literal.
+- `LIKE` wildcard matching and `STRCOMP` string ordering as Rice extensions. LIKE follows each mode's truth values; STRCOMP always returns ordering -1/0/1 and optionally compares after Unicode lowercasing. See [operators](language-reference.md#wildcard-matching) and [builtins](builtins.md#strings).
 - Scalar and indexed destinations for READ, INPUT, LINE INPUT, INPUT #, and LINE INPUT #. INPUT resolves all targets before reading; READ resolves and assigns each in order. Existing array bounds/storage limitations still apply.
 - **Both** `OPEN #n: NAME ...` and `OPEN path$ FOR ... AS #n` syntaxes. The parser does not restrict these by dialect. `INPUT`, `OUTPUT`, `APPEND`, `BINARY`, and `RANDOM` mode words are accepted by the latter syntax in either profile, but their record and `GET`/`PUT` behavior differs.
 - `SEEK`, `SET #n: POINTER`, `ASK #n: POINTER`, text file I/O, filesystem statements, and text console control.

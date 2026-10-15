@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use rustyline::Editor;
 use rustyline::error::ReadlineError;
@@ -190,6 +191,10 @@ enum ReplAction {
     List(Option<u32>, Option<u32>),
     /// NEW — clear the stored program.
     New,
+    /// LOAD numbered source into the stored program.
+    Load(String),
+    /// SAVE the stored program as numbered source.
+    Save(String),
     /// DELETE a line or range (bare line number or explicit DELETE command).
     Delete(u32, Option<u32>),
     /// A command was recognized but had invalid arguments.
@@ -239,12 +244,85 @@ fn parse_range(arg: &str) -> Option<(Option<u32>, Option<u32>)> {
     Some(bounds)
 }
 
+/// Parse one literal path, allowing spaces inside quotes and doubled quote escapes.
+fn parse_path_argument(arg: &str) -> Option<String> {
+    let arg = arg.trim();
+    if let Some(quoted) = arg.strip_prefix('"') {
+        let mut chars = quoted.chars().peekable();
+        let mut path = String::new();
+        while let Some(ch) = chars.next() {
+            if ch == '"' {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                    path.push('"');
+                } else {
+                    return (!path.is_empty() && chars.all(char::is_whitespace)).then_some(path);
+                }
+            } else {
+                path.push(ch);
+            }
+        }
+        None
+    } else {
+        (!arg.is_empty() && !arg.contains(char::is_whitespace) && !arg.contains('"'))
+            .then(|| arg.to_string())
+    }
+}
+
+/// LOAD and SAVE remain valid BASIC variable names. Recognize an assignment
+/// target before interpreting its text as a path, even when the RHS is invalid.
+fn is_file_command_assignment(command: &str, arg: &str) -> bool {
+    let arg = arg.trim_start();
+    if arg.starts_with('=') {
+        return true;
+    }
+    if !arg.starts_with(['(', '.']) {
+        return false;
+    }
+    // Reuse BASIC's target grammar for indexed variables and record members.
+    // Candidates inside strings or index expressions fail to form a complete
+    // target; quoted paths never reach this branch.
+    arg.match_indices('=').any(|(index, _)| {
+        let candidate = format!("{command} {} = 0", &arg[..index]);
+        let dialect = crate::Dialect::QuickBasic;
+        let Ok(tokens) = Lexer::with_dialect(&candidate, dialect).tokenize() else {
+            return false;
+        };
+        let Ok(program) = Parser::with_dialect(tokens, dialect).parse_program() else {
+            return false;
+        };
+        program.statements.len() == 1
+            && matches!(
+                program.statements[0].stmt,
+                crate::ast::Stmt::Let { .. }
+                    | crate::ast::Stmt::LetSlice { .. }
+                    | crate::ast::Stmt::MemberAssign { .. }
+            )
+    })
+}
+
 /// Classify a trimmed input line into a REPL action.
 fn classify_input(line: &str) -> ReplAction {
     let trimmed = line.trim();
     let upper = trimmed.to_ascii_uppercase();
 
     // Check for commands first
+    let (command, arg) = trimmed
+        .split_once(char::is_whitespace)
+        .unwrap_or((trimmed, ""));
+    if command.eq_ignore_ascii_case("LOAD") || command.eq_ignore_ascii_case("SAVE") {
+        if is_file_command_assignment(command, arg) {
+            return ReplAction::Execute;
+        }
+        return match parse_path_argument(arg) {
+            Some(path) if command.eq_ignore_ascii_case("LOAD") => ReplAction::Load(path),
+            Some(path) => ReplAction::Save(path),
+            None => ReplAction::InvalidCommand(format!(
+                "Usage: {} <path> (quote paths containing spaces)",
+                command.to_ascii_uppercase()
+            )),
+        };
+    }
     if upper == "RUN" {
         return ReplAction::Run;
     }
@@ -312,7 +390,7 @@ impl Repl {
     pub fn run(&mut self) {
         println!("RICE BASIC v{}", env!("CARGO_PKG_VERSION"));
         println!("Type SYSTEM or press Ctrl+D to exit.");
-        println!("Commands: RUN, LIST, NEW, DELETE");
+        println!("Commands: RUN, LIST, NEW, DELETE, LOAD <path>, SAVE <path>");
         println!();
 
         let mut editor = Editor::new().expect("failed to create editor");
@@ -368,6 +446,18 @@ impl Repl {
                             }
                             ReplAction::New => {
                                 self.program.clear();
+                                continue;
+                            }
+                            ReplAction::Load(path) => {
+                                if let Err(error) = self.load_program(Path::new(&path)) {
+                                    eprintln!("{error}");
+                                }
+                                continue;
+                            }
+                            ReplAction::Save(path) => {
+                                if let Err(error) = self.save_program(Path::new(&path)) {
+                                    eprintln!("{error}");
+                                }
                                 continue;
                             }
                             ReplAction::Delete(start, end) => {
@@ -445,17 +535,57 @@ impl Repl {
         Ok(has_end)
     }
 
+    /// The same numbered source is used by RUN and SAVE.
+    fn stored_source(&self) -> String {
+        self.program
+            .iter()
+            .map(|(num, text)| format!("{num} {text}\n"))
+            .collect()
+    }
+
+    /// Load editable numbered source, replacing the buffer only after validation.
+    /// Like interactive entry, later duplicates replace earlier lines and bare
+    /// numbers delete them. BASIC syntax is checked by RUN, not by LOAD.
+    fn load_program(&mut self, path: &Path) -> Result<(), String> {
+        let source = std::fs::read_to_string(path)
+            .map_err(|error| format!("LOAD {}: {error}", path.display()))?;
+        // Match the lexer's LF, CRLF, and bare-CR source lines. Keeping CR
+        // inside a stored entry would bypass numbering checks and line editing.
+        let source = source.replace("\r\n", "\n").replace('\r', "\n");
+        let mut program = BTreeMap::new();
+        for (index, line) in source.lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let (number, text) = parse_line_number(line).ok_or_else(|| {
+                format!(
+                    "LOAD {}: line {} must start with a line number (0-{}); only numbered REPL programs can be loaded",
+                    path.display(),
+                    index + 1,
+                    u32::MAX
+                )
+            })?;
+            if text.is_empty() {
+                program.remove(&number);
+            } else {
+                program.insert(number, text.to_string());
+            }
+        }
+        self.program = program;
+        Ok(())
+    }
+
+    fn save_program(&self, path: &Path) -> Result<(), String> {
+        std::fs::write(path, self.stored_source())
+            .map_err(|error| format!("SAVE {}: {error}", path.display()))
+    }
+
     /// Reconstruct the stored program and execute it with a fresh interpreter.
     fn run_stored_program(&mut self) {
         if self.program.is_empty() {
             return;
         }
-        let source: String = self
-            .program
-            .iter()
-            .map(|(num, text)| format!("{} {}", num, text))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let source = self.stored_source();
 
         // Fresh interpreter for each RUN (classic behavior: RUN clears variables)
         let dialect = self.interpreter.dialect;
@@ -852,6 +982,214 @@ mod tests {
         assert!(matches!(classify_input("PRINT 42"), ReplAction::Execute));
         assert!(matches!(classify_input("LET X = 5"), ReplAction::Execute));
     }
+
+    #[test]
+    fn test_classify_load_save_paths_preserve_case_and_spaces() {
+        for (input, expected) in [
+            ("load MyProgram.bas", "MyProgram.bas"),
+            (
+                "  LoAd\t\"My Programs/日本語.bas\"  ",
+                "My Programs/日本語.bas",
+            ),
+            (r#"LOAD "a ""quoted"" file.bas""#, "a \"quoted\" file.bas"),
+        ] {
+            assert!(matches!(classify_input(input), ReplAction::Load(path) if path == expected));
+        }
+        for (input, expected) in [
+            ("sAvE MyProgram.bas", "MyProgram.bas"),
+            (
+                r#"SAVE "Folder Name/Mixed Case.bas""#,
+                "Folder Name/Mixed Case.bas",
+            ),
+            (r#"SAVE "C:\BASIC\Program.bas""#, r"C:\BASIC\Program.bas"),
+        ] {
+            assert!(matches!(classify_input(input), ReplAction::Save(path) if path == expected));
+        }
+        assert!(matches!(classify_input("LOADS = 2"), ReplAction::Execute));
+        assert!(matches!(
+            classify_input("SAVE$ = \"x\""),
+            ReplAction::Execute
+        ));
+        assert!(matches!(
+            classify_input("10 LOAD \"p.bas\""),
+            ReplAction::StoreLine(10, _)
+        ));
+    }
+
+    #[test]
+    fn test_classify_load_save_rejects_missing_or_ambiguous_paths() {
+        for input in [
+            "LOAD",
+            "SAVE  ",
+            "LOAD \"\"",
+            "SAVE \"unfinished",
+            "LOAD first.bas second.bas",
+            "SAVE \"first.bas\" second.bas",
+            "LOAD bad\"quote.bas",
+            "SAVE \"ok.bas\"junk",
+        ] {
+            assert!(
+                matches!(classify_input(input), ReplAction::InvalidCommand(_)),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_load_save_commands_preserve_basic_assignments() {
+        for input in [
+            "SAVE =42",
+            "LOAD = 1",
+            "load\t=2",
+            "SAVE=42",
+            "SAVE (1)=42",
+            "LOAD (i + 1, j) = 2",
+            "SAVE (LEN(\"=\")) = 3",
+            "LOAD (i = 1) = 4",
+            "SAVE .score=42",
+            "LOAD .nested .score = 1",
+            "SAVE (1).score = 2",
+            "SAVE =",
+            "SAVE (1) = \"unfinished",
+            "LOAD .score = \"unfinished",
+        ] {
+            assert!(
+                matches!(classify_input(input), ReplAction::Execute),
+                "{input}"
+            );
+        }
+
+        for (input, expected) in [
+            (r#"SAVE "=42""#, "=42"),
+            (r#"SAVE "(1)=42""#, "(1)=42"),
+            (r#"SAVE ".score=42""#, ".score=42"),
+            ("SAVE ./version=1.bas", "./version=1.bas"),
+            ("SAVE version=1.bas", "version=1.bas"),
+        ] {
+            assert!(matches!(classify_input(input), ReplAction::Save(path) if path == expected));
+        }
+        assert!(matches!(classify_input(r#"LOAD "=1""#), ReplAction::Load(path) if path == "=1"));
+    }
+
+    #[test]
+    fn test_save_load_round_trip_uses_sorted_numbered_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Saved Program 日本語.bas");
+        let mut repl = Repl::new();
+        repl.program.insert(30, "END".into());
+        repl.program.insert(10, "REM Preserve Mixed Case".into());
+        repl.program.insert(20, "PRINT \"日本語\"".into());
+        let expected = repl.program.clone();
+
+        repl.save_program(&path).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "10 REM Preserve Mixed Case\n20 PRINT \"日本語\"\n30 END\n"
+        );
+        repl.program.clear();
+        repl.program.insert(999, "PRINT \"replaced\"".into());
+        repl.load_program(&path).unwrap();
+        assert_eq!(repl.program, expected);
+    }
+
+    #[test]
+    fn test_load_replays_duplicate_and_bare_numbers_and_ignores_blank_lines() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        for newline in ["\n", "\r\n", "\r"] {
+            let source = [
+                "30 PRINT 30",
+                "10 PRINT \"before\"",
+                " ",
+                "10 PRINT \"after\"",
+                "30",
+                "40",
+                "20 PRINT 20",
+                "",
+            ]
+            .join(newline);
+            std::fs::write(file.path(), source).unwrap();
+            let mut repl = Repl::new();
+            repl.program.insert(50, "PRINT 50".into());
+            repl.load_program(file.path()).unwrap();
+            assert_eq!(
+                repl.stored_source(),
+                "10 PRINT \"after\"\n20 PRINT 20\n",
+                "line ending: {newline:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_load_failure_preserves_previous_program() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("program.bas");
+        let mut repl = Repl::new();
+        repl.program.insert(10, "PRINT \"keep\"".into());
+        let expected = repl.program.clone();
+
+        let error = repl.load_program(&path).unwrap_err();
+        assert!(error.starts_with("LOAD "));
+        assert_eq!(repl.program, expected);
+        for source in [
+            "20 PRINT \"new\"\nPRINT \"missing number\"\n".as_bytes(),
+            "20 PRINT \"new\"\rPRINT \"missing number\"\r".as_bytes(),
+            "20 PRINT \"new\"\n4294967296 PRINT \"overflow\"\n".as_bytes(),
+            b"20 PRINT 20\n\xff",
+        ] {
+            std::fs::write(&path, source).unwrap();
+            assert!(repl.load_program(&path).is_err());
+            assert_eq!(repl.program, expected);
+        }
+        for newline in ["\n", "\r\n", "\r"] {
+            std::fs::write(&path, format!("10 PRINT 10{newline}PRINT 20{newline}")).unwrap();
+            let error = repl.load_program(&path).unwrap_err();
+            assert!(error.contains("line 2 must start with a line number"));
+            assert_eq!(repl.program, expected);
+        }
+    }
+
+    #[test]
+    fn test_load_does_not_execute_or_reset_immediate_state() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "10 KEEP = 99\n20 PRINT KEEP\n").unwrap();
+        let output = crate::interpreter::SharedOutput::new();
+        let mut repl = Repl::new();
+        repl.interpreter = Interpreter::with_io(
+            Box::new(output.clone()),
+            Box::new(std::io::Cursor::new(Vec::<u8>::new())),
+        );
+        repl.execute_line("OPTION DIALECT \"ANSI\": KEEP = 42")
+            .unwrap();
+        repl.load_program(file.path()).unwrap();
+        assert_eq!(output.clone().into_string(), "");
+        assert_eq!(repl.interpreter.dialect, crate::Dialect::Ansi);
+        repl.execute_line("PRINT KEEP").unwrap();
+        assert_eq!(output.into_string(), "42\n");
+
+        // Stored source remains editable even before it is syntactically complete.
+        std::fs::write(file.path(), "10 IF 1 THEN\n").unwrap();
+        repl.load_program(file.path()).unwrap();
+        assert_eq!(repl.stored_source(), "10 IF 1 THEN\n");
+    }
+
+    #[test]
+    fn test_save_load_empty_program_and_save_errors() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "10 PRINT 10\n").unwrap();
+        let mut repl = Repl::new();
+        repl.save_program(file.path()).unwrap();
+        assert_eq!(std::fs::read_to_string(file.path()).unwrap(), "");
+        repl.program.insert(10, "PRINT 10".into());
+        repl.load_program(file.path()).unwrap();
+        assert!(repl.program.is_empty());
+
+        let directory = tempfile::tempdir().unwrap();
+        repl.program.insert(20, "PRINT 20".into());
+        let error = repl.save_program(directory.path()).unwrap_err();
+        assert!(error.starts_with("SAVE "));
+        assert_eq!(repl.stored_source(), "20 PRINT 20\n");
+    }
+
     #[test]
     fn test_depth_keywords_in_other_statements() {
         for line in [

@@ -185,7 +185,7 @@ Operands and ordinary argument lists are evaluated left to right. `AND`, `OR`, a
 | Integer divide (QB only) | `\` | Left |
 | Modulus | `MOD` | Left |
 | Add/subtract/concatenate | `+`, `-`, `&` | Left |
-| Comparison | `=`, `<>`, `<`, `>`, `<=`, `>=` | Left |
+| Comparison | `=`, `<>`, `<`, `>`, `<=`, `>=`, `LIKE` | Left |
 | Logical/bitwise negation | `NOT` | Prefix |
 | Conjunction | `AND` | Left |
 | Disjunction | `OR` | Left |
@@ -203,7 +203,7 @@ A divisor that rounds to zero (including `0.5` or `-0.5`) raises division by zer
 
 `MIN(number [, number ...])` and `MAX(number [, number ...])` select numeric extrema in either mode. They require at least one numeric argument; see [Built-in functions](builtins.md#mathematics-and-numeric-conversion) for evaluation and nonfinite-value behavior.
 
-Comparison works on two numbers or two strings and returns the dialect's numeric true/false values. Mixed string/number expression comparison raises a type mismatch. Strings compare case-sensitively in lexicographic Unicode order; there is no locale collation or case-folding option. Ordinary operators do not compare records.
+Ordering and equality comparison work on two numbers or two strings and return the dialect's numeric true/false values. Mixed string/number expression comparison raises a type mismatch. Strings compare case-sensitively in lexicographic Unicode order. The separate `STRCOMP(a$, b$[, compare])` builtin can compare after Unicode lowercasing; see [builtins](builtins.md#strings). Ordinary operators do not compare records. `LIKE` accepts strings only, as described below.
 
 In QB, `AND`, `OR`, `XOR`, `NOT`, `EQV`, and `IMP` cast numbers to signed 64-bit integers, truncating fractions toward zero, perform the bitwise operation, and return an `f64`. These casts saturate out-of-range values and map NaN to zero; they do not implement QBasic 16-bit integer semantics or consistent overflow checking. Large integer results may lose precision when stored as `f64`. ANSI logical operators treat every nonzero number as true and return `0` or `1`; ANSI rejects `EQV` and `IMP`.
 
@@ -219,6 +219,32 @@ In QB, `AND`, `OR`, `XOR`, `NOT`, `EQV`, and `IMP` cast numbers to signed 64-bit
 `XOR` binds more tightly than `EQV`, which binds more tightly than `IMP`. Repeated operators associate left to right: `1 IMP 2 IMP 4` gives `5`. Strings and records are rejected.
 
 `&` requires two strings in both modes. QB `+` also concatenates two strings, but mixed strings/numbers are rejected. ANSI `+` accepts numbers only.
+
+### Wildcard matching
+
+`text$ LIKE pattern$` matches the **entire string**, case-sensitively, in both Rice dialects. It is a Rice extension. A match returns `-1` in QB or `1` in ANSI; a nonmatch returns `0`. LIKE has comparison precedence and associates left to right, so concatenation binds more tightly and NOT/AND/OR bind less tightly. Both operands evaluate exactly once, left to right, and must be strings; other values raise type mismatch (error 13).
+
+| Pattern | Meaning |
+|---|---|
+| `*` | Any sequence of zero or more Unicode scalar values. |
+| `?` | Exactly one Unicode scalar value. |
+| `#` | Exactly one ASCII digit, `0` through `9`. |
+| `[abc]` | One character from a set. |
+| `[a-z]` | One character in an inclusive range, ordered by Unicode scalar value. Sets and ranges can be combined. |
+| `[!abc]`, `[!a-z]` | One character outside the set/range. `!` negates only at the start of a class. |
+| `[*]`, `[?]`, `[#]`, `[[]` | Literal `*`, `?`, `#`, or `[`. A `]` outside a class is already literal. |
+
+A leading or trailing `-` inside a class is literal. Backslash has no escape meaning. Other characters match literally. Empty classes (`[]`, `[!]`), unclosed classes, and reversed ranges such as `[z-a]` raise illegal function call (error 5), even when another part of the pattern would not match. The empty pattern matches only the empty string; `*` also matches an empty string. Matching uses an iterative algorithm with no recursive backtracking. There is no locale collation or Unicode normalization; a combining accent counts as a separate scalar value.
+
+```basic
+PRINT "notes.bas" LIKE "*.bas"       ' True
+PRINT "item7" LIKE "item#"           ' True
+PRINT "é" LIKE "?"                  ' True
+PRINT "A" LIKE "[a-z]"              ' False
+IF "report.txt" LIKE "*.txt" THEN PRINT "text file"
+```
+
+LIKE is now a reserved unsuffixed keyword; use a different name for an existing variable named `like` (`like$` remains an identifier).
 
 ## Arrays
 
@@ -489,7 +515,7 @@ ACCESS AND AS ASK BASE BEEP BYREF BYVAL CALL CASE CHAIN CHDIR CHDRIVE
 CLEAR CLOSE CLS COLOR COMMON CONST CONTINUE DATA DECLARE DEF DEFDBL
 DEFINT DEFLNG DEFSNG DEFSTR DIM DO DOUBLE ELSE ELSEIF END EQV ERASE ERROR
 EXCEPTION EXIT EXPLICIT FIELD FILES FOR FREEFILE FUNCTION GET GOSUB GOTO
-IF IMP INPUT INTEGER IS KEY KILL LEN LET LOCATE LONG LOOP LPRINT LSET MAT
+IF IMP INPUT INTEGER IS KEY KILL LEN LET LIKE LOCATE LONG LOOP LPRINT LSET MAT
 MKDIR MOD NAME NEXT NOT OFF ON OPEN OPTION OR ORGANIZATION OUTIN OUTPUT
 POINTER PRESERVE PRINT PUT QUIT RANDOMIZE READ REDIM REM RESET RESTORE
 RESUME RETRY RMDIR RSET SEEK SELECT SEQUENTIAL SET SHARED SHELL SINGLE

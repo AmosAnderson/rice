@@ -423,6 +423,7 @@ impl Lexer {
             "EQV" => Token::KwEqv,
             "IMP" => Token::KwImp,
             "MOD" => Token::KwMod,
+            "LIKE" => Token::KwLike,
             "TAB" => Token::KwTab,
             "SPC" => Token::KwSpc,
             "INTEGER" => Token::KwInteger,
@@ -777,6 +778,20 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_like_keyword_preserves_identifier_boundaries() {
+        assert_eq!(
+            tokenize("like LiKe LIKELY LIKE$ LIKE%"),
+            vec![
+                Token::KwLike,
+                Token::KwLike,
+                Token::Identifier("LIKELY".into()),
+                Token::Identifier("LIKE$".into()),
+                Token::Identifier("LIKE%".into()),
+            ]
+        );
     }
 
     #[test]

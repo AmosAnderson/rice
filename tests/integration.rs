@@ -33,6 +33,148 @@ fn run_file(path: &str) -> String {
 }
 
 #[test]
+fn test_strcomp_in_both_dialects() {
+    let source = std::fs::read_to_string("tests/programs/string_compare.bas").unwrap();
+    for dialect in ["QB", "ANSI"] {
+        assert_eq!(
+            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{source}")),
+            "-1\n0\n1\n-1\n0\n0\n-1\n1\n1\nmatched\n",
+        );
+    }
+}
+
+#[test]
+fn test_strcomp_evaluates_arguments_once_left_to_right() {
+    let source = r#"
+trace$ = ""
+PRINT STRCOMP(First$(), Second$(), Mode())
+PRINT trace$
+FUNCTION First$()
+    SHARED trace$
+    trace$ = trace$ & "L"
+    First$ = "É"
+END FUNCTION
+FUNCTION Second$()
+    SHARED trace$
+    trace$ = trace$ & "R"
+    Second$ = "é"
+END FUNCTION
+FUNCTION Mode()
+    SHARED trace$
+    trace$ = trace$ & "M"
+    Mode = 1
+END FUNCTION
+"#;
+    for dialect in ["QB", "ANSI"] {
+        assert_eq!(
+            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{source}")),
+            "0\nLRM\n"
+        );
+    }
+}
+
+#[test]
+fn test_strcomp_reports_invalid_mode_as_catchable_basic_error() {
+    assert_eq!(
+        run_bas(
+            "ON ERROR GOTO handler\nPRINT STRCOMP(\"x\", \"x\", 0.5)\nEND\nhandler:\nPRINT ERR\n"
+        ),
+        "5\n"
+    );
+    for call in [
+        "STRCOMP(1, \"x\")",
+        "STRCOMP(\"x\", 1)",
+        "STRCOMP(\"x\", \"x\", \"1\")",
+        "STRCOMP()",
+        "STRCOMP(\"x\")",
+        "STRCOMP(\"x\", \"x\", 0, 0)",
+    ] {
+        assert!(
+            run_bas_may_fail(&format!("PRINT {call}\n")).1.is_err(),
+            "{call}"
+        );
+    }
+}
+
+#[test]
+fn test_like_patterns_in_both_dialects() {
+    let source = std::fs::read_to_string("tests/programs/like_patterns.bas").unwrap();
+    let expected =
+        "-1|0\n-1|0\n-1|-1|0\n-1|-1|0\n-1|-1|0\n-1|0|-1\n-1|-1|-1\n0|-1\n-1|0\ntext file\n";
+    for dialect in ["QB", "ANSI"] {
+        assert_eq!(
+            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{source}")),
+            if dialect == "ANSI" {
+                expected.replace("-1", "1")
+            } else {
+                expected.into()
+            },
+        );
+    }
+}
+
+#[test]
+fn test_like_operands_evaluate_once_left_to_right() {
+    let source = r#"
+trace$ = ""
+PRINT TextValue$() LIKE PatternValue$()
+PRINT trace$
+FUNCTION TextValue$()
+    SHARED trace$
+    trace$ = trace$ & "L"
+    TextValue$ = "file7.bas"
+END FUNCTION
+FUNCTION PatternValue$()
+    SHARED trace$
+    trace$ = trace$ & "R"
+    PatternValue$ = "file#.*"
+END FUNCTION
+"#;
+    for (dialect, expected) in [("QB", "-1\nLR\n"), ("ANSI", "1\nLR\n")] {
+        assert_eq!(
+            run_bas(&format!("OPTION DIALECT \"{dialect}\"\n{source}")),
+            expected
+        );
+    }
+}
+
+#[test]
+fn test_like_pattern_and_type_errors_are_catchable_in_both_dialects() {
+    for expression in [
+        "\"x\" LIKE \"[]\"",
+        "\"x\" LIKE \"[!]\"",
+        "\"x\" LIKE \"[\"",
+        "\"x\" LIKE \"[z-a]\"",
+        "\"\" LIKE \"no-match*[\"",
+        "1 LIKE \"*\"",
+        "\"1\" LIKE 1",
+    ] {
+        for dialect in ["QB", "ANSI"] {
+            let source = format!(
+                "OPTION DIALECT \"{dialect}\"\nWHEN EXCEPTION IN\nPRINT {expression}\nUSE\nPRINT \"caught\"\nEND WHEN\nPRINT \"done\"\n"
+            );
+            assert_eq!(
+                run_bas(&source),
+                "caught\ndone\n",
+                "{dialect}: {expression}"
+            );
+        }
+        let expected = if expression.starts_with("1 LIKE") || expression.ends_with("LIKE 1") {
+            "13\n"
+        } else {
+            "5\n"
+        };
+        assert_eq!(
+            run_bas(&format!(
+                "ON ERROR GOTO handler\nPRINT {expression}\nEND\nhandler:\nPRINT ERR\n"
+            )),
+            expected,
+            "{expression}"
+        );
+    }
+}
+
+#[test]
 fn test_indexed_mid_assignment_preserves_length_and_unicode_positions() {
     assert_eq!(
         run_file("tests/programs/indexed_mid_assign.bas"),
