@@ -58,6 +58,8 @@ impl BuiltinRegistry {
         reg.register("CBYTE", builtin_cbyte, 1);
         reg.register("TRUE", builtin_true, 0);
         reg.register("FALSE", builtin_false, 0);
+        reg.register("NULL", builtin_null, 0);
+        reg.register("ISNULL", builtin_isnull, 1);
         reg.register("TYPEOF$", builtin_typeof, 1);
         reg.register_variadic("TRUNCATE", builtin_truncate);
         reg.register("REMAINDER", builtin_remainder, 2);
@@ -225,8 +227,17 @@ fn builtin_false(_args: &[Value]) -> Result<Value, RuntimeError> {
     Ok(Value::Bool(false))
 }
 
+fn builtin_null(_args: &[Value]) -> Result<Value, RuntimeError> {
+    Ok(Value::Null)
+}
+
+fn builtin_isnull(args: &[Value]) -> Result<Value, RuntimeError> {
+    Ok(Value::Bool(matches!(args[0], Value::Null)))
+}
+
 fn builtin_typeof(args: &[Value]) -> Result<Value, RuntimeError> {
     let name = match &args[0] {
+        Value::Null => "NULL",
         Value::Numeric(_) => "NUMERIC",
         Value::Integer(_) => "INTEGER",
         Value::Long(_) => "LONG",
@@ -1518,6 +1529,41 @@ mod tests {
     }
 
     #[test]
+    fn null_builtins_preserve_missing_values_and_check_arity() {
+        let registry = BuiltinRegistry::new();
+        assert!(registry.exists("null"));
+        assert!(registry.exists("isnull"));
+        assert_eq!(call_native("null", &[]), Value::Null);
+        assert_eq!(call_native("isnull", &[Value::Null]), Value::Bool(true));
+        for value in [
+            Value::Numeric(0.0),
+            Value::Bool(false),
+            Value::Str(String::new()),
+            Value::Bytes(Vec::new()),
+        ] {
+            assert_eq!(call_native("ISNULL", &[value]), Value::Bool(false));
+        }
+        for (name, args) in [
+            ("NULL", vec![Value::Numeric(0.0)]),
+            ("ISNULL", vec![]),
+            ("ISNULL", vec![Value::Null, Value::Null]),
+        ] {
+            assert!(matches!(
+                registry.call(name, &args),
+                Err(RuntimeError::ArityMismatch { .. })
+            ));
+        }
+        for name in [
+            "CBOOL", "CBYTE", "CINT", "CLNG", "CINT64", "CSNG", "CDBL", "STR$",
+        ] {
+            assert!(matches!(
+                registry.call(name, &[Value::Null]),
+                Err(RuntimeError::TypeMismatch { .. })
+            ));
+        }
+    }
+
+    #[test]
     fn exact_integer_conversions_preserve_boundaries() {
         for number in [i64::MIN, i64::MAX, 9_007_199_254_740_993, 0, -1] {
             let exact = Value::Int64(number);
@@ -1614,6 +1660,7 @@ mod tests {
     #[test]
     fn type_names_reflect_native_runtime_values() {
         for (value, name) in [
+            (Value::Null, "NULL"),
             (Value::Numeric(1.0), "NUMERIC"),
             (Value::Integer(1), "INTEGER"),
             (Value::Long(1), "LONG"),

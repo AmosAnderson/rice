@@ -73,9 +73,11 @@ A colon separates statements. Block constructs should put their headers, bodies,
 
 ## Values, variables, and assignment
 
-Runtime values include NUMERIC/DOUBLE (`f64`), INTEGER (`i16`), LONG (`i32`), SINGLE (`f32`), INT64 (`i64`), BOOL, BYTE (`u8`), BYTES, STRING, and TYPE records. Floating-point calculations can produce infinity or NaN; integer arithmetic checks overflow. See [Data types and declarations](data-types.md).
+Runtime values include NUMERIC/DOUBLE (`f64`), INTEGER (`i16`), LONG (`i32`), SINGLE (`f32`), INT64 (`i64`), BOOL, BYTE (`u8`), BYTES, STRING, NULL, and TYPE records. Floating-point calculations can produce infinity or NaN; integer arithmetic checks overflow. See [Data types and declarations](data-types.md).
 
-A missing scalar is initialized on first read: `""` for a `$` name and `0` for other names, subject to `DEFSTR` rules and `OPTION EXPLICIT`. Array defaults are discussed below. Conditions accept numeric values and BOOL: zero is false; every nonzero numeric value is true. Strings, byte buffers, and records used as conditions cause a type mismatch.
+A missing scalar is initialized on first read: `""` for a `$` name and `0` for other names, subject to `DEFSTR` rules and `OPTION EXPLICIT`. Array defaults are discussed below. Conditions accept numeric values and BOOL: zero is false; every nonzero numeric value is true. Strings, byte buffers, NULL, and records used as conditions cause a type mismatch.
+
+`NULL()` constructs a distinct missing value; `ISNULL(value)` tests for it. Untyped dynamic bindings can hold NULL, while every declared type rejects it. There is no `AS NULL` declaration. Rice equality treats NULL as equal only to NULL and returns BOOL; other operators and conversions reject it. SQL expressions retain SQLite's NULL semantics. See [NULL values](data-types.md#null-values) and [SQLite databases](sqlite.md).
 
 ### Declarations
 
@@ -145,7 +147,7 @@ Names count as declared through executed `DIM`, `REDIM`, `SHARED`, `STATIC`, `CO
 
 Both destinations are resolved from left to right, evaluating each index exactly once, before either value is read or written. Thus `SWAP i, items(i)` selects the element using the old `i`; swapping a location with itself leaves its value unchanged. A target error leaves both destinations unwritten, although side effects from evaluating indices remain. Constants and `OPTION EXPLICIT` follow the same checks as INPUT targets. Array targets retain the usual flattened storage and do not add bounds or rank checks.
 
-`CLEAR` removes variable values in the current environment and resets the DATA cursor to the start. It retains constants, declaration flags, procedure/type definitions, options, and array bounds/default-type metadata. It does not close files or fully recreate the interpreter. Optional arguments after CLEAR are parsed and ignored.
+`CLEAR` removes variable values in the current environment and resets the DATA cursor to the start. It retains constants, declaration flags, procedure/type definitions, options, and array bounds/default-type metadata. It closes all SQLite connections and frees database results, rolling back uncommitted transactions; it does not close ordinary files or fully recreate the interpreter. Optional arguments after CLEAR are parsed and ignored.
 
 `SHARED name[()] [AS type] [, ...]`, `DIM SHARED ...`, `STATIC ...`, and `COMMON [SHARED] ...` control procedure state. COMMON does not load or link modules; `CHAIN` is unsupported. See [Procedures](procedures.md) and [Multiple modules](multi-module.md) for exact sharing and persistence limitations.
 

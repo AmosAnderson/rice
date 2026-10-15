@@ -6,6 +6,8 @@ use crate::error::RuntimeError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BasicType {
+    /// Runtime-only missing value; there is no AS NULL declaration.
+    Null,
     Numeric,
     Integer,
     Long,
@@ -25,7 +27,8 @@ impl BasicType {
     pub fn is_native(&self) -> bool {
         matches!(
             self,
-            Self::Integer
+            Self::Null
+                | Self::Integer
                 | Self::Long
                 | Self::Single
                 | Self::Int64
@@ -62,6 +65,7 @@ impl BasicType {
 
 #[derive(Debug, Clone)]
 pub enum Value {
+    Null,
     Numeric(f64),
     Integer(i16),
     Long(i32),
@@ -90,6 +94,7 @@ pub fn basic_string_to_bytes(s: &str) -> Vec<u8> {
 impl Value {
     pub fn default_for(ty: BasicType) -> Result<Value, RuntimeError> {
         Ok(match ty {
+            BasicType::Null => Value::Null,
             BasicType::Numeric | BasicType::Double => Value::Numeric(0.0),
             BasicType::Integer => Value::Integer(0),
             BasicType::Long => Value::Long(0),
@@ -112,6 +117,7 @@ impl Value {
 
     pub fn get_type(&self) -> BasicType {
         match self {
+            Value::Null => BasicType::Null,
             Value::Numeric(_) => BasicType::Numeric,
             Value::Integer(_) => BasicType::Integer,
             Value::Long(_) => BasicType::Long,
@@ -160,6 +166,9 @@ impl Value {
     /// Convert numeric values without silently rounding an exact integer.
     pub fn to_f64(&self) -> Result<f64, RuntimeError> {
         match self {
+            Value::Null => Err(RuntimeError::TypeMismatch {
+                msg: "cannot convert NULL to number".into(),
+            }),
             Value::Numeric(n) => Ok(*n),
             Value::Integer(n) => Ok(f64::from(*n)),
             Value::Long(n) => Ok(f64::from(*n)),
@@ -200,6 +209,9 @@ impl Value {
 
     pub fn to_i64(&self) -> Result<i64, RuntimeError> {
         match self {
+            Value::Null => Err(RuntimeError::TypeMismatch {
+                msg: "cannot convert NULL to integer".into(),
+            }),
             Value::Integer(n) => Ok(i64::from(*n)),
             Value::Long(n) => Ok(i64::from(*n)),
             Value::Single(n) => Value::Numeric(f64::from(*n)).to_i64(),
@@ -269,6 +281,12 @@ impl Value {
 
     pub fn coerce_to(&self, ty: BasicType) -> Result<Value, RuntimeError> {
         match ty {
+            BasicType::Null => match self {
+                Value::Null => Ok(Value::Null),
+                _ => Err(RuntimeError::TypeMismatch {
+                    msg: "expected NULL".into(),
+                }),
+            },
             BasicType::Numeric | BasicType::Double => Ok(Value::Numeric(self.to_f64()?)),
             BasicType::Integer => {
                 let number =
@@ -341,6 +359,7 @@ impl Value {
     /// Strings: printed as-is.
     pub fn format_for_print(&self) -> String {
         match self {
+            Value::Null => "NULL".into(),
             Value::Numeric(n) => format_number(*n),
             Value::Integer(n) => n.to_string(),
             Value::Long(n) => n.to_string(),
@@ -361,6 +380,9 @@ impl Value {
 
     pub fn is_truthy(&self) -> Result<bool, RuntimeError> {
         match self {
+            Value::Null => Err(RuntimeError::TypeMismatch {
+                msg: "cannot use NULL as boolean".into(),
+            }),
             Value::Numeric(n) => Ok(*n != 0.0),
             Value::Integer(n) => Ok(*n != 0),
             Value::Long(n) => Ok(*n != 0),
@@ -438,6 +460,7 @@ fn format_number(n: f64) -> String {
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Value::Null => f.write_str("NULL"),
             Value::Numeric(n) => write!(f, "{n}"),
             Value::Integer(n) => write!(f, "{n}"),
             Value::Long(n) => write!(f, "{n}"),
@@ -455,6 +478,7 @@ impl fmt::Display for Value {
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
+            (Value::Null, Value::Null) => true,
             (Value::Str(a), Value::Str(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Bytes(a), Value::Bytes(b)) => a == b,
@@ -476,6 +500,9 @@ impl PartialEq for Value {
 impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match (self, other) {
+            // Keep Rust equality/order consistency; Rice rejects NULL ordering
+            // expressions explicitly before reaching this comparison.
+            (Value::Null, Value::Null) => Some(Ordering::Equal),
             (Value::Str(a), Value::Str(b)) => a.partial_cmp(b),
             (Value::Bool(a), Value::Bool(b)) => a.partial_cmp(b),
             (Value::Bytes(a), Value::Bytes(b)) => a.partial_cmp(b),
@@ -487,6 +514,62 @@ impl PartialOrd for Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn null_is_distinct_from_empty_values_and_preserves_equality_order_consistency() {
+        assert_eq!(Value::Null.get_type(), BasicType::Null);
+        assert!(BasicType::Null.is_native());
+        assert!(!Value::Null.is_numeric());
+        assert_eq!(Value::default_for(BasicType::Null).unwrap(), Value::Null);
+        assert_eq!(Value::Null.coerce_to(BasicType::Null).unwrap(), Value::Null);
+        assert_eq!(Value::Null, Value::Null);
+        assert_eq!(Value::Null.partial_cmp(&Value::Null), Some(Ordering::Equal));
+        assert_eq!(Value::Null.to_string(), "NULL");
+        assert_eq!(Value::Null.format_for_print(), "NULL");
+        assert_eq!(Value::Null.format_for_write(), "NULL");
+        for empty in [
+            Value::Numeric(0.0),
+            Value::Int64(0),
+            Value::Bool(false),
+            Value::Str(String::new()),
+            Value::Bytes(Vec::new()),
+        ] {
+            assert_ne!(Value::Null, empty);
+            assert_eq!(Value::Null.partial_cmp(&empty), None);
+            assert_eq!(empty.partial_cmp(&Value::Null), None);
+            assert!(empty.coerce_to(BasicType::Null).is_err());
+        }
+    }
+
+    #[test]
+    fn null_rejects_typed_assignment_conversion_and_truthiness() {
+        for ty in [
+            BasicType::Numeric,
+            BasicType::Double,
+            BasicType::Integer,
+            BasicType::Long,
+            BasicType::Single,
+            BasicType::Int64,
+            BasicType::Bool,
+            BasicType::Byte,
+            BasicType::Bytes,
+            BasicType::String,
+            BasicType::FixedLengthString(0),
+            BasicType::UserDefined("POINT".into()),
+        ] {
+            assert!(matches!(
+                Value::Null.coerce_to(ty),
+                Err(RuntimeError::TypeMismatch { .. })
+            ));
+        }
+        assert!(Value::Null.to_f64().is_err());
+        assert!(Value::Null.to_f64_lossy().is_err());
+        assert!(Value::Null.to_f32().is_err());
+        assert!(Value::Null.to_i64().is_err());
+        assert!(Value::Null.to_exact_i64().is_err());
+        assert!(Value::Null.to_string_val().is_err());
+        assert!(Value::Null.is_truthy().is_err());
+    }
 
     #[test]
     fn integer_conversion_rejects_nonfinite_and_out_of_range_values() {

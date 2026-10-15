@@ -1,0 +1,26 @@
+' SQLite values, bound parameters, transactions, and result metadata.
+DIM db AS INT64
+DIM rows AS INT64
+db = DBOPEN(":memory:")
+CALL DBEXEC(db, "CREATE TABLE sample (id INTEGER PRIMARY KEY, label TEXT, enabled INTEGER, payload BLOB, missing TEXT)")
+CALL DBBEGIN(db)
+CALL DBEXEC(db, "INSERT INTO sample VALUES (?, ?, ?, ?, ?)", CINT64("9007199254740993"), "café", TRUE(), BYTES(0, 255), NULL())
+CALL DBCOMMIT(db)
+PRINT DBINTRANSACTION(db)
+rows = DBQUERY(db, "SELECT id, label, enabled, payload, missing FROM sample")
+PRINT DBCOLUMNCOUNT(rows); ":"; DBROWCOUNT(rows)
+WHILE DBNEXT(rows)
+    PRINT DBVALUE(rows, "id"); ":"; DBVALUE(rows, "label"); ":"; CBOOL(DBVALUE(rows, "enabled"))
+    PRINT HEXENCODE$(DBVALUE(rows, "payload")); ":"; DBISNULL(rows, "missing")
+    PRINT DBCOLUMNTYPE$(rows, 1); ":"; TYPEOF$(DBVALUE(rows, 1))
+    PRINT DBCOLUMNNAME$(rows, 5); ":"; TYPEOF$(DBVALUE(rows, 5))
+WEND
+PRINT DBNEXT(rows)
+CALL DBFREE(rows)
+CALL DBBEGIN(db)
+CALL DBEXEC(db, "DELETE FROM sample")
+CALL DBROLLBACK(db)
+rows = DBQUERY(db, "SELECT count(*) AS total FROM sample")
+IF DBNEXT(rows) THEN PRINT DBVALUE(rows, "total")
+CALL DBFREE(rows)
+CALL DBCLOSE(db)

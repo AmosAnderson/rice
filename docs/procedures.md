@@ -43,7 +43,7 @@ PRINT Factorial(5)                  ' 120
 
 | Call form | Behavior |
 | --- | --- |
-| `CALL P(x, y)` | Calls `SUB P` |
+| `CALL P(x, y)` | Calls `SUB P`; a DB... builtin instead runs and discards its result |
 | `P x, y` | Calls `SUB P` |
 | `CALL P` or `P` | Calls a zero-argument `SUB` |
 | `P(x, y)` | Not a parenthesized argument-list form; use `CALL` |
@@ -57,7 +57,7 @@ Without `CALL`, individual arguments may be parenthesized, as in
 
 Zero-argument functions can be called with `F()` or, when no variable named `F`
 already resolves, with bare `F`. Use `F()` to avoid the variable ambiguity.
-`CALL` resolves only `SUB` definitions; it does not discard a function's result.
+`CALL` resolves database builtins first, then `SUB` definitions. `CALL DBEXEC(db, sql$)` and other DB... calls discard their result and evaluate arguments by value with no copy-back. Other expression functions cannot be invoked through CALL. See [SQLite](sqlite.md).
 
 Definitions are collected before top-level execution, so calls may precede their
 definitions. Definitions inside top-level `IF`, loop, `SELECT CASE`, and exception
@@ -286,7 +286,8 @@ Implicit arrays also retain their initialization state, including arrays first
 used only in a read, so later DEFtype statements do not change existing bindings.
 
 CLEAR within a procedure resets its current local values to their declared
-defaults. It retains static type metadata even when no values remain to save, so a
+defaults. It also closes every database connection and frees every query result
+in the interpreter, including handles held in caller or shared bindings. It retains static type metadata even when no values remain to save, so a
 later call that skips STATIC still enforces the type. The next invocation resumes
 from the values saved when the previous call exited. DIM still executes and resets
 its scalar/record slot whenever reached, including inside a STATIC procedure.

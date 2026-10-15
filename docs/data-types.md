@@ -33,7 +33,7 @@ is first initialized. DEFINT, DEFLNG, DEFSNG, DEFDBL, and DEFSTR select enforced
 default types for subsequent new names; existing bindings keep their type.
 
 `TYPEOF$(value)` reports INTEGER, LONG, SINGLE, NUMERIC, INT64, BOOL, BYTE, BYTES,
-STRING, or the record type name. DOUBLE reports NUMERIC; BOOLEAN reports BOOL.
+STRING, NULL, or the record type name. DOUBLE reports NUMERIC; BOOLEAN reports BOOL.
 Fixed and variable strings both report STRING.
 
 SWAP and BYREF copy-back validate every destination before writing any of them.
@@ -60,6 +60,30 @@ integer range of floating point. CINT, CLNG, and CSNG return INTEGER, LONG, and 
 cannot recover its original digits. `CINT64` trims surrounding whitespace and
 accepts a signed decimal integer string; it does not parse hexadecimal strings,
 fractional text, or scientific notation.
+
+## NULL values
+
+`NULL()` returns a distinct missing value, including for SQLite NULL results.
+`ISNULL(value)` returns a BOOL, and `TYPEOF$(NULL())` returns `"NULL"`. NULL is
+separate from zero, FALSE, an empty string, and an empty byte buffer. It can be
+stored in an unsuffixed implicit binding, or passed through an untyped parameter
+or function result. There is no `AS NULL` declaration: declared types and suffixes
+reject NULL rather than substituting a default.
+
+```basic
+missing = NULL()
+PRINT ISNULL(missing)             ' TRUE
+PRINT TYPEOF$(missing)            ' NULL
+```
+
+Rice equality treats two NULL values as equal and NULL as unequal to every
+non-NULL value; these comparisons return BOOL. This is Rice expression behavior;
+SQL expressions retain SQLite's NULL rules. Ordering, arithmetic, concatenation,
+logical operators, conditions, and numeric/string/boolean conversions reject
+NULL with a type mismatch. Plain PRINT and WRITE display `NULL`; binary GET/PUT
+has no NULL representation. Check for a missing value before converting it or
+assigning it to a declared type. See [SQLite](sqlite.md) for SQL type mapping and
+nullable-column examples.
 
 ## Arithmetic and comparisons
 

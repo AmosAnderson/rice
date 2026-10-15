@@ -37,6 +37,7 @@ The CLI runs on an 8 MiB stack thread because large debug interpreter frames can
 | `src/environment.rs` | Parent scope reads, local/shared writes, constants/declarations, labels. Default array base is 1. |
 | `src/value.rs` | NUMERIC/DOUBLE (`f64`), INTEGER (`i16`), LONG (`i32`), SINGLE (`f32`), INT64/BOOL/BYTE/BYTES, STRING, and records; checked conversions, formatting, and binary byte mapping. |
 | `src/builtins.rs` | Pure builtin registry. Exact and variadic arities use separate registration methods. |
+| `src/database.rs` | Interpreter-owned SQLite connections, bound SQL execution, materialized result handles, and DB function dispatch. |
 | `src/mat.rs` | Two-dimensional numeric matrix operations. |
 | `src/format_using.rs` | PRINT USING numeric/string formatting. |
 | `src/repl.rs` | Immediate execution, block-depth heuristic, stored numbered lines, RUN/LIST/NEW/DELETE, highlighting/history. |

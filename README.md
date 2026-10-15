@@ -2,7 +2,7 @@
 
 Rice BASIC 0.20.0 is a text-mode BASIC interpreter written in Rust, with an interactive REPL, file execution, and a stdio language server. Rice defines its own language and evolves its semantics through its specification and tests.
 
-The Rice specification is authoritative. Rice provides exact integers, booleans, byte buffers, Unicode strings, records, and floating-point numbers within one language.
+The Rice specification is authoritative. Rice provides exact integers, booleans, byte buffers, Unicode strings, records, floating-point numbers, and NULL values within one language. Bundled SQLite support provides databases, bound SQL parameters, result rows, and transactions.
 
 ## Start here
 
@@ -37,6 +37,7 @@ The [documentation index](docs/README.md) links the complete specification and g
 - [Implementation limits](docs/compatibility.md): partial features and unverified behavior.
 - [Built-in functions](docs/builtins.md): complete signatures, argument rules, conversions, strings, random numbers, and interpreter state.
 - [Procedures and scope](docs/procedures.md), [user-defined types](docs/user-defined-types.md), and [module boundaries](docs/multi-module.md).
+- [SQLite databases](docs/sqlite.md): connections, SQL, bound parameters, transactions, and native result values.
 - [File I/O](docs/file-io.md), [errors](docs/error-handling.md), [console](docs/console.md), and [PRINT USING](docs/print-using.md).
 - [MAT operations](docs/mat-operations.md) and [string slicing](docs/string-slicing.md).
 - [CLI, REPL, host operations, and editor integration](docs/runtime.md).
@@ -117,6 +118,7 @@ Source -> Lexer -> Tokens -> Parser -> AST -> Tree-walking interpreter -> Output
 | `src/token.rs`, `src/lexer.rs` | Tokens, source spans, case-insensitive lexing. |
 | `src/ast.rs`, `src/parser.rs` | Syntax tree and recursive-descent parsing. |
 | `src/interpreter.rs` | Execution, procedure calls, file handles, console state, errors. |
+| `src/database.rs` | Interpreter-owned SQLite connections, SQL execution, and materialized results. |
 | `src/environment.rs`, `src/value.rs` | Scope lookup, flattened array storage, primitive values and records. |
 | `src/builtins.rs` | Pure builtin registry; stateful functions live in the interpreter. |
 | `src/mat.rs`, `src/format_using.rs` | Matrix arithmetic and formatted printing. |
@@ -126,7 +128,7 @@ Source -> Lexer -> Tokens -> Parser -> AST -> Tree-walking interpreter -> Output
 
 Tests include unit tests and BASIC fixtures in `tests/programs`, asserted by `tests/integration.rs`. Focused commands: `cargo test --lib`, `cargo test --test integration`, and `cargo test --bin rice-lsp`. See [AGENTS.md](AGENTS.md) for contribution instructions and [CLAUDE.md](CLAUDE.md) for a source-navigation guide.
 
-Dependencies are declared in [Cargo.toml](Cargo.toml): `thiserror`, `rustyline`, `crossterm`, `tower-lsp`, and `tokio`, with `tempfile` for tests.
+Dependencies are declared in [Cargo.toml](Cargo.toml): `thiserror`, `rustyline`, `crossterm`, `tower-lsp`, `tokio`, and `rusqlite` with bundled SQLite, with `tempfile` for tests. Building SQLite from source also requires a C compiler; prebuilt Rice binaries include SQLite.
 
 ## License
 

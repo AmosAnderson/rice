@@ -50,6 +50,8 @@ pub enum RuntimeError {
     DuplicateDefinition { name: String },
     #[error("{msg}")]
     IoError { msg: String, code: i32 },
+    #[error("database error (SQLite code {code}): {msg}")]
+    Database { msg: String, code: i32 },
 }
 
 impl RuntimeError {
@@ -61,6 +63,7 @@ impl RuntimeError {
             RuntimeError::SubscriptOutOfRange => 3000,
             RuntimeError::Overflow { .. } => 1000,
             RuntimeError::IllegalFunctionCall { .. } => 5000,
+            RuntimeError::Database { .. } => 9000,
             RuntimeError::IoError { code, .. } => {
                 match *code {
                     53 => 8001, // FileNotFound
@@ -83,6 +86,7 @@ impl RuntimeError {
             RuntimeError::DuplicateDefinition { .. } => 10,
             RuntimeError::IoError { code, .. } => *code,
             RuntimeError::BasicError { code } => *code,
+            RuntimeError::Database { .. } => 90,
             RuntimeError::General { .. } => 5,
             _ => 5,
         }

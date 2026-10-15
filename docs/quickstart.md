@@ -4,7 +4,8 @@ The [language reference](language-reference.md) defines Rice's syntax and semant
 
 ## Build and run
 
-From this repository, with a Rust toolchain supporting edition 2024:
+From this repository, with a Rust toolchain supporting edition 2024 and a C
+compiler for bundled SQLite:
 
 ```sh
 cargo build --release --bin rice

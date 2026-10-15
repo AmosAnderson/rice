@@ -11,6 +11,7 @@ This documentation is the authoritative specification of **Rice BASIC 0.20.0 as 
 | [Built-in functions](builtins.md) | Every implemented expression function, signature, return value, restrictions, and calling quirks. |
 | [Procedures and scope](procedures.md) | SUB, FUNCTION, DEF, CALL, DECLARE, BYREF/BYVAL, SHARED, COMMON, STATIC. |
 | [User-defined types](user-defined-types.md) | TYPE declarations, fields, nested records, arrays, initialization and serialization. |
+| [SQLite databases](sqlite.md) | Connections, bound SQL, native values and NULL, result rows, transactions, and cleanup. |
 | [File I/O](file-io.md) | Both OPEN syntaxes, text input/output, positions, binary/random records, FIELD buffers. |
 | [Error handling](error-handling.md) | Structured WHEN/USE and ON ERROR/RESUME, registers, codes, control-flow limits. |
 | [Console](console.md) | PRINT, INPUT, terminal state/control, keyboard functions, screen buffer limits. |

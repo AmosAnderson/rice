@@ -12,6 +12,8 @@ cargo build --release --bin rice-lsp
 cargo test
 ```
 
+SQLite is bundled through rusqlite. Source builds require a C compiler in addition to Rust; prebuilt binaries include SQLite and require no separate database installation.
+
 The executables are `target/release/rice` and `target/release/rice-lsp` (`.exe` on Windows). For development, `cargo build` builds the package binaries, `cargo run` selects the `rice` binary, and output goes in `target/debug/`.
 
 ```text
@@ -73,13 +75,13 @@ Manual runs enforce the same master-history check and build the tagged source. A
 
 ## REPL state and program editing
 
-Immediate unnumbered input executes as soon as a complete statement/block is entered. Variables, procedures, types, options, and open files persist between immediate inputs. A leading decimal line number stores or replaces a program line; the line is not executed until `RUN`. Stored lines are sorted numerically. The parser currently rejects labels on block terminators such as `NEXT` and `END IF`, so a conventional stored multiline numbered loop cannot run as written. Enter such blocks immediately without numbers, or use unnumbered terminators in a source file. Colon-separated block headers/terminators are not a workaround. File execution, by contrast, follows source order, even when numeric labels are out of order.
+Immediate unnumbered input executes as soon as a complete statement/block is entered. Variables, procedures, types, options, open files, database connections, and query results persist between immediate inputs. A leading decimal line number stores or replaces a program line; the line is not executed until `RUN`. Stored lines are sorted numerically. The parser currently rejects labels on block terminators such as `NEXT` and `END IF`, so a conventional stored multiline numbered loop cannot run as written. Enter such blocks immediately without numbers, or use unnumbered terminators in a source file. Colon-separated block headers/terminators are not a workaround. File execution, by contrast, follows source order, even when numeric labels are out of order.
 
 | REPL command/input | Effect |
 |---|---|
 | `10 PRINT "Hello"` | Store/replace line 10. Whitespace between number and text is optional. |
 | `10` | Delete line 10. |
-| `RUN` | Execute stored lines in ascending order using a **new interpreter**. Clears previous variables, open files, procedures, and other interpreter state. An empty stored program returns silently and does not reset state. |
+| `RUN` | Execute stored lines in ascending order using a **new interpreter**. Clears previous variables, open files, database connections/results, procedures, and other interpreter state. An empty stored program returns silently and does not reset state. |
 | `LIST` | List all stored lines. |
 | `LIST 20`, `LIST 10-50`, `LIST -50`, `LIST 20-` | List one line or an inclusive range. |
 | `DELETE 20`, `DELETE 10-50`, `DELETE 20-` | Delete one line or an inclusive range. Bare `DELETE`, an omitted lower bound, and reversed ranges are errors. |
@@ -100,6 +102,8 @@ History is loaded/saved at `$HOME/.rice_history`, falling back to `$USERPROFILE/
 Every immediate submission uses `Interpreter::run_source`; it is parsed independently and prescanned for definitions and DATA before execution. Definitions persist, and new DATA is appended to the existing DATA pool. Labels should be kept within one complete submission or stored program. `RUN` resets this accumulated state; `NEW` does not. REPL interpreters have no program arguments, so `COMMAND$()` returns `""`, including during stored `RUN` execution.
 
 DECLARE signature validation happens before execution. If it fails, the submission's prescanned changes are discarded: existing procedure definitions, declarations, TYPE definitions, DATA values, and DATA labels remain unchanged. The next submission can execute normally. This recovery applies to signature validation; an error during execution does not undo earlier runtime side effects.
+
+Database resources belong to the interpreter. `CLEAR` closes every database and frees results; replacing or destroying an interpreter does the same. Closing a database rolls back uncommitted transactions. An ordinary handled runtime error does not automatically close a database or roll back a transaction. See [SQLite](sqlite.md).
 
 ## Host statements and paths
 
@@ -125,7 +129,7 @@ Filesystem errors map to BASIC error codes where implemented; see [error handlin
 
 `rice-lsp` speaks LSP over stdin/stdout. Configure an editor with BASIC language support to start the binary. It provides:
 
-- Lexer/parser diagnostics on open and full-document change. It does not execute code or diagnose runtime type, bounds, or file errors. A parse failure currently prevents symbol extraction for that document.
+- Lexer/parser diagnostics on open and full-document change. It does not execute code or diagnose runtime type, bounds, file, or SQL errors. A parse failure currently prevents symbol extraction for that document.
 - Keyword, builtin, type, and current-document symbol completions; completion lists are not filtered by lexical scope.
 - Hover documentation for recognized keywords, builtins, and extracted symbols.
 - Go-to-definition within the current document using extracted symbols, with UTF-16 cursor positions. It is not a cross-file or scope-aware resolver.
@@ -155,7 +159,7 @@ Use a stdio language-server configuration pointing at the compiled executable an
 
 ## Library use and verification
 
-The public Rust modules expose `Interpreter::new()`, `Interpreter::with_io(output, input)`, `run_source`, `run_file`, and lower-level lexer/parser APIs. `run_file` reads a UTF-8 file; `run_source` runs a string; `run_program` accepts a parsed AST. `with_io` is useful for deterministic input and captured output and defaults to noninteractive console behavior.
+The public Rust modules expose `Interpreter::new()`, `Interpreter::with_io(output, input)`, `run_source`, `run_file`, and lower-level lexer/parser APIs. `run_file` reads a UTF-8 file; `run_source` runs a string; `run_program` accepts a parsed AST. `with_io` is useful for deterministic input and captured output and defaults to noninteractive console behavior. SQLite connections and materialized results persist across calls on the same Interpreter; use DBCLOSE/DBFREE, CLEAR, or drop the interpreter to release them. Dropping it rolls back uncommitted database transactions.
 
 New interpreters return `""` from `COMMAND$()` and do not inspect the embedding process's arguments. Configure them explicitly with `interpreter.set_command_line_args(["First", "two words"]);`. The setter accepts an iterator of string-like values and replaces the joined argument text. These arguments are local to the interpreter and survive subsequent `run_source`, `run_file`, and BASIC `CLEAR` calls. Passing an empty iterator clears them. A standalone builtin registry has no program context and returns `""` for COMMAND$()/COMMAND() too; both calls require zero arguments.
 

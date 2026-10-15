@@ -217,3 +217,57 @@ fn cli_check_after_separator_is_a_program_argument() {
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
 }
+
+#[cfg(any(unix, windows))]
+#[test]
+fn cli_sqlite_uri_shaped_filenames_are_literal_files() {
+    let directory = tempfile::tempdir().unwrap();
+    let filename = "file:literal.sqlite?mode=memory&cache=shared";
+    let source = format!(
+        r#"
+WHEN EXCEPTION IN
+    db = DBOPEN("{filename}")
+    PRINT "opened"
+    CALL DBEXEC(db, "CREATE TABLE item(value)")
+    CALL DBEXEC(db, "INSERT INTO item VALUES (7)")
+    CALL DBCLOSE(db)
+    db = DBOPEN("{filename}", "ro")
+    result = DBQUERY(db, "SELECT value FROM item")
+    CALL DBNEXT(result)
+    PRINT DBVALUE(result, 1)
+    CALL DBCLOSE(db)
+USE
+    PRINT EXTYPE
+END WHEN
+"#
+    );
+    std::fs::write(directory.path().join("literal-filename.bas"), source).unwrap();
+    // Isolate the working directory in the child, without changing the test
+    // process's directory while other integration tests execute in parallel.
+    let output = Command::new(env!("CARGO_BIN_EXE_rice"))
+        .current_dir(directory.path())
+        .arg("literal-filename.bas")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout)
+        .unwrap()
+        .replace("\r\n", "\n");
+    #[cfg(unix)]
+    {
+        assert_eq!(stdout, "opened\n7\n");
+        assert!(directory.path().join(filename).is_file());
+    }
+    #[cfg(windows)]
+    {
+        // Windows rejects ':' and '?' in this filename; it must not silently
+        // interpret them as a valid URI for an ephemeral in-memory database.
+        assert_eq!(stdout, "9000\n");
+    }
+    assert!(!directory.path().join("literal.sqlite").exists());
+}

@@ -14,6 +14,7 @@
 - CLI entrypoint is `src/main.rs`; it runs the interpreter on an 8 MB stack thread to avoid debug-mode stack exhaustion from large interpreter match frames.
 - `src/bin/rice_lsp.rs` is a separate stdio LSP server binary.
 - Prefer extending existing core files over adding new modules: tokens in `src/token.rs`, lexing in `src/lexer.rs`, AST in `src/ast.rs`, parsing in `src/parser.rs`, execution in `src/interpreter.rs`, builtins in `src/builtins.rs`, values in `src/value.rs`.
+- SQLite connection/result ownership and DB function dispatch live in the private `src/database.rs` module; the interpreter owns one `Databases` instance. SQLite is bundled through rusqlite.
 
 ## BASIC Semantics To Preserve
 
@@ -21,6 +22,7 @@
 - Runtime values include NUMERIC/DOUBLE `f64`, INTEGER `i16`, LONG `i32`, SINGLE `f32`, INT64 `i64`, BOOL, BYTE `u8`, BYTES, STRING, and records. All declared types are enforced across variables, arrays, fields, parameters, results, and persistent/shared bindings. Integer assignments require exact in-range values; fixed strings pad/truncate to their Unicode character length. Unsuffixed implicit variables remain dynamic unless DEFtype applies. See `docs/data-types.md`.
 
 - Undefined variables initialize to the selected type's default unless OPTION EXPLICIT requires a declaration; preserve its documented declaration exceptions.
+- `NULL()` produces a missing value, distinct from zero or empty data. Implicit dynamic variables can hold it; declared types reject it. `ISNULL` tests it; there is no `AS NULL` declaration. Rice NULL comparisons use ordinary equality, not SQL three-valued logic.
 - Statement-level `=` is assignment; inside expressions it is comparison.
 - `MOD` works on real numbers.
 - PRINT has no leading space for positive numbers and uses 16-character comma zones.
@@ -42,6 +44,7 @@
 - Single-line vs block `IF` depends on tokens after `THEN`; `ELSE` can terminate a single-line statement parse.
 - Function-call syntax is ambiguous at parse time; runtime resolution is builtin, then user-defined function, then array.
 - FREEFILE, EOF, LOF, and LOC are implemented directly in `src/interpreter.rs`, not the builtin registry.
+- DB functions also bypass the pure builtin registry and support `CALL` with no BYREF copy-back. Query results are materialized, and handles persist across `run_source` calls. `CLEAR` releases database resources without recycling handle numbers. SQL errors follow SQLite transaction semantics; see `docs/sqlite.md`.
 
 ## Tests
 

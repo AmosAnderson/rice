@@ -61,6 +61,7 @@ The interpreter has one shared exception-information slot. Nested handlers are s
 | Illegal function call | 5000 |
 | File not found (I/O code 53) | 8001 |
 | Other mapped I/O error with code `n` | `8000 + n` |
+| SQLite database error | 9000 |
 | Other runtime error, including `ERROR n` | 9999 |
 
 Native INT64 arithmetic overflow and out-of-range integer/byte assignment use the overflow category; fractional integer assignment or incompatible types use type mismatch. Explicit parsers such as CINT64 with malformed text can raise illegal function call. Floating-point operations do not all raise overflow: some can produce infinity or NaN. Only actual runtime errors enter a handler.
@@ -108,6 +109,7 @@ A handler is marked active until `RESUME` or `ON ERROR GOTO 0`; another error wh
 | Input past end of file / unexpected EOF | 62 |
 | Permission denied | 70 |
 | Other mapped host I/O errors | 76 |
+| SQLite database error | 90 |
 | `ERROR n` | `n` |
 
 Mapping follows the runtime error category: for example, an unopened channel can report general code 5. Diagnostic wording from host filesystem errors varies by platform.
@@ -119,3 +121,5 @@ Mapping follows the runtime error category: for example, an unopened channel can
 Top-level handlers and tested `GOSUB` continuations are supported. The saved resume location is an index in the current executing statement list. If an error escapes an `IF`, loop, or procedure, `ERL` and the resume target can refer to the enclosing top-level statement instead of the inner failing operation. Handler lookup also occurs in the current statement list, so a target in an unrelated nested block or procedure is not a general-purpose recovery target.
 
 Use structured handlers close to operations that may fail, or keep classic handler targets and recovery statements at top level. Recovery does not roll back partial file writes, record reads, assignments, or output. Open handles remain available after a `GET`/`PUT` error; failed `CLOSE` flushing keeps handles available for a retry. Neither handler system provides automatic `FINALLY` cleanup.
+
+Handling a database error does not automatically roll back a transaction; inspect DBINTRANSACTION and explicitly commit or roll back as appropriate. SQLite error text includes its extended error code, or zero for a wrapper conversion error. Some PRAGMA settings apply during SQL preparation, even when a call subsequently fails validation; a result-conversion error can follow SQL writes. An error is not a guarantee of no database effects. Invalid database handles/options use illegal-function-call errors, while incompatible argument values use type mismatch. See [SQLite recovery](sqlite.md#transactions-and-error-recovery).

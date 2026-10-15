@@ -9,7 +9,7 @@ Arguments are evaluated left to right. Numeric arguments must be numeric values;
 | Form | Meaning |
 |---|---|
 | `ABS(x)`, `MID$(s$, start[, count])` | Parentheses required for functions with arguments; brackets in this reference mean optional syntax. |
-| `PI()`, `MAXNUM()`, `RND()`, `CURDIR$()`, `COMMAND$()` | Parentheses required for these zero-argument calls. Bare names are ordinary variables and default to `0` or `""`. |
+| `PI()`, `MAXNUM()`, `RND()`, `CURDIR$()`, `COMMAND$()`, `NULL()`, `DBVERSION$()` | Parentheses required for these zero-argument calls. Bare names are ordinary variables and default to `0` or `""`. |
 | `TIMER`, `FREEFILE` | Bare keyword forms only; `TIMER()` and `FREEFILE()` are parse errors. |
 | `DATE$`, `TIME$`, `CSRLIN`, `INKEY$`, `DET`, `ERR`, `ERL`, `EXTYPE`, `EXTEXT$`, `TRUE`, `FALSE` | Bare or parenthesized zero-argument forms. An existing variable/constant of the same name can shadow a bare reference; parentheses force function lookup. DATE$/TIME$ assignment is special. |
 
@@ -70,7 +70,9 @@ types](data-types.md) for declaration, arithmetic, precision, and file rules.
 | `CBOOL(value)` | Native BOOL from a boolean or finite number; zero is false, nonzero true. Strings and byte buffers fail. |
 | `CBYTE(value)` | Native BYTE from an exact integer in `0..255`, or BOOL (`1`/`0`). |
 | `TRUE()`, `FALSE()` | Native BOOL constants; bare forms work when not shadowed by a variable or constant. |
-| `TYPEOF$(value)` | `NUMERIC`, `INTEGER`, `LONG`, `SINGLE`, `INT64`, `BOOL`, `BYTE`, `BYTES`, `STRING`, or the record type name. DOUBLE reports NUMERIC; fixed strings report STRING. |
+| `NULL()` | Distinct missing value. No `AS NULL` declaration; declared types reject NULL. |
+| `ISNULL(value)` | BOOL indicating whether the value is NULL. Zero, FALSE, empty strings, and empty buffers are not NULL. |
+| `TYPEOF$(value)` | `NUMERIC`, `INTEGER`, `LONG`, `SINGLE`, `INT64`, `BOOL`, `BYTE`, `BYTES`, `STRING`, `NULL`, or the record type name. DOUBLE reports NUMERIC; fixed strings report STRING. |
 | `BYTES([value, ...])` | New byte buffer. Each value uses CBYTE conversion; no arguments creates an empty buffer. |
 | `BYTEBUFFER(length[, fill])` | New buffer with an exact nonnegative length; optional byte fill defaults to zero. |
 | `BYTELEN(buffer)` | Byte count, also available through LEN(buffer). |
@@ -172,6 +174,50 @@ These functions work. Binary strings map each byte to a character U+0000..U+00FF
 | `MKD$(x)` | `CVD(s$)` | 8-byte little-endian IEEE double precision. |
 
 MKI$/MKL$ require exact integers within their signed width; fractions, nonfinite values, and overflow fail. MKS$ rounds to SINGLE and rejects finite overflow. CVI/CVL/CVS return INTEGER/LONG/SINGLE; CVD returns NUMERIC. Decoders require at least the listed byte count and ignore extra bytes. IEEE encodings are not Microsoft Binary Format; there are no `MKSMBF$`, `MKDMBF$`, `CVSMBF`, or `CVDMBF` functions. See [binary record layouts](file-io.md).
+
+## SQLite databases
+
+All database functions require parentheses in expressions. `CALL DB...(...)`
+also invokes them, discarding the result with no BYREF copy-back. Handles are
+interpreter-owned INT64 values. See [SQLite databases](sqlite.md) for examples,
+SQL parameter slots, data mapping, transaction recovery, and resource limits.
+
+| Function | Result and restrictions |
+|---|---|
+| `DBOPEN(path$[, mode$[, timeoutMs]])` | INT64 connection handle. Modes `rwc` (default), `rw`, and `ro` are case-insensitive; `:memory:` creates a private memory database. Relative paths use process cwd. Foreign keys are enabled; default busy timeout is 5000 ms. |
+| `DBCLOSE(db)` | BOOL TRUE after closing the connection, rolling back uncommitted work, and invalidating its results. |
+| `DBEXEC(db, sql$[, parameter, ...])` | Execute one statement with no result columns. Return INT64 changed rows for DML, zero for non-DML. Row-returning SQL is rejected before stepping; PRAGMA preparation can still have effects. |
+| `DBQUERY(db, sql$[, parameter, ...])` | Execute one statement with result columns and materialize every row; return an INT64 result handle. Includes SELECT, row-returning PRAGMA, and RETURNING. |
+| `DBNEXT(result)` | BOOL TRUE after advancing to a row, or FALSE at end. Starts before row 1 and remains FALSE once exhausted. |
+| `DBVALUE(result, column)` | Current value as INT64, NUMERIC, STRING, BYTES, or NULL according to SQLite's storage class. Column is an exact 1-based index or unique name matched without ASCII case distinctions. |
+| `DBISNULL(result, column)` | BOOL indicating whether the current value is SQLite NULL. Same column rules as DBVALUE. |
+| `DBCOLUMNTYPE$(result, column)` | Current value's storage class: NULL, INTEGER, REAL, TEXT, or BLOB. Same column rules as DBVALUE. |
+| `DBCOLUMNCOUNT(result)` | INT64 column count, including for an empty result or before iteration. |
+| `DBCOLUMNNAME$(result, index)` | Column name at an exact 1-based index, including for an empty result. |
+| `DBROWCOUNT(result)` | INT64 total materialized row count, including before iteration. |
+| `DBFREE(result)` | BOOL TRUE after releasing result memory and invalidating its handle. |
+| `DBCHANGES(db)` | INT64 SQLite connection change counter. Non-DML can leave the previous count or expose a count from internal SQLite writes; DBEXEC returns the submitted statement's count. |
+| `DBLASTID(db)` | Exact INT64 last inserted rowid for this connection; initially zero. |
+| `DBBEGIN(db[, mode$])` | BOOL TRUE after beginning a transaction; DEFERRED (default), IMMEDIATE, or EXCLUSIVE, case-insensitively. |
+| `DBCOMMIT(db)` | BOOL TRUE after committing the active transaction. |
+| `DBROLLBACK(db)` | BOOL TRUE after rolling back the active transaction. |
+| `DBINTRANSACTION(db)` | BOOL indicating that SQLite autocommit is disabled. |
+| `DBTIMEOUT(db, timeoutMs)` | BOOL TRUE after setting the busy timeout; exact integer in `0..2147483647`, zero disables waiting. The same range applies to DBOPEN. |
+| `DBVERSION$()` | Bundled SQLite version string. |
+
+Bind ordinary scalar values with `?` placeholders and trailing arguments. Integer
+widths remain exact, BOOL binds as INTEGER 1/0, BYTES as BLOB, and NULL() as SQL
+NULL. Records and whole arrays are unsupported parameters. The supplied count
+must match SQLite's indexed parameter slots exactly. Result column indices are
+independent of OPTION BASE. Value/type access requires a successful DBNEXT and
+fails before iteration or after exhaustion. CLEAR closes all databases and
+results; connections otherwise survive immediate REPL inputs and run_source calls.
+NaN parameters and NUL in SQL statement text are rejected; bound values can contain
+NUL. Invalid UTF-8 TEXT raises a database error; CAST AS BLOB retrieves raw bytes.
+Invalid UTF-8 result column names also raise a database error, including for empty results.
+SQL preparation can apply PRAGMA settings even when a call later fails validation.
+A materialization error can follow successful writes, including RETURNING. Use an
+explicit transaction and rollback when recovery must undo changes; see the guide.
 
 ## Interpreter state, files, arrays, and console
 

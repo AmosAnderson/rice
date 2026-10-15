@@ -255,6 +255,32 @@ RSET name$ = expr
 
 The [File I/O specification](docs/file-io.md) is authoritative for exact OPEN clause ordering, optional commas and targets, supported modes, pointer units, binary record types, FIELD, `MK*`/`CV*` functions, UTF-8/byte conversion, and error handling. Supported syntax and runtime effects are documented separately.
 
+## SQLite databases
+
+```text
+db = DBOPEN(path$ [, mode$ [, timeoutMs]])
+CALL DBEXEC(db, sql$ [, parameter, ...])
+rows = DBQUERY(db, sql$ [, parameter, ...])
+WHILE DBNEXT(rows)
+    value = DBVALUE(rows, column)
+WEND
+CALL DBFREE(rows)
+CALL DBBEGIN(db [, mode$])
+CALL DBCOMMIT(db)
+CALL DBROLLBACK(db)
+CALL DBCLOSE(db)
+```
+
+Open modes are `rwc` (default create/read/write), `rw`, and `ro`; `:memory:`
+creates a private in-memory database. Bind data with SQL `?` placeholders and
+trailing values. Each call executes one statement. Queries materialize results;
+columns use 1-based indices or unique names matched without ASCII case distinctions.
+INTEGER results are INT64, REAL NUMERIC, TEXT STRING, BLOB BYTES, and SQL NULL is `NULL()`.
+`ISNULL(value)` tests missing values; declared types reject NULL. Additional
+functions provide column/row metadata, changes, last rowid, transaction state,
+timeouts, and SQLite version. See the [SQLite guide](docs/sqlite.md) and complete
+[builtin inventory](docs/builtins.md#sqlite-databases).
+
 ## Exception handling
 
 ```text

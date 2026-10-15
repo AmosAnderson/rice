@@ -5922,3 +5922,764 @@ fn test_print_using_finite_extremes_match_console_and_file_output() {
         expected
     );
 }
+
+#[test]
+fn test_sqlite_documented_example() {
+    assert_eq!(
+        run_file("tests/programs/sqlite.bas"),
+        "FALSE\n5:1\n9007199254740993:café:TRUE\n00FF:TRUE\nINTEGER:INT64\nmissing:NULL\nFALSE\n1\n"
+    );
+}
+
+#[test]
+fn test_sqlite_triggers_repeated_bindings_and_materialized_results() {
+    assert_eq!(
+        run_bas(
+            r#"
+OPTION BASE 0
+db = DBOPEN(":memory:")
+CALL DBEXEC(db, "CREATE TABLE item(value)")
+CALL DBEXEC(db, "CREATE TABLE audit(value)")
+CALL DBEXEC(db, "CREATE TRIGGER added AFTER INSERT ON item BEGIN INSERT INTO audit VALUES(new.value); INSERT INTO audit VALUES(new.value); END;")
+PRINT DBEXEC(db, "INSERT INTO item VALUES (?)", "first")
+PRINT DBEXEC(db, "INSERT INTO item VALUES (?)", NULL())
+PRINT DBEXEC(db, "CREATE INDEX audit_value ON audit(value)"); ":"; DBCHANGES(db)
+snapshot = DBQUERY(db, "SELECT value FROM item ORDER BY rowid")
+CALL DBEXEC(db, "DELETE FROM item")
+PRINT DBROWCOUNT(snapshot)
+WHILE DBNEXT(snapshot)
+    PRINT DBVALUE(snapshot, 1)
+WEND
+FOR iteration = 1 TO 2
+    value = "bound"
+    IF iteration = 2 THEN value = NULL()
+    result = DBQUERY(db, "SELECT :same AS a, :same AS b, ?3 AS c", value, "unused slot", BYTES(255))
+    CALL DBNEXT(result)
+    PRINT ISNULL(DBVALUE(result, 1)); ":"; DBVALUE(result, 1) = DBVALUE(result, 2); ":"; HEXENCODE$(DBVALUE(result, 3))
+    CALL DBFREE(result)
+NEXT iteration
+result = DBQUERY(db, "SELECT COUNT(*) FROM audit")
+CALL DBNEXT(result)
+PRINT DBVALUE(result, 1)
+CALL DBCLOSE(db)
+"#
+        ),
+        "1\n1\n0:1\n2\nfirst\nNULL\nFALSE:-1:FF\nTRUE:TRUE:FF\n4\n"
+    );
+}
+
+#[test]
+fn test_sqlite_function_and_call_arguments_evaluate_once_in_order() {
+    assert_eq!(
+        run_bas(
+            r#"
+db = DBOPEN(":memory:")
+trace$ = ""
+CALL DBEXEC(db, "CREATE TABLE item(value)")
+CALL DBEXEC(ConnectionArg(), SqlArg$(FALSE), ValueArg$())
+PRINT trace$
+trace$ = ""
+result = DBQUERY(ConnectionArg(), SqlArg$(TRUE), ValueArg$())
+PRINT trace$
+CALL DBNEXT(result)
+PRINT DBVALUE(result, 1)
+CALL DBCLOSE(db)
+FUNCTION ConnectionArg() AS INT64
+    SHARED db, trace$
+    trace$ = trace$ + "connection;"
+    ConnectionArg = db
+END FUNCTION
+FUNCTION SqlArg$(BYVAL query AS BOOL)
+    SHARED trace$
+    trace$ = trace$ + "sql;"
+    IF query THEN
+        SqlArg$ = "SELECT value FROM item WHERE value = ?"
+    ELSE
+        SqlArg$ = "INSERT INTO item VALUES (?)"
+    END IF
+END FUNCTION
+FUNCTION ValueArg$()
+    SHARED trace$
+    trace$ = trace$ + "value;"
+    ValueArg$ = "saved"
+END FUNCTION
+"#
+        ),
+        "connection;sql;value;\nconnection;sql;value;\nsaved\n"
+    );
+}
+
+#[test]
+fn test_sqlite_crud_schema_and_bound_values_preserve_native_data() {
+    let source = r#"
+db = DBOPEN(":memory:")
+PRINT DBEXEC(db, "CREATE TABLE item(id INTEGER PRIMARY KEY, name TEXT, data BLOB, enabled INTEGER, missing)")
+payload$ = "café'; DROP TABLE item; --漢" + CHR$(0) + "tail"
+large = CINT64("9007199254740993")
+PRINT DBEXEC(db, "INSERT INTO item VALUES (?1, ?2, ?3, ?4, ?5)", large, payload$, BYTES(0, 128, 255), TRUE, NULL())
+PRINT DBLASTID(db); ":"; TYPEOF$(DBLASTID(db)); ":"; DBCHANGES(db)
+PRINT DBEXEC(db, "CREATE INDEX item_name ON item(name)")
+CALL DBEXEC(db, "ALTER TABLE item ADD COLUMN score REAL DEFAULT 0")
+CALL DBEXEC(db, "CREATE VIEW current_item AS SELECT * FROM item")
+PRINT DBEXEC(db, "UPDATE item SET score = ?1 WHERE id = ?2 OR id = ?2", 1.25, large)
+result = DBQUERY(db, "SELECT id, name, data, enabled, missing, score FROM current_item WHERE id = ?", large)
+PRINT DBCOLUMNCOUNT(result); ":"; DBROWCOUNT(result); ":"; DBCOLUMNNAME$(result, 2)
+PRINT DBNEXT(result)
+PRINT DBVALUE(result, "ID"); ":"; TYPEOF$(DBVALUE(result, 1))
+PRINT DBVALUE(result, "name") = payload$
+PRINT HEXENCODE$(DBVALUE(result, 3)); ":"; CBOOL(DBVALUE(result, 4)); ":"; DBISNULL(result, 5)
+PRINT DBVALUE(result, 6); ":"; DBCOLUMNTYPE$(result, 6); ":"; DBCOLUMNTYPE$(result, 5)
+CALL DBFREE(result)
+PRINT DBEXEC(db, "DELETE FROM item WHERE id = ?", large)
+result = DBQUERY(db, "SELECT COUNT(*) FROM item")
+CALL DBNEXT(result)
+PRINT DBVALUE(result, 1)
+CALL DBEXEC(db, "DROP VIEW current_item")
+CALL DBEXEC(db, "DROP TABLE item")
+CALL DBCLOSE(db)
+"#;
+    assert_eq!(
+        run_bas(source),
+        "0\n1\n9007199254740993:INT64:1\n0\n1\n6:1:name\nTRUE\n9007199254740993:INT64\n-1\n0080FF:TRUE:TRUE\n1.25:REAL:NULL\n1\n0\n"
+    );
+}
+
+#[test]
+fn test_sqlite_storage_classes_and_null_round_trip_are_distinct() {
+    let source = r#"
+db = DBOPEN(":memory:")
+result = DBQUERY(db, "SELECT ?1 AS lo, ?2 AS hi, ?3 AS empty_text, ?4 AS empty_blob, ?5 AS missing, ?6 AS boolean, ?7 AS number", CINT64("-9223372036854775808"), CINT64("9223372036854775807"), "", BYTES(), NULL(), FALSE, 7)
+CALL DBNEXT(result)
+FOR column = 1 TO 7
+    PRINT DBCOLUMNTYPE$(result, column); ":"; TYPEOF$(DBVALUE(result, column))
+NEXT column
+PRINT DBVALUE(result, 1); ":"; DBVALUE(result, 2)
+PRINT LEN(DBVALUE(result, 3)); ":"; LEN(DBVALUE(result, 4)); ":"; DBISNULL(result, 3); ":"; DBISNULL(result, 4)
+missing = DBVALUE(result, 5)
+copy = DBQUERY(db, "SELECT ? IS NULL, typeof(?), typeof(?), typeof(?)", missing, CINT(1), CSNG(1), CBYTE(1))
+CALL DBNEXT(copy)
+PRINT DBVALUE(copy, 1); ":"; DBVALUE(copy, 2); ":"; DBVALUE(copy, 3); ":"; DBVALUE(copy, 4)
+CALL DBCLOSE(db)
+"#;
+    assert_eq!(
+        run_bas(source),
+        "INTEGER:INT64\nINTEGER:INT64\nTEXT:STRING\nBLOB:BYTES\nNULL:NULL\nINTEGER:INT64\nREAL:NUMERIC\n-9223372036854775808:9223372036854775807\n0:0:FALSE:FALSE\n1:integer:real:integer\n"
+    );
+}
+
+#[test]
+fn test_sqlite_transactions_savepoints_and_returning() {
+    let source = r#"
+db = DBOPEN(":memory:")
+CALL DBEXEC(db, "CREATE TABLE item(id INTEGER PRIMARY KEY, name TEXT)")
+PRINT DBINTRANSACTION(db)
+CALL DBBEGIN(db, "immediate")
+PRINT DBINTRANSACTION(db)
+CALL DBEXEC(db, "INSERT INTO item VALUES (1, 'kept')")
+CALL DBEXEC(db, "SAVEPOINT nested")
+CALL DBEXEC(db, "INSERT INTO item VALUES (2, 'discarded')")
+CALL DBEXEC(db, "ROLLBACK TO nested")
+CALL DBEXEC(db, "RELEASE nested")
+CALL DBCOMMIT(db)
+PRINT DBINTRANSACTION(db)
+CALL DBBEGIN(db)
+CALL DBEXEC(db, "DELETE FROM item")
+CALL DBROLLBACK(db)
+CALL DBBEGIN(db, "exclusive")
+result = DBQUERY(db, "INSERT INTO item(name) VALUES (?) RETURNING id, name", "returned")
+PRINT DBROWCOUNT(result); ":"; DBCHANGES(db)
+CALL DBNEXT(result)
+PRINT DBVALUE(result, 1); ":"; DBVALUE(result, 2)
+CALL DBCOMMIT(db)
+CALL DBFREE(result)
+result = DBQUERY(db, "SELECT id, name FROM item ORDER BY id")
+WHILE DBNEXT(result)
+    PRINT DBVALUE(result, 1); ":"; DBVALUE(result, 2)
+WEND
+CALL DBCLOSE(db)
+"#;
+    assert_eq!(
+        run_bas(source),
+        "FALSE\nTRUE\nFALSE\n1:1\n2:returned\n1:kept\n2:returned\n"
+    );
+}
+
+#[test]
+fn test_sqlite_foreign_keys_constraint_errors_and_lock_timeout_are_catchable() {
+    let (output, _dir) = run_bas_with_tmpdir(
+        r#"
+db = DBOPEN("{DIR}/shared.sqlite", "rwc", 0)
+other = DBOPEN("{DIR}/shared.sqlite", "rw", 0)
+CALL DBEXEC(db, "CREATE TABLE parent(id INTEGER PRIMARY KEY)")
+CALL DBEXEC(db, "CREATE TABLE child(parent_id INTEGER REFERENCES parent(id))")
+WHEN EXCEPTION IN
+    CALL DBEXEC(db, "INSERT INTO child VALUES (99)")
+USE
+    PRINT "foreign key:"; EXTYPE
+END WHEN
+CALL DBEXEC(db, "INSERT INTO parent VALUES (1)")
+CALL DBEXEC(db, "INSERT INTO child VALUES (1)")
+CALL DBBEGIN(db, "IMMEDIATE")
+WHEN EXCEPTION IN
+    CALL DBEXEC(other, "INSERT INTO parent VALUES (2)")
+USE
+    PRINT "locked:"; EXTYPE; ":"; DBINTRANSACTION(db)
+END WHEN
+CALL DBROLLBACK(db)
+CALL DBTIMEOUT(other, 1)
+PRINT DBEXEC(other, "INSERT INTO parent VALUES (2)")
+CALL DBCLOSE(db)
+CALL DBCLOSE(other)
+"#,
+    );
+    assert_eq!(output, "foreign key:9000\nlocked:9000:TRUE\n1\n");
+    assert_eq!(
+        run_bas(
+            "db = DBOPEN(\":memory:\")\nON ERROR GOTO handler\nCALL DBEXEC(db, \"SELECT * FROM absent\")\nEND\nhandler:\nPRINT ERR\n"
+        ),
+        "90\n"
+    );
+}
+
+#[test]
+fn test_sqlite_file_modes_and_close_roll_back_uncommitted_changes() {
+    let (output, dir) = run_bas_with_tmpdir(
+        r#"
+db = DBOPEN("{DIR}/persistent.sqlite")
+CALL DBEXEC(db, "CREATE TABLE item(value)")
+CALL DBEXEC(db, "INSERT INTO item VALUES (1)")
+CALL DBBEGIN(db)
+CALL DBEXEC(db, "INSERT INTO item VALUES (2)")
+CALL DBCLOSE(db)
+db = DBOPEN("{DIR}/persistent.sqlite", "ro")
+result = DBQUERY(db, "SELECT SUM(value) FROM item")
+CALL DBNEXT(result)
+PRINT DBVALUE(result, 1)
+WHEN EXCEPTION IN
+    CALL DBEXEC(db, "INSERT INTO item VALUES (3)")
+USE
+    PRINT "read only:"; EXTYPE
+END WHEN
+CALL DBCLOSE(db)
+WHEN EXCEPTION IN
+    db = DBOPEN("{DIR}/missing.sqlite", "rw")
+USE
+    PRINT "missing rw:"; EXTYPE
+END WHEN
+WHEN EXCEPTION IN
+    db = DBOPEN("{DIR}/missing.sqlite", "ro")
+USE
+    PRINT "missing ro:"; EXTYPE
+END WHEN
+"#,
+    );
+    assert_eq!(
+        output,
+        "1\nread only:9000\nmissing rw:9000\nmissing ro:9000\n"
+    );
+    assert!(!dir.path().join("missing.sqlite").exists());
+}
+
+#[test]
+fn test_sqlite_connections_and_results_persist_between_runs_and_drop_rolls_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir
+        .path()
+        .join("drop.sqlite")
+        .to_str()
+        .unwrap()
+        .replace('\\', "/");
+    let output = SharedOutput::new();
+    {
+        let mut interpreter = rice::interpreter::Interpreter::with_io(
+            Box::new(output.clone()),
+            Box::new(Cursor::new(Vec::<u8>::new())),
+        );
+        interpreter
+            .run_source(&format!(
+                "db = DBOPEN(\"{path}\")\nCALL DBEXEC(db, \"CREATE TABLE item(value)\")\nCALL DBEXEC(db, \"INSERT INTO item VALUES (1), (2)\")\nresult = DBQUERY(db, \"SELECT value FROM item ORDER BY value\")\n"
+            ))
+            .unwrap();
+        interpreter
+            .run_source("PRINT DBNEXT(result); \":\"; DBVALUE(result, 1)\n")
+            .unwrap();
+        interpreter
+            .run_source("PRINT DBNEXT(result); \":\"; DBVALUE(result, 1)\nCALL DBBEGIN(db)\nCALL DBEXEC(db, \"DELETE FROM item\")\n")
+            .unwrap();
+    }
+    assert_eq!(output.into_string(), "TRUE:1\nTRUE:2\n");
+    assert_eq!(
+        run_bas(&format!(
+            "db = DBOPEN(\"{path}\", \"ro\")\nresult = DBQUERY(db, \"SELECT COUNT(*) FROM item\")\nCALL DBNEXT(result)\nPRINT DBVALUE(result, 1)\n"
+        )),
+        "2\n"
+    );
+}
+
+#[test]
+fn test_sqlite_clear_closes_resources_without_reusing_old_handles() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir
+        .path()
+        .join("clear.sqlite")
+        .to_str()
+        .unwrap()
+        .replace('\\', "/");
+    let output = SharedOutput::new();
+    let mut interpreter = rice::interpreter::Interpreter::with_io(
+        Box::new(output.clone()),
+        Box::new(Cursor::new(Vec::<u8>::new())),
+    );
+    interpreter
+        .run_source(&format!(
+            "db = DBOPEN(\"{path}\")\nCALL DBEXEC(db, \"CREATE TABLE item(value)\")\nCALL DBBEGIN(db)\nCALL DBEXEC(db, \"INSERT INTO item VALUES (1)\")\nresult = DBQUERY(db, \"SELECT value FROM item\")\nPRINT db\nPRINT result\n"
+        ))
+        .unwrap();
+    let initial = output.clone().into_string();
+    let handles: Vec<i64> = initial.lines().map(|line| line.parse().unwrap()).collect();
+    interpreter
+        .run_source(&format!(
+            "CLEAR\ndb = DBOPEN(\"{path}\")\nPRINT db > CINT64({})\nWHEN EXCEPTION IN\nCALL DBCLOSE({})\nUSE\nPRINT \"old database\"\nEND WHEN\nWHEN EXCEPTION IN\nCALL DBNEXT({})\nUSE\nPRINT \"old result\"\nEND WHEN\nresult = DBQUERY(db, \"SELECT COUNT(*) FROM item\")\nCALL DBNEXT(result)\nPRINT DBVALUE(result, 1)\n",
+            handles[1], handles[0], handles[1]
+        ))
+        .unwrap();
+    assert_eq!(
+        output.into_string(),
+        format!("{initial}TRUE\nold database\nold result\n0\n")
+    );
+}
+
+#[test]
+fn test_sqlite_empty_results_metadata_and_cursor_boundaries() {
+    let source = r#"
+db = DBOPEN(":memory:")
+result = DBQUERY(db, "SELECT 1 AS Answer, NULL AS Missing WHERE 0")
+PRINT DBROWCOUNT(result); ":"; DBCOLUMNCOUNT(result); ":"; DBCOLUMNNAME$(result, 1)
+PRINT DBNEXT(result); ":"; DBNEXT(result)
+WHEN EXCEPTION IN
+    PRINT DBVALUE(result, 1)
+USE
+    PRINT "empty row"
+END WHEN
+CALL DBFREE(result)
+result = DBQUERY(db, "SELECT 7 AS Value, 8 AS VALUE")
+WHEN EXCEPTION IN
+    PRINT DBVALUE(result, 1)
+USE
+    PRINT "before first"
+END WHEN
+CALL DBNEXT(result)
+PRINT DBVALUE(result, 1); ":"; DBVALUE(result, 2)
+WHEN EXCEPTION IN
+    PRINT DBVALUE(result, "value")
+USE
+    PRINT "ambiguous column"
+END WHEN
+PRINT DBNEXT(result); ":"; DBNEXT(result)
+WHEN EXCEPTION IN
+    PRINT DBCOLUMNTYPE$(result, 1)
+USE
+    PRINT "after last"
+END WHEN
+CALL DBCLOSE(db)
+"#;
+    assert_eq!(
+        run_bas(source),
+        "0:2:Answer\nFALSE:FALSE\nempty row\nbefore first\n7:8\nambiguous column\nFALSE:FALSE\nafter last\n"
+    );
+}
+
+#[test]
+fn test_sqlite_freed_closed_and_wrong_kind_handles_are_rejected() {
+    for operation in [
+        "CALL DBNEXT(db)",
+        "CALL DBFREE(db)",
+        "CALL DBCLOSE(result)",
+        "CALL DBEXEC(result, \"CREATE TABLE wrong(value)\")",
+        "CALL DBFREE(result)\nCALL DBNEXT(result)",
+        "CALL DBCLOSE(db)\nCALL DBNEXT(result)",
+        "CALL DBCLOSE(db)\nCALL DBCHANGES(db)",
+        "CALL DBCLOSE(db)\nnewdb = DBOPEN(\":memory:\")\nCALL DBCLOSE(db)",
+        "CALL DBFREE(result)\nnewresult = DBQUERY(db, \"SELECT 2\")\nCALL DBNEXT(result)",
+    ] {
+        let source =
+            format!("db = DBOPEN(\":memory:\")\nresult = DBQUERY(db, \"SELECT 1\")\n{operation}\n");
+        let error = run_bas_may_fail(&source).1.unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<rice::error::RuntimeError>(),
+                Some(rice::error::RuntimeError::IllegalFunctionCall { .. })
+            ),
+            "{operation}: {error}"
+        );
+    }
+}
+
+#[test]
+fn test_sqlite_statement_validation_prevents_unintended_writes() {
+    for operation in [
+        "CALL DBEXEC(db, \"INSERT INTO item VALUES (?)\")",
+        "CALL DBEXEC(db, \"INSERT INTO item VALUES (?)\", 1, 2)",
+        "CALL DBEXEC(db, \"INSERT INTO item VALUES (?)\", VAL(\"NaN\"))",
+        "CALL DBEXEC(db, \"INSERT INTO item VALUES (1) RETURNING value\")",
+        "CALL DBQUERY(db, \"INSERT INTO item VALUES (1)\")",
+        "CALL DBEXEC(db, \"INSERT INTO item VALUES (1); INSERT INTO item VALUES (2)\")",
+        "CALL DBQUERY(db, \"INSERT INTO item VALUES (1) RETURNING value; SELECT 2\")",
+        "CALL DBEXEC(db, \"INSERT INTO item VALUES (1)\" + CHR$(0) + \"; DELETE FROM item\")",
+        "CALL DBQUERY(db, \"INSERT INTO item VALUES (1) RETURNING value\", 7)",
+    ] {
+        let source = format!(
+            "db = DBOPEN(\":memory:\")\nCALL DBEXEC(db, \"CREATE TABLE item(value)\")\nWHEN EXCEPTION IN\n{operation}\nUSE\nPRINT \"rejected\"\nEND WHEN\nresult = DBQUERY(db, \"SELECT COUNT(*) FROM item\")\nCALL DBNEXT(result)\nPRINT DBVALUE(result, 1)\n"
+        );
+        assert_eq!(run_bas(&source), "rejected\n0\n", "{operation}");
+    }
+}
+
+#[test]
+fn test_sqlite_statement_shape_changes_are_checked_before_writing() {
+    assert_eq!(
+        run_bas(
+            r#"
+db = DBOPEN(":memory:")
+CALL DBEXEC(db, "CREATE TABLE item(value)")
+CALL DBEXEC(db, "INSERT INTO item VALUES (1)")
+CALL DBEXEC(db, "PRAGMA count_changes=ON")
+WHEN EXCEPTION IN
+    CALL DBEXEC(db, "INSERT INTO item VALUES (1)")
+USE
+    PRINT "exec rejected"
+END WHEN
+result = DBQUERY(db, "SELECT COUNT(*) FROM item")
+CALL DBNEXT(result)
+PRINT DBVALUE(result, 1)
+result = DBQUERY(db, "INSERT INTO item VALUES (1)")
+CALL DBNEXT(result)
+PRINT DBVALUE(result, 1)
+CALL DBEXEC(db, "PRAGMA count_changes=OFF")
+WHEN EXCEPTION IN
+    result = DBQUERY(db, "INSERT INTO item VALUES (1)")
+USE
+    PRINT "query rejected"
+END WHEN
+PRINT DBEXEC(db, "INSERT INTO item VALUES (1)")
+result = DBQUERY(db, "SELECT COUNT(*) FROM item")
+CALL DBNEXT(result)
+PRINT DBVALUE(result, 1)
+"#
+        ),
+        "exec rejected\n1\n1\nquery rejected\n1\n3\n"
+    );
+}
+
+#[test]
+fn test_sqlite_rejected_pragmas_do_not_poison_later_execution() {
+    assert_eq!(
+        run_bas(
+            r#"
+db = DBOPEN(":memory:")
+WHEN EXCEPTION IN
+    result = DBQUERY(db, "PRAGMA cache_size=100")
+USE
+    PRINT "shape rejected"
+END WHEN
+CALL DBEXEC(db, "PRAGMA cache_size=200")
+CALL DBEXEC(db, "PRAGMA cache_size=100")
+result = DBQUERY(db, "PRAGMA cache_size")
+CALL DBNEXT(result)
+PRINT DBVALUE(result, 1)
+WHEN EXCEPTION IN
+    CALL DBEXEC(db, "PRAGMA synchronous=OFF", 99)
+USE
+    PRINT "parameters rejected"
+END WHEN
+CALL DBEXEC(db, "PRAGMA synchronous=FULL")
+CALL DBEXEC(db, "PRAGMA synchronous=OFF")
+result = DBQUERY(db, "PRAGMA synchronous")
+CALL DBNEXT(result)
+PRINT DBVALUE(result, 1)
+WHEN EXCEPTION IN
+    CALL DBEXEC(db, "INSERT INTO missing_table VALUES (1)")
+USE
+    PRINT EXTYPE
+END WHEN
+CALL DBEXEC(db, "CREATE TABLE missing_table(value)")
+PRINT DBEXEC(db, "INSERT INTO missing_table VALUES (1)")
+"#
+        ),
+        "shape rejected\n100\nparameters rejected\n0\n9000\n1\n"
+    );
+}
+
+#[test]
+fn test_sqlite_exec_counts_direct_dml_and_returns_zero_for_schema_writes() {
+    assert_eq!(
+        run_bas(
+            r#"
+db = DBOPEN(":memory:")
+PRINT DBEXEC(db, "CREATE VIRTUAL TABLE documents USING fts5(body)")
+PRINT DBEXEC(db, "INSERT INTO documents VALUES ('first'), ('second')")
+PRINT DBEXEC(db, "UPDATE documents SET body = 'changed' WHERE rowid = 1")
+PRINT DBEXEC(db, "DELETE FROM documents WHERE rowid = 2")
+CALL DBEXEC(db, "CREATE TABLE parent(id INTEGER PRIMARY KEY)")
+CALL DBEXEC(db, "CREATE TABLE child(parent_id INTEGER REFERENCES parent(id) ON DELETE CASCADE)")
+CALL DBEXEC(db, "INSERT INTO parent VALUES (1)")
+CALL DBEXEC(db, "INSERT INTO child VALUES (1), (1)")
+PRINT DBEXEC(db, "DROP TABLE parent")
+result = DBQUERY(db, "SELECT COUNT(*) FROM child")
+CALL DBNEXT(result)
+PRINT DBVALUE(result, 1)
+CALL DBEXEC(db, "CREATE TABLE item(id INTEGER PRIMARY KEY, value)")
+CALL DBEXEC(db, "CREATE TABLE audit(value)")
+CALL DBEXEC(db, "CREATE TRIGGER added AFTER INSERT ON item BEGIN INSERT INTO audit VALUES (new.value); END")
+PRINT DBEXEC(db, "INSERT INTO item(value) VALUES (10), (20)")
+PRINT DBEXEC(db, "WITH seed(value) AS (VALUES (30), (40)) INSERT INTO item(value) SELECT value FROM seed")
+PRINT DBEXEC(db, "REPLACE INTO item(id, value) VALUES (1, 100)")
+PRINT DBEXEC(db, "UPDATE item SET value = value + 1")
+PRINT DBEXEC(db, "DELETE FROM item WHERE id >= 3")
+PRINT DBEXEC(db, "CREATE INDEX item_value ON item(value)")
+result = DBQUERY(db, "SELECT COUNT(*) FROM audit")
+CALL DBNEXT(result)
+PRINT DBVALUE(result, 1)
+PRINT DBEXEC(db, "ANALYZE")
+PRINT DBEXEC(db, "VACUUM")
+"#
+        ),
+        "0\n2\n1\n1\n0\n0\n2\n2\n1\n4\n2\n0\n5\n0\n0\n"
+    );
+}
+
+#[test]
+fn test_sqlite_invalid_column_names_are_catchable_with_and_without_rows() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("invalid-metadata.sqlite");
+    {
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE item(rice_invalid_utf8_column INTEGER);
+                 INSERT INTO item VALUES (7);
+                 CREATE VIEW computed AS SELECT 7 + 1 AS rice_invalid_utf8_alias;
+                 CREATE VIRTUAL TABLE documents USING fts5(body);
+                 INSERT INTO documents VALUES ('SQLite metadata')",
+            )
+            .unwrap();
+    }
+    // SQLite permits identifiers containing non-UTF-8 bytes. Replace just one
+    // byte of each unique schema name, preserving every page offset. A computed
+    // view alias has no origin column, so origin metadata cannot validate it.
+    let mut contents = std::fs::read(&path).unwrap();
+    for marker in [
+        b"rice_invalid_utf8_column".as_slice(),
+        b"rice_invalid_utf8_alias".as_slice(),
+    ] {
+        let offsets: Vec<_> = contents
+            .windows(marker.len())
+            .enumerate()
+            .filter_map(|(index, window)| (window == marker).then_some(index))
+            .collect();
+        assert_eq!(offsets.len(), 1);
+        contents[offsets[0]] = 0xff;
+    }
+    std::fs::write(&path, contents).unwrap();
+
+    let source = format!(
+        r#"
+db = DBOPEN("{}")
+result = DBQUERY(db, "SELECT body FROM documents WHERE documents MATCH 'sqlite'")
+PRINT DBCOLUMNNAME$(result, 1)
+CALL DBNEXT(result)
+PRINT DBVALUE(result, 1)
+WHEN EXCEPTION IN
+    result = DBQUERY(db, "SELECT * FROM item")
+USE
+    PRINT EXTYPE
+END WHEN
+WHEN EXCEPTION IN
+    result = DBQUERY(db, "SELECT * FROM item WHERE 0")
+USE
+    PRINT EXTYPE
+END WHEN
+WHEN EXCEPTION IN
+    result = DBQUERY(db, "SELECT * FROM computed")
+USE
+    PRINT EXTYPE
+END WHEN
+WHEN EXCEPTION IN
+    result = DBQUERY(db, "SELECT * FROM computed WHERE 0")
+USE
+    PRINT EXTYPE
+END WHEN
+result = DBQUERY(db, "SELECT COUNT(*) FROM item")
+CALL DBNEXT(result)
+PRINT DBVALUE(result, 1)
+result = DBQUERY(db, "SELECT COUNT(*) FROM documents WHERE documents MATCH 'sqlite'")
+CALL DBNEXT(result)
+PRINT DBVALUE(result, 1)
+"#,
+        path.to_str().unwrap().replace('\\', "/")
+    );
+    assert_eq!(
+        run_bas(&source),
+        "body\nSQLite metadata\n9000\n9000\n9000\n9000\n1\n1\n"
+    );
+}
+
+#[test]
+fn test_sqlite_invalid_arguments_and_column_references_are_catchable() {
+    for call in [
+        "DBOPEN()",
+        "DBOPEN(\":memory:\", \"rwc\", 0, 1)",
+        "DBOPEN(\":memory:\", \"invalid\")",
+        "DBOPEN(\"bad\" + CHR$(0) + \"path\")",
+        "DBOPEN(123)",
+        "DBOPEN(\":memory:\", \"rwc\", -1)",
+        "DBOPEN(\":memory:\", \"rwc\", 2147483648)",
+        "DBTIMEOUT(db, 0.5)",
+        "DBTIMEOUT(db, -1)",
+        "DBTIMEOUT(db, 2147483648)",
+        "DBTIMEOUT(db, \"1\")",
+        "DBBEGIN(db, \"invalid\")",
+        "DBCOMMIT(db)",
+        "DBROLLBACK(db)",
+        "DBEXEC(db)",
+        "DBEXEC(db, \"\")",
+        "DBEXEC(db, 123)",
+        "DBQUERY(db)",
+        "DBQUERY(db, \"SELECT ?\")",
+        "DBQUERY(db, \"SELECT ?\", record)",
+        "DBVALUE(result)",
+        "DBVALUE(result, 0)",
+        "DBVALUE(result, 2)",
+        "DBVALUE(result, 1.5)",
+        "DBVALUE(result, \"unknown\")",
+        "DBCOLUMNNAME$(result, 0)",
+        "DBCOLUMNNAME$(result, \"value\")",
+        "DBCHANGES(db, 1)",
+        "DBNEXT(result, 1)",
+        "DBVERSION$(1)",
+        "DBNEXT(1.5)",
+    ] {
+        let source = format!(
+            "TYPE Item\nvalue AS INTEGER\nEND TYPE\nDIM record AS Item\ndb = DBOPEN(\":memory:\")\nresult = DBQUERY(db, \"SELECT 1 AS value\")\nCALL DBNEXT(result)\nWHEN EXCEPTION IN\nignored = {call}\nUSE\nPRINT \"caught\"\nEND WHEN\n"
+        );
+        assert_eq!(run_bas(&source), "caught\n", "{call}");
+    }
+}
+
+#[test]
+fn test_sqlite_invalid_text_is_catchable_and_blob_cast_preserves_bytes() {
+    assert_eq!(
+        run_bas(
+            r#"
+db = DBOPEN(":memory:")
+WHEN EXCEPTION IN
+    result = DBQUERY(db, "SELECT CAST(x'80FF' AS TEXT)")
+USE
+    PRINT EXTYPE
+END WHEN
+result = DBQUERY(db, "SELECT CAST(CAST(x'80FF' AS TEXT) AS BLOB)")
+CALL DBNEXT(result)
+PRINT HEXENCODE$(DBVALUE(result, 1))
+CALL DBCLOSE(db)
+"#
+        ),
+        "9000\n80FF\n"
+    );
+}
+
+#[test]
+fn test_sqlite_null_semantics_and_declared_types_remain_explicit() {
+    assert_eq!(
+        run_bas(
+            "missing = NULL()\nPRINT missing; \":\"; TYPEOF$(missing); \":\"; ISNULL(missing)\nPRINT missing = NULL(); \":\"; missing <> NULL(); \":\"; missing = 0; \":\"; missing <> FALSE; \":\"; ISNULL(\"\")\n"
+        ),
+        "NULL:NULL:TRUE\nTRUE:FALSE:FALSE:TRUE:FALSE\n"
+    );
+    for operation in [
+        "IF NULL() THEN PRINT \"wrong\"",
+        "PRINT NOT NULL()",
+        "PRINT NULL() + 1",
+        "PRINT NULL() < 1",
+        "PRINT NULL() AND TRUE",
+        "PRINT NULL() & \"text\"",
+        "DIM value AS NUMERIC\nvalue = NULL()",
+        "DIM value AS INTEGER\nvalue = NULL()",
+        "DIM value AS LONG\nvalue = NULL()",
+        "DIM value AS INT64\nvalue = NULL()",
+        "DIM value AS SINGLE\nvalue = NULL()",
+        "DIM value AS BOOL\nvalue = NULL()",
+        "DIM value AS BYTE\nvalue = NULL()",
+        "DIM value AS BYTES\nvalue = NULL()",
+        "DIM value AS STRING\nvalue = NULL()",
+    ] {
+        let (_, result) = run_bas_may_fail(&format!("{operation}\n"));
+        let error = result.unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<rice::error::RuntimeError>(),
+                Some(rice::error::RuntimeError::TypeMismatch { .. })
+            ),
+            "{operation}: {error}"
+        );
+    }
+}
+
+#[test]
+fn test_select_case_null_supports_equality_but_rejects_ordering() {
+    assert_eq!(
+        run_bas(
+            r#"
+SELECT CASE NULL()
+    CASE NULL()
+        PRINT "null value"
+END SELECT
+SELECT CASE NULL()
+    CASE IS = 0
+        PRINT "wrong"
+    CASE IS = NULL()
+        PRINT "null equality"
+END SELECT
+SELECT CASE NULL()
+    CASE IS <> NULL()
+        PRINT "wrong"
+    CASE IS <> 0
+        PRINT "null inequality"
+END SELECT
+SELECT CASE 1
+    CASE IS = NULL()
+        PRINT "wrong"
+    CASE IS <> NULL()
+        PRINT "value inequality"
+END SELECT
+"#
+        ),
+        "null value\nnull equality\nnull inequality\nvalue inequality\n"
+    );
+
+    for (subject, case) in [
+        ("NULL()", "NULL() TO NULL()"),
+        ("NULL()", "1 TO 2"),
+        ("1", "NULL() TO 2"),
+        ("1", "0 TO NULL()"),
+        ("NULL()", "IS < 1"),
+        ("NULL()", "IS <= NULL()"),
+        ("NULL()", "IS > 1"),
+        ("NULL()", "IS >= NULL()"),
+        ("1", "IS < NULL()"),
+        ("1", "IS <= NULL()"),
+        ("1", "IS > NULL()"),
+        ("1", "IS >= NULL()"),
+    ] {
+        let source = format!("SELECT CASE {subject}\nCASE {case}\nPRINT \"wrong\"\nEND SELECT\n");
+        let (output, result) = run_bas_may_fail(&source);
+        assert!(output.is_empty(), "{source}: {output}");
+        let error = result.unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<rice::error::RuntimeError>(),
+                Some(rice::error::RuntimeError::TypeMismatch { .. })
+            ),
+            "{source}: {error}"
+        );
+    }
+}

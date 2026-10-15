@@ -36,6 +36,7 @@ impl Write for SharedOutput {
 
 use crate::ast::*;
 use crate::builtins::BuiltinRegistry;
+use crate::database::Databases;
 use crate::environment::{EnvRef, Environment};
 use crate::error::RuntimeError;
 use crate::value::{Value, basic_string_to_bytes, bytes_to_basic_string};
@@ -143,6 +144,7 @@ pub struct Interpreter {
     gosub_targets: Rc<HashMap<String, LabelTarget>>,
     env: EnvRef,
     builtins: BuiltinRegistry,
+    databases: Databases,
     // Calls share immutable definitions and label maps, with a separate environment per call.
     subs: HashMap<String, Rc<UserSub>>,
     functions: HashMap<String, Rc<UserFunction>>,
@@ -229,6 +231,7 @@ impl Interpreter {
             gosub_targets: Rc::new(HashMap::new()),
             env: Environment::new_global(),
             builtins: BuiltinRegistry::new(),
+            databases: Databases::default(),
             subs: HashMap::new(),
             functions: HashMap::new(),
             declarations: HashMap::new(),
@@ -973,6 +976,7 @@ impl Interpreter {
             }
 
             Stmt::Clear => {
+                self.databases.clear();
                 self.env.borrow_mut().clear_vars();
                 self.data_pos = 0;
                 Ok(ControlFlow::Normal)
@@ -1635,6 +1639,11 @@ impl Interpreter {
                     }
                 }
                 DataItem::Empty => match self.input_target_value(var, &key)? {
+                    Value::Null => {
+                        return Err(RuntimeError::TypeMismatch {
+                            msg: "cannot READ an empty DATA item into NULL".into(),
+                        });
+                    }
                     Value::Numeric(_) => Value::Numeric(0.0),
                     value @ (Value::Integer(_)
                     | Value::Long(_)
@@ -1844,6 +1853,7 @@ impl Interpreter {
             msg: format!("invalid input for {:?}", template.get_type()),
         };
         match template {
+            Value::Null => Err(invalid()),
             Value::Str(_) => Ok(Value::Str(text.to_owned())),
             Value::Numeric(_) => text
                 .trim()
@@ -2139,12 +2149,28 @@ impl Interpreter {
                     CaseTest::Range(lo, hi) => {
                         let lo_val = self.eval_expr(lo)?;
                         let hi_val = self.eval_expr(hi)?;
+                        if matches!(test_val, Value::Null)
+                            || matches!(lo_val, Value::Null)
+                            || matches!(hi_val, Value::Null)
+                        {
+                            return Err(RuntimeError::TypeMismatch {
+                                msg: "NULL cannot be used in CASE ranges".into(),
+                            });
+                        }
                         if test_val >= lo_val && test_val <= hi_val {
                             matched = true;
                         }
                     }
                     CaseTest::Comparison(op, expr) => {
                         let val = self.eval_expr(expr)?;
+                        if !matches!(op, CompareOp::Eq | CompareOp::Ne)
+                            && (matches!(test_val, Value::Null) || matches!(val, Value::Null))
+                        {
+                            return Err(RuntimeError::TypeMismatch {
+                                msg: "NULL supports only equality and inequality comparisons"
+                                    .into(),
+                            });
+                        }
                         let result = match op {
                             CompareOp::Eq => test_val == val,
                             CompareOp::Ne => test_val != val,
@@ -2229,6 +2255,14 @@ impl Interpreter {
         name: &str,
         arg_exprs: &[Expr],
     ) -> Result<ControlFlow, RuntimeError> {
+        if Databases::is_function(name) {
+            let args = arg_exprs
+                .iter()
+                .map(|expr| self.eval_expr(expr))
+                .collect::<Result<Vec<_>, _>>()?;
+            self.databases.call(name, &args)?;
+            return Ok(ControlFlow::Normal);
+        }
         // Capture direct variable/element destinations during the original evaluation.
         let (args, argument_targets) = self.eval_call_arguments(arg_exprs)?;
 
@@ -2677,6 +2711,13 @@ impl Interpreter {
                 }
                 if name == "DET" {
                     return self.eval_determinant(args);
+                }
+                if Databases::is_function(name) {
+                    let values = args
+                        .iter()
+                        .map(|expr| self.eval_expr(expr))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    return self.databases.call(name, &values);
                 }
                 let (arg_vals, argument_targets) = if self.functions.contains_key(name) {
                     self.eval_call_arguments(args)?
@@ -3372,6 +3413,17 @@ impl Interpreter {
 
     fn eval_binary_op(left: &Value, op: BinOp, right: &Value) -> Result<Value, RuntimeError> {
         let true_val = -1.0;
+
+        // NULL is a missing value, not zero, false, or an empty string.
+        if matches!(left, Value::Null) || matches!(right, Value::Null) {
+            return match op {
+                BinOp::Eq => Ok(Value::Bool(left == right)),
+                BinOp::Ne => Ok(Value::Bool(left != right)),
+                _ => Err(RuntimeError::TypeMismatch {
+                    msg: "NULL supports only equality and inequality comparisons".into(),
+                }),
+            };
+        }
 
         // Native types keep checked integers separate from floating-point expressions.
         let comparison = matches!(
@@ -5338,6 +5390,9 @@ impl Interpreter {
     /// Count the same payload that serialize_value writes, without allocating it.
     fn serialized_value_size(&self, val: &Value, ty: &BasicType) -> Result<usize, RuntimeError> {
         match ty {
+            BasicType::Null => Err(RuntimeError::TypeMismatch {
+                msg: "NULL has no binary record representation".into(),
+            }),
             BasicType::Int64 => {
                 val.coerce_to(ty.clone())?;
                 Ok(8)
@@ -5430,6 +5485,11 @@ impl Interpreter {
         ty: &BasicType,
     ) -> Result<(), RuntimeError> {
         match ty {
+            BasicType::Null => {
+                return Err(RuntimeError::TypeMismatch {
+                    msg: "NULL has no binary record representation".into(),
+                });
+            }
             BasicType::Int64 => {
                 writer
                     .write_all(&val.to_exact_i64()?.to_le_bytes())
@@ -5550,6 +5610,9 @@ impl Interpreter {
         ty: &BasicType,
     ) -> Result<Value, RuntimeError> {
         match ty {
+            BasicType::Null => Err(RuntimeError::TypeMismatch {
+                msg: "NULL has no binary record representation".into(),
+            }),
             BasicType::Int64 => {
                 let mut buf = [0u8; 8];
                 reader

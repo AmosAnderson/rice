@@ -432,6 +432,7 @@ fn param_signature(p: &Param) -> String {
 
 fn type_signature(ty: &BasicType) -> String {
     match ty {
+        BasicType::Null => "NULL".into(),
         BasicType::Numeric => "NUMERIC".into(),
         BasicType::Integer => "INTEGER".into(),
         BasicType::Long => "LONG".into(),
@@ -479,7 +480,7 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("STATIC", "Preserve local variables between calls"),
         (
             "CLEAR",
-            "Clear current variable values and reset DATA cursor",
+            "Clear current variable values, DATA cursor, and database resources",
         ),
         // Control flow
         ("IF", "Conditional statement; numeric branch targets"),
@@ -528,7 +529,7 @@ static KEYWORD_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
         ("END SUB", "End of SUB definition"),
         ("FUNCTION", "Define a function"),
         ("END FUNCTION", "End of FUNCTION definition"),
-        ("CALL", "Call a SUB"),
+        ("CALL", "Call a SUB or database builtin"),
         (
             "DECLARE",
             "Declare and validate a SUB or FUNCTION signature",
@@ -801,6 +802,80 @@ static BUILTIN_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
             "HEXDECODE",
             "HEXDECODE(text$) — Decode hexadecimal text into bytes",
         ),
+        // SQLite databases and missing values
+        (
+            "DBOPEN",
+            "DBOPEN(path$[, mode$[, timeoutMs]]) — Open a SQLite database",
+        ),
+        (
+            "DBCLOSE",
+            "DBCLOSE(db) — Close SQLite and invalidate its results",
+        ),
+        (
+            "DBEXEC",
+            "DBEXEC(db, sql$[, parameter, ...]) — Execute SQL with bound values",
+        ),
+        (
+            "DBQUERY",
+            "DBQUERY(db, sql$[, parameter, ...]) — Materialize SQLite result rows",
+        ),
+        (
+            "DBNEXT",
+            "DBNEXT(result) — Advance to a row; BOOL false at end",
+        ),
+        (
+            "DBVALUE",
+            "DBVALUE(result, column) — Read the current SQLite value",
+        ),
+        (
+            "DBISNULL",
+            "DBISNULL(result, column) — Test the current SQL value for NULL",
+        ),
+        (
+            "DBCOLUMNCOUNT",
+            "DBCOLUMNCOUNT(result) — Number of result columns",
+        ),
+        (
+            "DBCOLUMNNAME$",
+            "DBCOLUMNNAME$(result, index) — Result column name",
+        ),
+        (
+            "DBCOLUMNTYPE$",
+            "DBCOLUMNTYPE$(result, column) — Current SQLite storage class",
+        ),
+        ("DBROWCOUNT", "DBROWCOUNT(result) — Total materialized rows"),
+        ("DBFREE", "DBFREE(result) — Release a SQLite result"),
+        (
+            "DBCHANGES",
+            "DBCHANGES(db) — SQLite connection change counter",
+        ),
+        (
+            "DBLASTID",
+            "DBLASTID(db) — Last inserted SQLite rowid as INT64",
+        ),
+        (
+            "DBBEGIN",
+            "DBBEGIN(db[, mode$]) — Begin a SQLite transaction",
+        ),
+        ("DBCOMMIT", "DBCOMMIT(db) — Commit a SQLite transaction"),
+        (
+            "DBROLLBACK",
+            "DBROLLBACK(db) — Roll back a SQLite transaction",
+        ),
+        (
+            "DBINTRANSACTION",
+            "DBINTRANSACTION(db) — Test whether SQLite autocommit is disabled",
+        ),
+        (
+            "DBTIMEOUT",
+            "DBTIMEOUT(db, timeoutMs) — Set the SQLite busy timeout",
+        ),
+        ("DBVERSION$", "DBVERSION$() — Bundled SQLite version"),
+        (
+            "NULL",
+            "NULL() — Missing value, distinct from zero and empty values",
+        ),
+        ("ISNULL", "ISNULL(value) — BOOL test for a NULL value"),
         // Array
         ("LBOUND", "LBOUND(array[, dim]) — Lower bound of array"),
         ("UBOUND", "UBOUND(array[, dim]) — Upper bound of array"),
@@ -840,6 +915,94 @@ static TYPE_COMPLETIONS: LazyLock<Vec<CompletionItem>> = LazyLock::new(|| {
 
 static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
     HashMap::from([
+        (
+            "DBOPEN",
+            "```basic\nDBOPEN(path$[, mode$[, timeoutMs]])\n```\nReturns an INT64 connection handle. Modes rwc (default: read/write/create), rw (existing read/write), and ro (read-only) are case-insensitive. Relative paths use process cwd; :memory: creates a private memory database. An empty path opens a temporary database. Other filenames are literal, including file: prefixes and URI option text. Foreign keys start enabled; the default busy timeout is 5000 ms. Timeout is an exact integer in 0..2147483647. Connections persist between immediate submissions; CLEAR, fresh RUN, or interpreter destruction closes them.",
+        ),
+        (
+            "DBCLOSE",
+            "```basic\nDBCLOSE(db)\n```\nCloses a SQLite connection, rolls back uncommitted work, and invalidates its result handles. Returns BOOL TRUE. Invalid or already closed handles raise an error. CALL DBCLOSE(db) discards the result.",
+        ),
+        (
+            "DBEXEC",
+            "```basic\nDBEXEC(db, sql$[, parameter, ...])\n```\nExecutes exactly one SQLite statement with no result columns. Returns INT64 changed rows for DML, or zero for non-DML. Rejects row-returning SQL before stepping; PRAGMA preparation can still change settings even for a rejected call; use DBQUERY for SELECT, row-returning PRAGMA, or RETURNING. Bind data using ? placeholders and trailing values; the supplied parameter count must match SQLite indexed slots exactly. CALL DBEXEC(...) discards its result.",
+        ),
+        (
+            "DBQUERY",
+            "```basic\nDBQUERY(db, sql$[, parameter, ...])\n```\nExecutes exactly one row-returning SQLite statement and returns an INT64 result handle, positioned before its first row. All rows are materialized during this call; RETURNING writes also happen now. Bind ? placeholders with trailing values; parameter count must match exactly. Invalid UTF-8 column names raise a database error, including for empty results. A materialization error can follow successful SQL writes; use an explicit transaction for rollback. PRAGMAs can change settings during preparation even if validation later fails. Use DBNEXT, DBVALUE, and DBFREE; use SQL filtering or LIMIT for large results.",
+        ),
+        (
+            "DBNEXT",
+            "```basic\nDBNEXT(result)\n```\nAdvances a materialized SQLite result and returns BOOL TRUE for a row or FALSE at end. The first call advances from before the first row. Once exhausted, subsequent calls remain FALSE. DBVALUE and current-value type access fail before the first row and after exhaustion.",
+        ),
+        (
+            "DBVALUE",
+            "```basic\nDBVALUE(result, column)\n```\nReads the current row. Column is an exact 1-based index independent of OPTION BASE, or a unique name matched without ASCII case distinctions. Ambiguous names raise an error. SQLite INTEGER returns INT64, REAL NUMERIC, TEXT STRING, BLOB BYTES, and NULL the native NULL value. Requires a successful DBNEXT. Check ISNULL or DBISNULL before assigning a nullable value to a declared type. Invalid UTF-8 TEXT raises a database error; select CAST(column AS BLOB) for raw bytes.",
+        ),
+        (
+            "DBISNULL",
+            "```basic\nDBISNULL(result, column)\n```\nReturns BOOL indicating whether the current row value is SQLite NULL. Column is an exact 1-based index or a unique name matched without ASCII case distinctions. Requires a successful DBNEXT; empty text and empty BLOB are not NULL.",
+        ),
+        (
+            "DBCOLUMNCOUNT",
+            "```basic\nDBCOLUMNCOUNT(result)\n```\nReturns the INT64 number of result columns. Available before DBNEXT and for an empty result. A freed or invalid result handle raises an error.",
+        ),
+        (
+            "DBCOLUMNNAME$",
+            "```basic\nDBCOLUMNNAME$(result, index)\n```\nReturns a result column name at an exact 1-based index, independent of OPTION BASE. Available before DBNEXT and for an empty result. Names need not be unique; use aliases or numeric indices to avoid ambiguous name lookup.",
+        ),
+        (
+            "DBCOLUMNTYPE$",
+            "```basic\nDBCOLUMNTYPE$(result, column)\n```\nReturns the current value's SQLite storage class: NULL, INTEGER, REAL, TEXT, or BLOB. This describes the value, not the column's SQL declaration. Column is an exact 1-based index or unique name matched without ASCII case distinctions. Requires a successful DBNEXT.",
+        ),
+        (
+            "DBROWCOUNT",
+            "```basic\nDBROWCOUNT(result)\n```\nReturns the INT64 number of materialized rows, including before the first DBNEXT. DBQUERY already executed the complete statement; counting or iterating does not rerun it.",
+        ),
+        (
+            "DBFREE",
+            "```basic\nDBFREE(result)\n```\nFrees the materialized rows and invalidates the result handle. Returns BOOL TRUE. Handles are never reused within an interpreter; using a freed handle raises an error. CALL DBFREE(result) discards the result.",
+        ),
+        (
+            "DBCHANGES",
+            "```basic\nDBCHANGES(db)\n```\nReturns SQLite's connection change counter as INT64. Non-DML can leave the previous count or expose a count from internal SQLite writes. Use DBEXEC's return value for the submitted statement's count, which is zero for non-DML.",
+        ),
+        (
+            "DBLASTID",
+            "```basic\nDBLASTID(db)\n```\nReturns SQLite's last inserted rowid for this connection as an exact INT64, initially zero. SQLite rowid semantics apply; this is connection state, not a sequence generator.",
+        ),
+        (
+            "DBBEGIN",
+            "```basic\nDBBEGIN(db[, mode$])\n```\nBegins a transaction and returns BOOL TRUE. Modes DEFERRED (default), IMMEDIATE, and EXCLUSIVE are case-insensitive. Nested BEGIN raises a SQLite error; use SQL SAVEPOINT for nesting. CALL DBBEGIN(...) discards the result.",
+        ),
+        (
+            "DBCOMMIT",
+            "```basic\nDBCOMMIT(db)\n```\nCommits an active SQLite transaction and returns BOOL TRUE. A failed or busy commit may leave the transaction active for retry or rollback; inspect DBINTRANSACTION. Calling without an active transaction raises a SQLite error.",
+        ),
+        (
+            "DBROLLBACK",
+            "```basic\nDBROLLBACK(db)\n```\nRolls back an active SQLite transaction and returns BOOL TRUE. Calling without an active transaction raises a SQLite error. Error handlers do not automatically roll back; inspect DBINTRANSACTION before recovery.",
+        ),
+        (
+            "DBINTRANSACTION",
+            "```basic\nDBINTRANSACTION(db)\n```\nReturns BOOL TRUE while SQLite autocommit is disabled, otherwise FALSE. Reflects SQL transaction commands and DBBEGIN/DBCOMMIT/DBROLLBACK on the same connection. Handling an error does not automatically roll back a transaction.",
+        ),
+        (
+            "DBTIMEOUT",
+            "```basic\nDBTIMEOUT(db, timeoutMs)\n```\nSets SQLite's busy timeout in milliseconds and returns BOOL TRUE. Requires an exact integer in 0..2147483647; zero disables waiting for locks. New connections default to 5000 ms.",
+        ),
+        (
+            "DBVERSION$",
+            "```basic\nDBVERSION$()\n```\nReturns the bundled SQLite library version as STRING. Parentheses are required. Database functions may also be used through CALL to discard their result; arguments pass by value without copy-back.",
+        ),
+        (
+            "NULL",
+            "```basic\nNULL()\n```\nReturns the native missing NULL value. There is no AS NULL declaration; declared types reject NULL, while unsuffixed implicit variables may hold it. ISNULL tests for it and TYPEOF$ returns NULL. Rice equality treats NULL as equal only to NULL; other operators, conversions, and conditions reject it. SQL expressions follow SQLite's own NULL rules. Parentheses are required.",
+        ),
+        (
+            "ISNULL",
+            "```basic\nISNULL(value)\n```\nReturns BOOL TRUE only for the native NULL value. Zero, FALSE, an empty STRING, and an empty BYTES buffer return FALSE. Use before assigning a nullable SQLite result to a declared type.",
+        ),
         // Math
         (
             "ABS",
@@ -1144,7 +1307,7 @@ static BUILTIN_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "TYPEOF$",
-            "```basic\nTYPEOF$(value)\n```\nReturns the runtime type name: NUMERIC, INTEGER, LONG, SINGLE, INT64, BOOL, BYTE, BYTES, STRING, or the declared record type's name. DOUBLE shares the NUMERIC representation. Reports the stored value's type.",
+            "```basic\nTYPEOF$(value)\n```\nReturns the runtime type name: NUMERIC, INTEGER, LONG, SINGLE, INT64, BOOL, BYTE, BYTES, STRING, NULL, or the declared record type's name. DOUBLE shares the NUMERIC representation. Reports the stored value's type.",
         ),
         (
             "BYTES",
@@ -1331,7 +1494,7 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "CLEAR",
-            "```basic\nCLEAR\n```\nClears variable values in the current environment and resets the DATA cursor. Constants, declarations, array metadata, procedures, static storage, and open files remain.",
+            "```basic\nCLEAR\n```\nClears variable values in the current environment and resets the DATA cursor. Constants, declarations, array metadata, procedures, static storage, and ordinary open files remain. Closes all SQLite connections and frees their results, rolling back uncommitted transactions.",
         ),
         // Control flow
         (
@@ -1445,7 +1608,7 @@ static KEYWORD_HOVER_DOCS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         ),
         (
             "CALL",
-            "```basic\nCALL name(args)\n```\nCalls a SUB with the given arguments.",
+            "```basic\nCALL name(args)\n```\nCalls a SUB with the given arguments. DB... database builtins also support CALL, which discards their result and uses value arguments without BYREF copy-back. Other expression functions cannot be called this way.",
         ),
         (
             "DECLARE",
@@ -2122,6 +2285,87 @@ mod tests {
                 .unwrap()
                 .contains("For BYTES, counts bytes")
         );
+    }
+
+    #[test]
+    fn sqlite_functions_have_completion_hover_and_call_syntax() {
+        for (name, call, expected) in [
+            ("DBOPEN", "DBOPEN(\":memory:\")", "connection handle"),
+            ("DBCLOSE", "DBCLOSE(db)", "rolls back"),
+            (
+                "DBEXEC",
+                "DBEXEC(db, \"DELETE FROM sample WHERE id = ?\", 1)",
+                "exactly one",
+            ),
+            (
+                "DBQUERY",
+                "DBQUERY(db, \"SELECT ?\", NULL())",
+                "materialized",
+            ),
+            ("DBNEXT", "DBNEXT(rows)", "before the first row"),
+            ("DBVALUE", "DBVALUE(rows, \"name\")", "1-based"),
+            ("DBISNULL", "DBISNULL(rows, 1)", "SQLite NULL"),
+            ("DBCOLUMNCOUNT", "DBCOLUMNCOUNT(rows)", "empty result"),
+            ("DBCOLUMNNAME$", "DBCOLUMNNAME$(rows, 1)", "OPTION BASE"),
+            ("DBCOLUMNTYPE$", "DBCOLUMNTYPE$(rows, 1)", "storage class"),
+            ("DBROWCOUNT", "DBROWCOUNT(rows)", "materialized rows"),
+            ("DBFREE", "DBFREE(rows)", "invalidates"),
+            ("DBCHANGES", "DBCHANGES(db)", "Non-DML"),
+            ("DBLASTID", "DBLASTID(db)", "exact INT64"),
+            ("DBBEGIN", "DBBEGIN(db, \"IMMEDIATE\")", "DEFERRED"),
+            ("DBCOMMIT", "DBCOMMIT(db)", "retry or rollback"),
+            ("DBROLLBACK", "DBROLLBACK(db)", "do not automatically"),
+            ("DBINTRANSACTION", "DBINTRANSACTION(db)", "autocommit"),
+            ("DBTIMEOUT", "DBTIMEOUT(db, 0)", "2147483647"),
+            ("DBVERSION$", "DBVERSION$()", "Parentheses are required"),
+        ] {
+            let state = analyze_source(format!("PRINT {call}\nCALL {call}\n"), 1);
+            assert!(
+                state.diagnostics.is_empty(),
+                "{name}: {:?}",
+                state.diagnostics
+            );
+            assert_eq!(
+                resolve_token_name(&state, Position::new(0, 6)).as_deref(),
+                Some(name)
+            );
+            assert_eq!(
+                resolve_token_name(&state, Position::new(1, 5)).as_deref(),
+                Some(name)
+            );
+            assert!(builtin_hover(name).unwrap().contains(expected), "{name}");
+            assert_eq!(
+                BUILTIN_COMPLETIONS
+                    .iter()
+                    .find(|item| item.label == name)
+                    .unwrap()
+                    .kind,
+                Some(CompletionItemKind::FUNCTION)
+            );
+        }
+        assert!(keyword_hover("CALL").unwrap().contains("without BYREF"));
+        assert!(
+            keyword_hover("CLEAR")
+                .unwrap()
+                .contains("Closes all SQLite")
+        );
+    }
+
+    #[test]
+    fn null_functions_have_completion_and_hover_without_a_declaration_type() {
+        for (name, call) in [("NULL", "NULL()"), ("ISNULL", "ISNULL(NULL())")] {
+            let state = analyze_source(format!("PRINT {call}\n"), 1);
+            assert!(state.diagnostics.is_empty(), "{:?}", state.diagnostics);
+            assert_eq!(
+                resolve_token_name(&state, Position::new(0, 6)).as_deref(),
+                Some(name)
+            );
+            assert!(BUILTIN_COMPLETIONS.iter().any(|item| item.label == name));
+            assert!(builtin_hover(name).unwrap().contains("NULL"));
+        }
+        assert!(builtin_hover("NULL").unwrap().contains("no AS NULL"));
+        assert!(builtin_hover("TYPEOF$").unwrap().contains("STRING, NULL"));
+        assert!(!TYPE_COMPLETIONS.iter().any(|item| item.label == "NULL"));
     }
 
     #[test]
