@@ -265,9 +265,21 @@ END WHEN
     }
     #[cfg(windows)]
     {
-        // Windows rejects ':' and '?' in this filename; it must not silently
-        // interpret them as a valid URI for an ephemeral in-memory database.
-        assert_eq!(stdout, "9000\n");
+        // Windows may accept this literal path as an NTFS alternate stream,
+        // or reject it on another filesystem. URI interpretation is forbidden:
+        // mode=memory would lose the table after close and print opened\n9000\n.
+        assert!(
+            matches!(stdout.as_str(), "opened\n7\n" | "9000\n"),
+            "unexpected database output: {stdout:?}"
+        );
+    }
+    if stdout == "opened\n7\n" {
+        // Verify persistence at the exact literal path, including stream paths
+        // on Windows, without relying on platform-specific metadata behavior.
+        let mut file = std::fs::File::open(directory.path().join(filename)).unwrap();
+        let mut header = [0; 16];
+        std::io::Read::read_exact(&mut file, &mut header).unwrap();
+        assert_eq!(&header, b"SQLite format 3\0");
     }
     assert!(!directory.path().join("literal.sqlite").exists());
 }
